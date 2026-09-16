@@ -1,0 +1,37 @@
+# --- Python -----------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# --- Credentials / secrets (future milestones: Fabric Eventstream, etc.) --
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# --- Recordings and captured footage ----------------------------------
+sample_videos/*
+!sample_videos/.gitkeep
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.m4v
+
+# --- Generated / exported data -----------------------------------------
+data/*
+!data/.gitkeep
+*.jsonl
+
+# --- OCR model cache (downloaded on first run, machine-specific) --------
+.EasyOCR/
+
+# --- Editor/OS cruft ----------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

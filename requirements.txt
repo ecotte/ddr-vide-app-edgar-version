@@ -1,0 +1,15 @@
+# Core dependencies for the DDR Video Event Extractor.
+#
+# IMPORTANT: install torch (a dependency of easyocr) BEFORE this file, using
+# the CPU-only wheel index, so you don't accidentally download a multi-GB
+# CUDA build you don't need. See README.md "Setup" section, or just run
+# setup.ps1 which does this in the right order automatically:
+#
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+
+opencv-python==4.10.0.84
+easyocr==1.7.2
+Pillow==10.4.0
+numpy==1.26.4
+pytest==8.3.3
