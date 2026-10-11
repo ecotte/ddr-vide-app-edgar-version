@@ -58,6 +58,7 @@ class AnalysisSession:
         self._trackers: Dict[str, Tracker] = {}
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
+        self._pending_combo_start: Dict[str, tuple[int, int]] = {}
         self._numeric_lock = threading.RLock()
         self._arrow_lock = threading.RLock()
         self.required_consecutive_frames = config.DEFAULT_REQUIRED_CONSECUTIVE_FRAMES
@@ -79,6 +80,7 @@ class AnalysisSession:
             self._trackers = {}
             self._arrow_references = {}
             self._last_numeric_accept_time_ms = {}
+            self._pending_combo_start = {}
             for r in self.regions:
                 if r.kind == "arrow":
                     self._trackers[r.key()] = ArrowStateTracker(self.arrow_min_confirm_frames)
@@ -119,6 +121,7 @@ class AnalysisSession:
             for tracker in self._trackers.values():
                 tracker.reset()
             self._last_numeric_accept_time_ms = {}
+            self._pending_combo_start = {}
 
     def start(self) -> None:
         with self._numeric_lock, self._arrow_lock:
@@ -226,6 +229,43 @@ class AnalysisSession:
                     f"keeping {tracker.accepted_value}."
                 )
                 candidate = None
+            if (
+                region.kind == "combo"
+                and candidate is not None
+                and tracker.accepted_value is None
+                and tracker.required_consecutive_frames == 1
+            ):
+                pending_start = self._pending_combo_start.get(region.key())
+                if pending_start is None:
+                    self._pending_combo_start[region.key()] = (candidate, video_time_ms)
+                    validation_error = (
+                        f"Waiting for a second plausible combo reading after {candidate}."
+                    )
+                    candidate = None
+                else:
+                    pending_value, pending_time_ms = pending_start
+                    elapsed_ms = max(0, video_time_ms - pending_time_ms)
+                    max_increase = max(
+                        config.COMBO_MIN_ALLOWED_INCREASE,
+                        math.ceil(
+                            elapsed_ms * config.COMBO_MAX_INCREASE_PER_SECOND / 1000
+                        ),
+                    )
+                    if candidate < pending_value:
+                        self._pending_combo_start[region.key()] = (candidate, video_time_ms)
+                        validation_error = (
+                            f"Replaced tentative combo {pending_value} with lower reading "
+                            f"{candidate}; waiting for confirmation."
+                        )
+                        candidate = None
+                    elif candidate > pending_value + max_increase:
+                        validation_error = (
+                            f"Ignored implausible tentative combo jump from "
+                            f"{pending_value} to {candidate}."
+                        )
+                        candidate = None
+                    else:
+                        del self._pending_combo_start[region.key()]
             if region.kind == "combo" and candidate is not None and tracker.accepted_value is not None:
                 previous_time_ms = self._last_numeric_accept_time_ms.get(region.key(), video_time_ms)
                 elapsed_ms = max(0, video_time_ms - previous_time_ms)

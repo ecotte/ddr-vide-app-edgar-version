@@ -68,15 +68,32 @@ def test_default_confirmation_emits_score_event_from_one_analyzed_sample():
     assert [event.payload["new_value"] for event in bus.events] == [100]
 
 
-def test_default_confirmation_emits_combo_event_from_one_analyzed_sample():
+def test_default_combo_baseline_requires_two_plausible_samples():
     bus = EventBus()
-    session = AnalysisSession(bus, FakeOcrEngine(["4"]))
+    session = AnalysisSession(bus, FakeOcrEngine(["4", "5"]))
     session.set_regions([_combo_region()])
     session.start()
 
     session.process_numeric_frame(_frame(), 0, 0)
+    assert bus.events == []
+    session.process_numeric_frame(_frame(), 1, 33)
 
-    assert [event.payload["new_value"] for event in bus.events] == [4]
+    assert [event.payload["new_value"] for event in bus.events] == [5]
+
+
+def test_false_high_initial_combo_is_replaced_before_baseline_is_accepted():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["900", "10", "11"]))
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    session.process_numeric_frame(_frame(), 2, 66)
+
+    assert session.tracker_for(region).accepted_value == 11
+    assert [event.payload["new_value"] for event in bus.events] == [11]
 
 
 def test_score_never_accepts_or_emits_a_decreasing_value():
