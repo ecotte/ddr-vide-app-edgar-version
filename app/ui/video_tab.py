@@ -13,6 +13,30 @@ MAX_DISPLAY_W = 960
 MAX_DISPLAY_H = 540
 
 
+def fit_display_size(
+    source_width: int,
+    source_height: int,
+    max_width: int,
+    max_height: int,
+) -> tuple[int, int, float]:
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("Source dimensions must be positive.")
+    if max_width <= 0 or max_height <= 0:
+        raise ValueError("Display dimensions must be positive.")
+    scale = min(1.0, max_width / source_width, max_height / source_height)
+    return (
+        max(1, round(source_width * scale)),
+        max(1, round(source_height * scale)),
+        scale,
+    )
+
+
+def next_playback_delay_ms(fps: float, processing_seconds: float) -> int:
+    frame_interval_ms = 1000.0 / fps if fps > 0 else 33.0
+    processing_ms = max(0.0, processing_seconds * 1000.0)
+    return max(1, round(frame_interval_ms - processing_ms))
+
+
 class _ScrollableFrame(ttk.Frame):
     """A vertically scrollable container.
 
@@ -83,6 +107,7 @@ class VideoTab(ttk.Frame):
     def _build_layout(self) -> None:
         left_scroll = _ScrollableFrame(self)
         left_scroll.grid(row=0, column=0, sticky="nsew")
+        self._left_scroll = left_scroll
         left = left_scroll.inner
 
         right_scroll = _ScrollableFrame(self)
@@ -233,6 +258,12 @@ class VideoTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     # Canvas / video frame display
+    def video_display_limits(self) -> tuple[int, int]:
+        visible_width = self._left_scroll.canvas.winfo_width()
+        if visible_width <= 1:
+            visible_width = MAX_DISPLAY_W
+        return max(1, min(MAX_DISPLAY_W, visible_width - 12)), MAX_DISPLAY_H
+
     def show_frame_image(self, pil_image: Image.Image, display_scale: float) -> None:
         self.display_scale = display_scale
         w, h = pil_image.size
@@ -356,16 +387,16 @@ class VideoTab(ttk.Frame):
         btns = ttk.Frame(row)
         btns.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
         ttk.Button(
-            btns, text="Capture as Hit", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit")
+            btns, text="Add Hit ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit")
         ).grid(row=0, column=0, padx=2)
         ttk.Button(
-            btns, text="Clear Hit ref", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit")
+            btns, text="Clear Hit refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit")
         ).grid(row=0, column=1, padx=2)
         ttk.Button(
-            btns, text="Capture as Miss", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss")
+            btns, text="Add Miss ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss")
         ).grid(row=0, column=2, padx=2)
         ttk.Button(
-            btns, text="Clear Miss ref", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
+            btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
         ).grid(row=0, column=3, padx=2)
 
         self._region_rows[r.key()] = {
@@ -405,7 +436,7 @@ class VideoTab(ttk.Frame):
         )
         row["status_var"].set(f"status: {status_text}")
 
-    def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo) -> None:
+    def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
         if row is None or row.get("kind") != "arrow":
             return
@@ -415,7 +446,7 @@ class VideoTab(ttk.Frame):
             label.configure(image="", text="(none)")
         else:
             self._region_thumb_refs[f"{region_key}:{state}_ref"] = photo
-            label.configure(image=photo, text="")
+            label.configure(image=photo, text=f" {count} ref{'s' if count != 1 else ''}", compound="left")
 
 
     def refresh_layout_names(self) -> None:

@@ -29,8 +29,17 @@ def test_arrow_region_round_trips_through_dict():
     )
     restored = Region.from_dict(r.to_dict())
     assert restored.direction == "Left"
-    assert restored.reference_images == {"hit": "deadbeef"}
+    assert restored.reference_images == {"hit": ["deadbeef"]}
     assert restored.key() == r.key()
+
+
+def test_legacy_single_reference_is_upgraded_to_a_list():
+    restored = Region.from_dict({
+        "label": "P1 Left", "player": "P1", "kind": "arrow",
+        "x": 1, "y": 2, "w": 3, "h": 4, "direction": "Left",
+        "reference_images": {"hit": "legacy-image"},
+    })
+    assert restored.reference_images == {"hit": ["legacy-image"]}
 
 
 def test_numeric_region_round_trip_defaults_direction_to_none():

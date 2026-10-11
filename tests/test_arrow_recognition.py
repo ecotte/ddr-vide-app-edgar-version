@@ -89,6 +89,13 @@ def test_classify_matches_miss_reference():
     assert state == "miss"
 
 
+def test_classify_uses_best_of_multiple_references_for_each_state():
+    refs = {"hit": [BLACK, WHITE], "miss": [GREY]}
+    state, score = classify_arrow_state(WHITE, refs, threshold=0.9)
+    assert state == "hit"
+    assert score > 0.9
+
+
 def test_classify_below_threshold_is_idle_not_a_guess():
     refs = {"hit": WHITE, "miss": BLACK}
     state, score = classify_arrow_state(GREY, refs, threshold=0.9)
@@ -165,8 +172,8 @@ def _arrow_region_with_refs():
     region = Region(
         label="P1 Left", player="P1", kind="arrow", x=0, y=0, w=20, h=20, direction="Left"
     )
-    region.reference_images["hit"] = image_utils.encode_crop_to_base64_png(WHITE)
-    region.reference_images["miss"] = image_utils.encode_crop_to_base64_png(BLACK)
+    region.reference_images["hit"] = [image_utils.encode_crop_to_base64_png(WHITE)]
+    region.reference_images["miss"] = [image_utils.encode_crop_to_base64_png(BLACK)]
     return region
 
 

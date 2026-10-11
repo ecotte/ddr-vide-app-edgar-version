@@ -60,8 +60,27 @@ class VideoSource:
         # of whether the destination happens to be last_frame_index + 1.
         self._pending_seek = True
 
+    def skip_to_frame(self, frame_index: int) -> None:
+        """Move playback forward without treating dropped preview frames as a user seek."""
+        frame_index = max(
+            self._next_read_index,
+            min(frame_index, max(self.frame_count - 1, 0)),
+        )
+        self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        self._next_read_index = frame_index
+        self._pending_seek = False
+        self._last_frame_index = frame_index - 1
+
     def current_frame_index(self) -> int:
         return self._next_read_index
+
+    def is_at_end(self) -> bool:
+        """True when the next read_next() would run past the last frame.
+
+        Frame count can be unknown/zero for some containers, in which case
+        this returns False so playback is never blocked by a bad count.
+        """
+        return self.frame_count > 0 and self._next_read_index >= self.frame_count
 
     def video_time_ms_for_frame(self, frame_index: int) -> int:
         if self.fps and self.fps > 0:

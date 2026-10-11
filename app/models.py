@@ -7,7 +7,7 @@ contains, and gives us one place to add fields later.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -21,7 +21,7 @@ class Region:
     ``direction`` and ``reference_images`` are only used when
     ``kind == "arrow"``: ``direction`` is one of config.ARROW_DIRECTIONS
     ("Up"/"Down"/"Left"/"Right"), and ``reference_images`` holds
-    user-captured example crops (base64 PNG) keyed by state name ("hit",
+    user-captured example crops (base64 PNG) grouped by state name ("hit",
     "miss") that the arrow classifier compares live frames against. These
     are never pre-supplied by the app - only what the user captures from
     their own footage.
@@ -35,7 +35,18 @@ class Region:
     w: int
     h: int
     direction: Optional[str] = None  # only for kind == "arrow"
-    reference_images: Dict[str, str] = field(default_factory=dict)  # state -> base64 PNG
+    reference_images: Dict[str, List[str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized = {}
+        for state, images in self.reference_images.items():
+            if isinstance(images, str):
+                normalized[state] = [images]
+            elif isinstance(images, list) and all(isinstance(image, str) for image in images):
+                normalized[state] = list(images)
+            else:
+                raise ValueError(f"Reference images for '{state}' must be a string or list of strings.")
+        self.reference_images = normalized
 
     def key(self) -> str:
         """Stable identity for this region used to key recognition trackers."""
@@ -53,7 +64,9 @@ class Region:
             "w": self.w,
             "h": self.h,
             "direction": self.direction,
-            "reference_images": dict(self.reference_images),
+            "reference_images": {
+                state: list(images) for state, images in self.reference_images.items()
+            },
         }
 
     @staticmethod

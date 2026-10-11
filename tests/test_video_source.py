@@ -90,3 +90,32 @@ def test_read_past_end_returns_none(small_video):
         assert idx is None
     finally:
         src.close()
+
+
+def test_is_at_end_becomes_true_after_last_frame_and_resets_on_seek(small_video):
+    path, num_frames = small_video
+    src = VideoSource(path)
+    try:
+        assert src.is_at_end() is False
+        for _ in range(num_frames):
+            src.read_next()
+        assert src.is_at_end() is True  # read all frames; next read would run past the end
+        src.seek_to_frame(0)
+        assert src.is_at_end() is False  # seeking back makes playback possible again
+    finally:
+        src.close()
+
+
+def test_skip_to_frame_drops_preview_frames_without_reporting_user_seek(small_video):
+    path, _ = small_video
+    src = VideoSource(path)
+    try:
+        src.read_next()
+        src.skip_to_frame(5)
+        frame, idx, is_seek = src.read_next()
+
+        assert frame is not None
+        assert idx == 5
+        assert is_seek is False
+    finally:
+        src.close()

@@ -104,38 +104,48 @@ def load_layout_from_path_checked(path: str, current_width: int, current_height:
 
 
 def rescale_profile(profile: LayoutProfile, new_width: int, new_height: int) -> LayoutProfile:
-    """Return a copy of ``profile`` with regions scaled to a new resolution.
+    """Return a copy of ``profile`` fitted into a new video resolution.
 
-    Only used when the user explicitly opts in after a ResolutionMismatchError.
-    Arrow reference snapshots (captured at the old resolution's crop size)
-    are resized along with their region so they stay directly comparable to
-    future crops taken at the new resolution.
+    The source coordinate space is scaled uniformly and centered in the new
+    frame. This preserves region aspect ratios when the old and new videos
+    have different aspect ratios. Arrow reference snapshots are resized by
+    the same uniform scale so they stay comparable to future crops.
     """
     from app import image_utils
     from app.models import Region
 
-    sx = new_width / profile.source_width
-    sy = new_height / profile.source_height
+    if profile.source_width <= 0 or profile.source_height <= 0:
+        raise ValueError("Layout source dimensions must be positive.")
+    if new_width <= 0 or new_height <= 0:
+        raise ValueError("New video dimensions must be positive.")
+
+    scale = min(new_width / profile.source_width, new_height / profile.source_height)
+    offset_x = (new_width - profile.source_width * scale) / 2
+    offset_y = (new_height - profile.source_height * scale) / 2
     scaled_regions = []
     for r in profile.regions:
-        new_w = round(r.w * sx)
-        new_h = round(r.h * sy)
+        region_width = max(1, round(r.w * scale))
+        region_height = max(1, round(r.h * scale))
         rescaled_refs = {}
-        for state_name, b64 in r.reference_images.items():
-            img = image_utils.decode_base64_png_to_crop(b64)
-            if img is None:
-                continue
-            resized = image_utils.resize_crop(img, max(new_w, 1), max(new_h, 1))
-            rescaled_refs[state_name] = image_utils.encode_crop_to_base64_png(resized)
+        for state_name, encoded_images in r.reference_images.items():
+            resized_images = []
+            for b64 in encoded_images:
+                img = image_utils.decode_base64_png_to_crop(b64)
+                if img is None:
+                    continue
+                resized = image_utils.resize_crop(img, region_width, region_height)
+                resized_images.append(image_utils.encode_crop_to_base64_png(resized))
+            if resized_images:
+                rescaled_refs[state_name] = resized_images
         scaled_regions.append(
             Region(
                 label=r.label,
                 player=r.player,
                 kind=r.kind,
-                x=round(r.x * sx),
-                y=round(r.y * sy),
-                w=new_w,
-                h=new_h,
+                x=round(offset_x + r.x * scale),
+                y=round(offset_y + r.y * scale),
+                w=region_width,
+                h=region_height,
                 direction=r.direction,
                 reference_images=rescaled_refs,
             )

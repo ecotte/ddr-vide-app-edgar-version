@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 import tkinter as tk
+from concurrent.futures import Future, ThreadPoolExecutor
 from tkinter import ttk, filedialog, messagebox
 from typing import Optional
 
@@ -19,7 +21,7 @@ from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
-from app.ui.video_tab import MAX_DISPLAY_H, MAX_DISPLAY_W, VideoTab
+from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
 from app.video_source import VideoSource
 
 
@@ -37,7 +39,15 @@ class App(tk.Tk):
         self.regions = []  # list[Region]
         self.is_playing = False
         self._play_after_id: Optional[str] = None
+        self._playback_started_at = 0.0
+        self._playback_start_frame = 0
         self._last_frame_bgr = None  # last displayed frame; used for arrow reference capture
+        self._analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+        self._analysis_future: Optional[Future] = None
+        self._analysis_future_generation = 0
+        self._analysis_generation = 0
+        self._analysis_poll_after_id: Optional[str] = None
+        self._dropped_analysis_frames = 0
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -94,6 +104,7 @@ class App(tk.Tk):
         self.video_source = new_source
 
         # A new video is a new session: reset everything recognition-related.
+        self._analysis_generation += 1
         self.analysis.stop()
         self.event_bus.new_session()
         self.analysis.reset_tracking()
@@ -152,7 +163,14 @@ class App(tk.Tk):
             self._start_playing()
 
     def _start_playing(self) -> None:
+        if self.video_source.is_at_end():
+            # Playback reached the end; restart from the beginning so Play
+            # never appears stuck on the last frame.
+            self.video_source.seek_to_frame(0)
+            self.video_tab.set_error_status("")
         self.is_playing = True
+        self._playback_started_at = time.perf_counter()
+        self._playback_start_frame = self.video_source.current_frame_index()
         self.video_tab.set_play_button_label(True)
         self._schedule_play_tick(0)
 
@@ -169,41 +187,108 @@ class App(tk.Tk):
     def _play_tick(self) -> None:
         if not self.is_playing or self.video_source is None:
             return
+        fps = self.video_source.fps
+        if fps > 0:
+            elapsed = time.perf_counter() - self._playback_started_at
+            target_frame = self._playback_start_frame + int(elapsed * fps)
+            if target_frame < self.video_source.current_frame_index():
+                next_deadline = (
+                    self._playback_started_at
+                    + (
+                        (self.video_source.current_frame_index() - self._playback_start_frame)
+                        / fps
+                    )
+                )
+                delay = max(1, round((next_deadline - time.perf_counter()) * 1000))
+                self._schedule_play_tick(delay)
+                return
+            if target_frame > self.video_source.current_frame_index():
+                self.video_source.skip_to_frame(target_frame)
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
             self._stop_playing()
             self.video_tab.set_error_status("Reached end of video.")
             return
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
-        # While analysis is running, OCR time dominates so we just go as fast
-        # as possible; otherwise pace roughly to the source frame rate so
-        # preview playback looks natural. Either way this is not a
-        # frame-accurate real-time guarantee - see README.
-        if self.analysis.is_running:
-            delay = 1
+        if fps > 0:
+            next_deadline = (
+                self._playback_started_at
+                + ((idx + 1 - self._playback_start_frame) / fps)
+            )
+            delay = max(1, round((next_deadline - time.perf_counter()) * 1000))
         else:
-            delay = int(1000 / self.video_source.fps) if self.video_source.fps > 0 else 33
+            delay = next_playback_delay_ms(0, 0)
         self._schedule_play_tick(delay)
 
     # ------------------------------------------------------------------
     # Frame processing + display
     def _process_and_update(self, frame_bgr, frame_index: int, video_time_ms: int, is_seek: bool) -> None:
         if is_seek:
+            self._analysis_generation += 1
             self.analysis.reset_tracking()
 
         self._last_frame_bgr = frame_bgr  # available for arrow reference capture regardless of analysis state
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
 
-        result = self.analysis.process_frame(frame_bgr, frame_index, video_time_ms)
+        arrow_result = self.analysis.process_arrow_frame(frame_bgr, frame_index, video_time_ms)
+        self._apply_analysis_result(arrow_result, skipped_frames=0)
+        self._submit_numeric_analysis(frame_bgr, frame_index, video_time_ms)
+
+    def _submit_numeric_analysis(self, frame_bgr, frame_index: int, video_time_ms: int) -> None:
+        if not self.analysis.is_running:
+            return
+        if not any(region.kind != "arrow" for region in self.regions):
+            return
+        if self._analysis_future is not None:
+            self._dropped_analysis_frames += 1
+            return
+        self._analysis_future_generation = self._analysis_generation
+        self._analysis_future = self._analysis_executor.submit(
+            self.analysis.process_numeric_frame, frame_bgr, frame_index, video_time_ms
+        )
+        self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
+
+    def _poll_analysis_result(self) -> None:
+        self._analysis_poll_after_id = None
+        future = self._analysis_future
+        if future is None:
+            return
+        if not future.done():
+            self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
+            return
+
+        self._analysis_future = None
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 - worker failures must be visible in the UI
+            self.video_tab.set_error_status(f"Analysis worker error: {exc}")
+            return
+        if self._analysis_future_generation != self._analysis_generation:
+            return
+        self._apply_analysis_result(result, self._dropped_analysis_frames)
+        self._dropped_analysis_frames = 0
+
+    def _apply_analysis_result(
+        self, result, skipped_frames: int
+    ) -> None:
         if result is None:
             return
 
-        self.video_tab.set_processing_status(
-            f"Last recognition pass: {result.processing_ms:.0f} ms across {len(result.region_results)} region(s)"
+        is_numeric_result = (
+            bool(result.region_results) and result.region_results[0].region.kind != "arrow"
         )
+        if is_numeric_result:
+            self.video_tab.set_processing_status(
+                f"Last OCR pass: {result.processing_ms:.0f} ms across "
+                f"{len(result.region_results)} region(s); "
+                f"{skipped_frames} video frame(s) skipped by OCR"
+            )
         errors = [rr.error for rr in result.region_results if rr.error]
-        self.video_tab.set_error_status("; ".join(errors) if errors else "")
+        if errors:
+            self.video_tab.set_error_status("; ".join(errors))
+        elif is_numeric_result:
+            self.video_tab.set_error_status("")
 
         for rr in result.region_results:
             self._update_recognition_row(rr)
@@ -212,12 +297,15 @@ class App(tk.Tk):
 
     def _display_current_frame(self, frame_bgr) -> None:
         src_h, src_w = frame_bgr.shape[:2]
-        scale = min(1.0, MAX_DISPLAY_W / src_w, MAX_DISPLAY_H / src_h)
-        disp_w, disp_h = max(1, int(src_w * scale)), max(1, int(src_h * scale))
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
+        max_w, max_h = self.video_tab.video_display_limits()
+        disp_w, disp_h, scale = fit_display_size(src_w, src_h, max_w, max_h)
+        display_frame = frame_bgr
         if scale != 1.0:
-            pil_img = pil_img.resize((disp_w, disp_h), Image.BILINEAR)
+            display_frame = cv2.resize(
+                frame_bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA
+            )
+        rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
         self.video_tab.show_frame_image(pil_img, scale)
         self.video_tab.redraw_region_overlays(self.regions)
 
@@ -279,6 +367,7 @@ class App(tk.Tk):
         label, player, kind, direction = dialog.result
         region = Region(label=label, player=player, kind=kind, x=x, y=y, w=w, h=h, direction=direction)
         self.regions.append(region)
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
@@ -286,6 +375,7 @@ class App(tk.Tk):
     def delete_region(self, index: int) -> None:
         if 0 <= index < len(self.regions):
             del self.regions[index]
+            self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
             self.video_tab.refresh_region_list(self.regions)
             self.video_tab.redraw_region_overlays(self.regions)
@@ -303,20 +393,23 @@ class App(tk.Tk):
             messagebox.showerror("Out of bounds", "This region falls outside the current frame.")
             return
         crop = self._last_frame_bgr[y0:y1, x0:x1]
-        region.reference_images[state] = image_utils.encode_crop_to_base64_png(crop)
+        references = region.reference_images.setdefault(state, [])
+        references.append(image_utils.encode_crop_to_base64_png(crop))
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)  # reload decoded references, resets tracking
 
         photo = self._make_thumbnail_photo(crop)
-        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo)
+        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo, len(references))
         self.video_tab.set_processing_status(
-            f"Captured '{state}' reference for {region.label} at the current frame."
+            f"Captured '{state}' reference {len(references)} for {region.label} at the current frame."
         )
 
     def clear_arrow_reference(self, region: Region, state: str) -> None:
         if state in region.reference_images:
             del region.reference_images[state]
+            self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
-        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None)
+        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None, 0)
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         self.analysis.set_arrow_similarity_threshold(value)
@@ -377,8 +470,9 @@ class App(tk.Tk):
         except ResolutionMismatchError as exc:
             proceed = messagebox.askyesno(
                 "Resolution mismatch",
-                f"{exc}\n\nRescale the saved region coordinates to fit the current video "
-                "and load anyway? Choose 'No' to cancel and keep your current regions.",
+                f"{exc}\n\nFit the saved region coordinates to the current video without "
+                "distortion and load anyway? Regions will be scaled uniformly and centered. "
+                "Choose 'No' to cancel and keep your current regions.",
             )
             if not proceed:
                 return
@@ -387,6 +481,7 @@ class App(tk.Tk):
             )
 
         self.regions = list(profile.regions)
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
@@ -410,10 +505,14 @@ class App(tk.Tk):
         for region in self.regions:
             if region.kind != "arrow":
                 continue
-            for state, b64 in region.reference_images.items():
-                img = image_utils.decode_base64_png_to_crop(b64)
+            for state, encoded_images in region.reference_images.items():
+                if not encoded_images:
+                    continue
+                img = image_utils.decode_base64_png_to_crop(encoded_images[-1])
                 photo = self._make_thumbnail_photo(img)
-                self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo)
+                self.video_tab.set_arrow_reference_thumbnail(
+                    region.key(), state, photo, len(encoded_images)
+                )
 
     # ------------------------------------------------------------------
     # Analysis controls
@@ -422,6 +521,7 @@ class App(tk.Tk):
 
     def toggle_analysis(self) -> None:
         if self.analysis.is_running:
+            self._analysis_generation += 1
             self.analysis.stop()
         else:
             if self.video_source is None:
@@ -436,6 +536,7 @@ class App(tk.Tk):
         self.video_tab.set_analysis_status(self.analysis.is_running)
 
     def new_session(self) -> None:
+        self._analysis_generation += 1
         self.event_bus.new_session()
         self.analysis.reset_tracking()
         self.events_tab.clear()
@@ -461,6 +562,10 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
         self._stop_playing()
+        if self._analysis_poll_after_id is not None:
+            self.after_cancel(self._analysis_poll_after_id)
+            self._analysis_poll_after_id = None
+        self._analysis_executor.shutdown(wait=False, cancel_futures=True)
         if self.video_source is not None:
             self.video_source.close()
         self.destroy()

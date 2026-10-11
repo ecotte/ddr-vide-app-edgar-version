@@ -6,6 +6,7 @@ separate from wall-clock time (observed_at_utc), per the project spec.
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -26,20 +27,24 @@ class EventBus:
         self.session_id: str = str(uuid.uuid4())
         self._sequence: int = 0
         self._events: List[Event] = []
+        self._lock = threading.RLock()
 
     def new_session(self) -> None:
-        self.session_id = str(uuid.uuid4())
-        self._sequence = 0
-        self._events = []
+        with self._lock:
+            self.session_id = str(uuid.uuid4())
+            self._sequence = 0
+            self._events = []
 
     def clear_events(self) -> None:
         """Clear the recorded/displayed events list without starting a new
         session (sequence numbering and session_id are untouched)."""
-        self._events = []
+        with self._lock:
+            self._events = []
 
     @property
     def events(self) -> List[Event]:
-        return list(self._events)
+        with self._lock:
+            return list(self._events)
 
     def make_event(
         self,
@@ -50,34 +55,38 @@ class EventBus:
         player: Optional[str] = None,
         confidence: Optional[float] = None,
     ) -> Event:
-        event = Event(
-            schema_version=config.SCHEMA_VERSION,
-            event_id=str(uuid.uuid4()),
-            session_id=self.session_id,
-            sequence=self._sequence,
-            source_mode=self.source_mode,
-            frame_index=frame_index,
-            video_time_ms=video_time_ms,
-            observed_at_utc=datetime.now(timezone.utc).isoformat(),
-            event_type=event_type,
-            player=player,
-            payload=payload,
-            confidence=confidence,
-        )
-        self._sequence += 1
-        return event
+        with self._lock:
+            event = Event(
+                schema_version=config.SCHEMA_VERSION,
+                event_id=str(uuid.uuid4()),
+                session_id=self.session_id,
+                sequence=self._sequence,
+                source_mode=self.source_mode,
+                frame_index=frame_index,
+                video_time_ms=video_time_ms,
+                observed_at_utc=datetime.now(timezone.utc).isoformat(),
+                event_type=event_type,
+                player=player,
+                payload=payload,
+                confidence=confidence,
+            )
+            self._sequence += 1
+            return event
 
     def record(self, event: Event) -> None:
         """Append an event to the in-memory recorded list (for table/export)."""
-        self._events.append(event)
+        with self._lock:
+            self._events.append(event)
 
     def export_jsonl(self, path: str) -> int:
         """Write all currently recorded events to ``path``, one JSON per line.
 
         Returns the number of events written.
         """
+        with self._lock:
+            events = list(self._events)
         with open(path, "w", encoding="utf-8") as f:
-            for event in self._events:
+            for event in events:
                 f.write(json.dumps(event.to_dict()))
                 f.write("\n")
-        return len(self._events)
+        return len(events)

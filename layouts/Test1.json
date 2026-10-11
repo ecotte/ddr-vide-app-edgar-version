@@ -62,9 +62,9 @@
       "label": "Score",
       "player": "P1",
       "kind": "score",
-      "x": 9,
-      "y": 641,
-      "w": 356,
+      "x": 940,
+      "y": 642,
+      "w": 315,
       "h": 44,
       "direction": null,
       "reference_images": {}

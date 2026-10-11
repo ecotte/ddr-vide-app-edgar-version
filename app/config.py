@@ -25,7 +25,7 @@ SOURCE_MODE_SYNTHETIC = "synthetic"  # used only by tests/demos, never real game
 # digit-animation glitches but delay detection of genuine fast changes
 # (e.g. rapid combo increments). This is intentionally configurable from the
 # UI (Video tab) rather than hard-coded.
-DEFAULT_REQUIRED_CONSECUTIVE_FRAMES = 2
+DEFAULT_REQUIRED_CONSECUTIVE_FRAMES = 1
 
 # Sanity ceilings used as a format check: OCR text producing more digits than
 # this for a given field kind is treated as an invalid/unreadable reading
@@ -35,6 +35,15 @@ FIELD_MAX_DIGITS = {
     "score": 10,
     "combo": 5,
 }
+
+SCORE_MIN_GLYPH_CONFIDENCE = 0.75
+
+# Combo digits may be completely hidden by passing arrows. OCR output from
+# those frames must not replace a previously trusted combo with an impossible
+# jump. Genuine combo resets become visible again at a low value.
+COMBO_MIN_ALLOWED_INCREASE = 10
+COMBO_MAX_INCREASE_PER_SECOND = 60
+COMBO_RESET_MAX_VALUE = 30
 
 # Recognized region "kinds" for milestone 1+. Each numeric kind maps to an
 # event type; "arrow" is handled separately (see ARROW_EVENT_TYPES below).
@@ -77,9 +86,3 @@ OCR_LANGUAGES = ["en"]
 # Digit-only allowlist keeps OCR focused on numeric fields, which are the
 # only field kinds supported in milestone 1.
 OCR_DIGIT_ALLOWLIST = "0123456789"
-
-# --- Playback ---------------------------------------------------------
-# Minimum delay (ms) between scheduled frame ticks while "Play" is active.
-# The actual pace is also limited by however long OCR takes per frame when
-# analysis is running - see README for why playback is not real-time then.
-PLAYBACK_TICK_MS = 15

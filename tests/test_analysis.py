@@ -31,6 +31,9 @@ class FakeOcrEngine(OcrEngine):
         self._i += 1
         return OcrResult(raw_text=text, confidence=0.9, error=None)
 
+    def recognize_score_digits(self, crop_bgr):
+        return self.recognize_digits(crop_bgr)
+
 
 def _frame(w=100, h=50):
     return np.zeros((h, w, 3), dtype=np.uint8)
@@ -38,6 +41,10 @@ def _frame(w=100, h=50):
 
 def _score_region():
     return Region(label="Score", player="P1", kind="score", x=0, y=0, w=50, h=20)
+
+
+def _combo_region():
+    return Region(label="Combo", player="P1", kind="combo", x=0, y=0, w=50, h=20)
 
 
 def test_no_events_while_analysis_not_started():
@@ -48,6 +55,45 @@ def test_no_events_while_analysis_not_started():
     result = session.process_frame(_frame(), 0, 0)
     assert result is None
     assert bus.events == []
+
+
+def test_default_confirmation_emits_score_event_from_one_analyzed_sample():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100"]))
+    session.set_regions([_score_region()])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+
+    assert [event.payload["new_value"] for event in bus.events] == [100]
+
+
+def test_default_confirmation_emits_combo_event_from_one_analyzed_sample():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["4"]))
+    session.set_regions([_combo_region()])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+
+    assert [event.payload["new_value"] for event in bus.events] == [4]
+
+
+def test_score_never_accepts_or_emits_a_decreasing_value():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100", "90", "110"]))
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+    rejected = session.process_numeric_frame(_frame(), 1, 33)
+    session.process_numeric_frame(_frame(), 2, 66)
+
+    assert [event.payload["new_value"] for event in bus.events] == [100, 110]
+    assert rejected.region_results[0].accepted_value == 100
+    assert rejected.region_results[0].is_unreadable is True
+    assert "Ignored decreasing score reading" in rejected.region_results[0].error
 
 
 def test_genuine_change_emits_exactly_one_event():
@@ -145,3 +191,58 @@ def test_new_regions_resets_tracking():
 
     session.set_regions([region])  # re-applying regions should reset trackers
     assert session.tracker_for(region).accepted_value is None
+
+
+def test_combo_rejects_large_overlay_jump_and_keeps_accepted_value():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100", "100", "7100", "7100"])
+    session = AnalysisSession(bus, ocr)
+    session.set_required_consecutive_frames(2)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_frame(_frame(), 0, 0)
+    session.process_frame(_frame(), 1, 33)
+    result = session.process_frame(_frame(), 2, 66)
+    session.process_frame(_frame(), 3, 99)
+
+    assert session.tracker_for(region).accepted_value == 100
+    assert len(bus.events) == 1
+    assert result.region_results[0].is_unreadable is True
+    assert "Ignored implausible combo reading" in result.region_results[0].error
+
+
+def test_combo_allows_low_reset_after_occlusion():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100", "100", "4", "4"])
+    session = AnalysisSession(bus, ocr)
+    session.set_required_consecutive_frames(2)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    for frame_index in range(4):
+        session.process_frame(_frame(), frame_index, frame_index * 33)
+
+    assert session.tracker_for(region).accepted_value == 4
+    assert [event.payload["new_value"] for event in bus.events] == [100, 4]
+
+
+def test_split_frame_processing_keeps_arrow_and_numeric_regions_separate():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100"])
+    session = AnalysisSession(bus, ocr)
+    score = _score_region()
+    arrow = Region(
+        label="P1 Up", player="P1", kind="arrow",
+        x=50, y=0, w=20, h=20, direction="Up",
+    )
+    session.set_regions([score, arrow])
+    session.start()
+
+    arrow_result = session.process_arrow_frame(_frame(), 0, 0)
+    numeric_result = session.process_numeric_frame(_frame(), 0, 0)
+
+    assert [result.region.kind for result in arrow_result.region_results] == ["arrow"]
+    assert [result.region.kind for result in numeric_result.region_results] == ["score"]

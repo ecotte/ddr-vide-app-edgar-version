@@ -227,13 +227,16 @@ def classify_arrow_state(
     best_state = None
     best_score = 0.0
     for state_name in ("hit", "miss"):
-        ref = reference_images.get(state_name)
-        if ref is None:
+        references = reference_images.get(state_name, [])
+        if not isinstance(references, (list, tuple)):
+            references = [references]
+        if not references:
             continue
-        score = image_utils.similarity(crop_bgr, ref)
-        if score > best_score:
-            best_score = score
-            best_state = state_name
+        for reference in references:
+            score = image_utils.similarity(crop_bgr, reference)
+            if score > best_score:
+                best_score = score
+                best_state = state_name
 
     if best_state is not None and best_score >= threshold:
         return best_state, best_score

@@ -101,6 +101,63 @@ class OcrEngine:
         confidence = min(confidences) if confidences else None
         return OcrResult(raw_text=text, confidence=confidence, error=None)
 
+    def recognize_score_digits(self, crop_bgr: np.ndarray) -> OcrResult:
+        """Read a fixed-width score while excluding short punctuation glyphs."""
+        self.ensure_ready()
+        if self._init_error is not None:
+            return OcrResult(raw_text="", confidence=None, error=self._init_error)
+        if crop_bgr is None or crop_bgr.size == 0:
+            return OcrResult(
+                raw_text="",
+                confidence=None,
+                error="Empty crop (region out of frame bounds?)",
+            )
+
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+        _, _, stats, _ = cv2.connectedComponentsWithStats(binary)
+        crop_h, crop_w = gray.shape[:2]
+        boxes = []
+        for x, y, w, h, _ in sorted(stats[1:], key=lambda stat: stat[0]):
+            if (
+                h >= max(8, round(crop_h * 0.35))
+                and w >= 3
+                and w <= crop_w * 0.2
+                and y < crop_h * 0.5
+            ):
+                boxes.append([
+                    max(0, int(x) - 4),
+                    min(crop_w, int(x + w) + 4),
+                    max(0, int(y) - 4),
+                    min(crop_h, int(y + h) + 4),
+                ])
+
+        if not boxes or len(boxes) > config.FIELD_MAX_DIGITS["score"]:
+            return OcrResult(raw_text="", confidence=None, error=None)
+
+        try:
+            detections = self._reader.recognize(
+                gray,
+                horizontal_list=boxes,
+                free_list=[],
+                decoder="beamsearch",
+                batch_size=len(boxes),
+                allowlist=config.OCR_DIGIT_ALLOWLIST,
+                detail=1,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI, not crashed
+            return OcrResult(raw_text="", confidence=None, error=f"OCR error: {exc}")
+
+        if len(detections) != len(boxes) or any(not detection[1] for detection in detections):
+            return OcrResult(raw_text="", confidence=None, error=None)
+        text = "".join(detection[1] for detection in detections)
+        confidences = [float(detection[2]) for detection in detections]
+        return OcrResult(
+            raw_text=text,
+            confidence=min(confidences) if confidences else None,
+            error=None,
+        )
+
 
 def _preprocess_for_ocr(crop_bgr: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
