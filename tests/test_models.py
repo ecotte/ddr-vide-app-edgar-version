@@ -42,6 +42,17 @@ def test_legacy_single_reference_is_upgraded_to_a_list():
     assert restored.reference_images == {"hit": ["legacy-image"]}
 
 
+def test_score_digit_templates_round_trip():
+    region = Region(
+        label="Score", player="P1", kind="score", x=1, y=2, w=3, h=4,
+        digit_templates={"9": ["template-a", "template-b"]},
+    )
+
+    restored = Region.from_dict(region.to_dict())
+
+    assert restored.digit_templates == {"9": ["template-a", "template-b"]}
+
+
 def test_numeric_region_round_trip_defaults_direction_to_none():
     r = Region(label="Score", player="P1", kind="score", x=0, y=0, w=10, h=10)
     restored = Region.from_dict(r.to_dict())

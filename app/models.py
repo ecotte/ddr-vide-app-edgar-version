@@ -36,6 +36,7 @@ class Region:
     h: int
     direction: Optional[str] = None  # only for kind == "arrow"
     reference_images: Dict[str, List[str]] = field(default_factory=dict)
+    digit_templates: Dict[str, List[str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         normalized = {}
@@ -47,6 +48,15 @@ class Region:
             else:
                 raise ValueError(f"Reference images for '{state}' must be a string or list of strings.")
         self.reference_images = normalized
+        normalized_templates = {}
+        for digit, images in self.digit_templates.items():
+            if isinstance(images, str):
+                normalized_templates[digit] = [images]
+            elif isinstance(images, list) and all(isinstance(image, str) for image in images):
+                normalized_templates[digit] = list(images)
+            else:
+                raise ValueError(f"Digit templates for '{digit}' must be a string or list of strings.")
+        self.digit_templates = normalized_templates
 
     def key(self) -> str:
         """Stable identity for this region used to key recognition trackers."""
@@ -67,6 +77,9 @@ class Region:
             "reference_images": {
                 state: list(images) for state, images in self.reference_images.items()
             },
+            "digit_templates": {
+                digit: list(images) for digit, images in self.digit_templates.items()
+            },
         }
 
     @staticmethod
@@ -81,6 +94,7 @@ class Region:
             h=int(d["h"]),
             direction=d.get("direction"),
             reference_images=dict(d.get("reference_images", {})),
+            digit_templates=dict(d.get("digit_templates", {})),
         )
 
 

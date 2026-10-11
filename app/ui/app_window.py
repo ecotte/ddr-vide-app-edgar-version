@@ -48,6 +48,12 @@ class App(tk.Tk):
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
         self._dropped_analysis_frames = 0
+        self._calibration_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="score-calibration"
+        )
+        self._calibration_future: Optional[Future] = None
+        self._calibration_poll_after_id: Optional[str] = None
+        self._calibration_attempted_keys = set()
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -102,6 +108,7 @@ class App(tk.Tk):
         if self.video_source is not None:
             self.video_source.close()
         self.video_source = new_source
+        self._calibration_attempted_keys = set()
 
         # A new video is a new session: reset everything recognition-related.
         self._analysis_generation += 1
@@ -122,6 +129,7 @@ class App(tk.Tk):
             messagebox.showerror("Empty video", "Could not read any frames from this video.")
             return
         self._process_and_update(frame, idx, new_source.video_time_ms_for_frame(idx), is_seek=False)
+        self._start_score_template_calibration()
 
     def step_forward(self) -> None:
         if self.video_source is None or self.is_playing:
@@ -233,19 +241,33 @@ class App(tk.Tk):
 
         arrow_result = self.analysis.process_arrow_frame(frame_bgr, frame_index, video_time_ms)
         self._apply_analysis_result(arrow_result, skipped_frames=0)
+        score_result = self.analysis.process_fast_score_frame(
+            frame_bgr, frame_index, video_time_ms
+        )
+        self._apply_analysis_result(score_result, skipped_frames=0)
         self._submit_numeric_analysis(frame_bgr, frame_index, video_time_ms)
 
     def _submit_numeric_analysis(self, frame_bgr, frame_index: int, video_time_ms: int) -> None:
         if not self.analysis.is_running:
             return
-        if not any(region.kind != "arrow" for region in self.regions):
+        if not any(
+            region.kind == "combo"
+            or (
+                region.kind == "score"
+                and not self.analysis.has_complete_score_templates(region)
+            )
+            for region in self.regions
+        ):
             return
         if self._analysis_future is not None:
             self._dropped_analysis_frames += 1
             return
         self._analysis_future_generation = self._analysis_generation
         self._analysis_future = self._analysis_executor.submit(
-            self.analysis.process_numeric_frame, frame_bgr, frame_index, video_time_ms
+            self.analysis.process_background_numeric_frame,
+            frame_bgr,
+            frame_index,
+            video_time_ms,
         )
         self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
 
@@ -371,6 +393,8 @@ class App(tk.Tk):
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
+        if region.kind == "score":
+            self._start_score_template_calibration()
 
     def delete_region(self, index: int) -> None:
         if 0 <= index < len(self.regions):
@@ -486,6 +510,130 @@ class App(tk.Tk):
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
         self._refresh_arrow_reference_thumbnails()
+        self._start_score_template_calibration()
+
+    def _start_score_template_calibration(self) -> None:
+        if self.video_source is None or self._calibration_future is not None:
+            return
+        region = next(
+            (
+                candidate
+                for candidate in self.regions
+                if candidate.kind == "score"
+                and not self.analysis.has_complete_score_templates(candidate)
+                and candidate.key() not in self._calibration_attempted_keys
+            ),
+            None,
+        )
+        if region is None:
+            return
+        self.video_tab.set_processing_status(
+            f"Calibrating fast score digits for {region.label} in the background..."
+        )
+        self._calibration_attempted_keys.add(region.key())
+        self._calibration_future = self._calibration_executor.submit(
+            self._calibrate_score_region,
+            self.video_source.path,
+            self.video_source.frame_count,
+            region,
+        )
+        self._calibration_poll_after_id = self.after(
+            100, self._poll_score_template_calibration
+        )
+
+    def _calibrate_score_region(self, video_path: str, frame_count: int, region: Region):
+        templates = {}
+        for digit, encoded_images in region.digit_templates.items():
+            decoded = []
+            for encoded in encoded_images:
+                image = image_utils.decode_base64_png_to_crop(encoded)
+                if image is not None:
+                    decoded.append(image[:, :, 0] if image.ndim == 3 else image)
+            if decoded:
+                templates[digit] = decoded
+
+        capture = cv2.VideoCapture(video_path)
+        if not capture.isOpened():
+            raise IOError(f"Could not open video for score calibration: {video_path}")
+        try:
+            sample_count = min(120, max(frame_count, 1))
+            for sample_index in range(sample_count):
+                frame_index = (
+                    0
+                    if sample_count == 1
+                    else round(sample_index * (frame_count - 1) / (sample_count - 1))
+                )
+                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+                ok, frame = capture.read()
+                if not ok:
+                    continue
+                frame_h, frame_w = frame.shape[:2]
+                x0, y0 = max(0, region.x), max(0, region.y)
+                x1 = min(region.x + region.w, frame_w)
+                y1 = min(region.y + region.h, frame_h)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                for digit, glyph in self.ocr_engine.learn_score_templates(
+                    frame[y0:y1, x0:x1]
+                ):
+                    examples = templates.setdefault(digit, [])
+                    if len(examples) >= 3:
+                        continue
+                    if any(
+                        float(cv2.absdiff(glyph, example).mean()) < 3.0
+                        for example in examples
+                    ):
+                        continue
+                    examples.append(glyph)
+                if all(len(templates.get(digit, [])) >= 3 for digit in "0123456789"):
+                    break
+        finally:
+            capture.release()
+        return region.key(), templates
+
+    def _poll_score_template_calibration(self) -> None:
+        self._calibration_poll_after_id = None
+        future = self._calibration_future
+        if future is None:
+            return
+        if not future.done():
+            self._calibration_poll_after_id = self.after(
+                100, self._poll_score_template_calibration
+            )
+            return
+        self._calibration_future = None
+        try:
+            region_key, templates = future.result()
+        except Exception as exc:  # noqa: BLE001 - worker failures must be visible
+            self.video_tab.set_error_status(f"Score calibration error: {exc}")
+            return
+
+        region = next((item for item in self.regions if item.key() == region_key), None)
+        if region is None:
+            return
+        region.digit_templates = {
+            digit: [
+                image_utils.encode_crop_to_base64_png(template)
+                for template in examples
+            ]
+            for digit, examples in templates.items()
+        }
+        self._analysis_generation += 1
+        self.analysis.set_regions(self.regions)
+        learned_digits = sum(
+            1 for digit in "0123456789"
+            if len(region.digit_templates.get(digit, [])) >= 3
+        )
+        if learned_digits == 10:
+            self.video_tab.set_processing_status(
+                f"Fast score calibration ready for {region.label}. "
+                "Save the layout to keep these templates."
+            )
+        else:
+            self.video_tab.set_error_status(
+                f"Score calibration learned {learned_digits}/10 digits for {region.label}."
+            )
+        self._start_score_template_calibration()
 
     def load_layout(self, name: str) -> None:
         self._apply_loaded_profile(
@@ -566,6 +714,10 @@ class App(tk.Tk):
             self.after_cancel(self._analysis_poll_after_id)
             self._analysis_poll_after_id = None
         self._analysis_executor.shutdown(wait=False, cancel_futures=True)
+        if self._calibration_poll_after_id is not None:
+            self.after_cancel(self._calibration_poll_after_id)
+            self._calibration_poll_after_id = None
+        self._calibration_executor.shutdown(wait=False, cancel_futures=True)
         if self.video_source is not None:
             self.video_source.close()
         self.destroy()

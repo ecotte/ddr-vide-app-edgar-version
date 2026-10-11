@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from app.analysis import AnalysisSession
+from app.analysis import AnalysisSession, _has_complete_score_templates
 from app.event_bus import EventBus
 from app.models import Region
 from app.ocr_engine import OcrEngine, OcrResult
@@ -95,6 +95,18 @@ def test_false_high_initial_combo_is_replaced_before_baseline_is_accepted():
 
     assert session.tracker_for(region).accepted_value == 11
     assert [event.payload["new_value"] for event in bus.events] == [11]
+
+
+def test_fast_score_templates_require_three_examples_of_every_digit():
+    complete = {
+        digit: [np.zeros((2, 2), dtype=np.uint8) for _ in range(3)]
+        for digit in "0123456789"
+    }
+    incomplete = {digit: list(examples) for digit, examples in complete.items()}
+    incomplete["6"] = incomplete["6"][:2]
+
+    assert _has_complete_score_templates(complete) is True
+    assert _has_complete_score_templates(incomplete) is False
 
 
 def test_score_never_accepts_or_emits_a_decreasing_value():

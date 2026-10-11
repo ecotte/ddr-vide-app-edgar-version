@@ -148,6 +148,9 @@ def rescale_profile(profile: LayoutProfile, new_width: int, new_height: int) -> 
                 h=region_height,
                 direction=r.direction,
                 reference_images=rescaled_refs,
+                digit_templates={
+                    digit: list(images) for digit, images in r.digit_templates.items()
+                },
             )
         )
     return LayoutProfile(
