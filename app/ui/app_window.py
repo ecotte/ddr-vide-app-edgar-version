@@ -43,12 +43,14 @@ class App(tk.Tk):
         self._playback_started_at = 0.0
         self._playback_start_frame = 0
         self._last_frame_bgr = None  # last displayed frame; used for arrow reference capture
+        self._last_frame_position: Optional[tuple[int, int]] = None
         self._analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
         self._analysis_future: Optional[Future] = None
         self._analysis_future_generation = 0
         self._analysis_frame_index = -1
         self._analysis_is_confirmation = False
         self._confirmation_frame = None
+        self._final_numeric_frame = None
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
         self._dropped_analysis_frames = 0
@@ -110,8 +112,11 @@ class App(tk.Tk):
         # A new video is a new session: reset everything recognition-related.
         self._analysis_generation += 1
         self.analysis.stop()
-        self.event_bus.new_session()
-        self.analysis.reset_tracking()
+        self.analysis.new_session()
+        self._confirmation_frame = None
+        self._final_numeric_frame = None
+        self._last_frame_position = None
+        self._last_frame_bgr = None
         self.events_tab.clear()
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
@@ -133,6 +138,7 @@ class App(tk.Tk):
             return
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
+            self._flush_final_numeric_frame()
             messagebox.showinfo("End of video", "No more frames.")
             return
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
@@ -212,6 +218,7 @@ class App(tk.Tk):
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
             self._stop_playing()
+            self._flush_final_numeric_frame()
             self.video_tab.set_error_status("Reached end of video.")
             return
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
@@ -233,6 +240,7 @@ class App(tk.Tk):
             self.analysis.reset_tracking()
 
         self._last_frame_bgr = frame_bgr  # available for arrow reference capture regardless of analysis state
+        self._last_frame_position = (frame_index, video_time_ms)
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
 
@@ -274,8 +282,30 @@ class App(tk.Tk):
             frame_bgr,
             frame_index,
             video_time_ms,
+            expected_session_id=self.event_bus.session_id,
+            expected_generation=self.analysis.generation,
         )
         self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
+
+    def _flush_final_numeric_frame(self) -> None:
+        if not self.analysis.is_running or self._last_frame_position is None:
+            return
+        index, timestamp = self._last_frame_position
+        self._final_numeric_frame = (
+            self._last_frame_bgr, index, timestamp, self._analysis_generation,
+        )
+        self._submit_final_numeric_analysis()
+
+    def _submit_final_numeric_analysis(self) -> None:
+        if self._analysis_future is not None or self._final_numeric_frame is None:
+            return
+        frame, index, timestamp, generation = self._final_numeric_frame
+        self._final_numeric_frame = None
+        if generation != self._analysis_generation:
+            return
+        if self._analysis_future_generation == generation and index <= self._analysis_frame_index:
+            return
+        self._submit_numeric_analysis(frame, index, timestamp, confirmation=True)
 
     def _poll_analysis_result(self) -> None:
         self._analysis_poll_after_id = None
@@ -303,6 +333,7 @@ class App(tk.Tk):
             self._submit_numeric_analysis(
                 frame, index, timestamp, confirmation=generation == completed_generation,
             )
+        self._submit_final_numeric_analysis()
 
     def _apply_analysis_result(
         self, result, skipped_frames: int
@@ -632,8 +663,9 @@ class App(tk.Tk):
 
     def new_session(self) -> None:
         self._analysis_generation += 1
-        self.event_bus.new_session()
-        self.analysis.reset_tracking()
+        self.analysis.new_session()
+        self._confirmation_frame = None
+        self._final_numeric_frame = None
         self.events_tab.clear()
         self.video_tab.set_error_status("")
         self.video_tab.set_processing_status("New session started - recognition state reset.")

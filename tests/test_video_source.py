@@ -119,3 +119,21 @@ def test_skip_to_frame_drops_preview_frames_without_reporting_user_seek(small_vi
         assert is_seek is False
     finally:
         src.close()
+
+
+def test_preview_skip_preserves_pending_explicit_seek(small_video):
+    path, _ = small_video
+    src = VideoSource(path)
+    try:
+        src.read_next()
+        src.seek_to_frame(0)
+        src.skip_to_frame(2)
+        frame, idx, is_seek = src.read_next()
+        assert frame is not None
+        assert idx == 2
+        assert is_seek is True
+        _, idx, is_seek = src.read_next()
+        assert idx == 3
+        assert is_seek is False
+    finally:
+        src.close()

@@ -68,7 +68,6 @@ class VideoSource:
         )
         self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
         self._next_read_index = frame_index
-        self._pending_seek = False
         self._last_frame_index = frame_index - 1
 
     def current_frame_index(self) -> int:

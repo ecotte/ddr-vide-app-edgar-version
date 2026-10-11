@@ -141,6 +141,9 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 - **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
 
 **Both:**
+- **New Session waits for in-flight numeric analysis before resetting events and tracking.** The old frame finishes under its original session, then its events are cleared. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
+- **End of video flushes the final displayed numeric frame.** It is retained separately from the confirmation neighbor, processed after that pair if needed, and never submitted twice. This guarantees an analysis attempt, not successful OCR or acceptance.
+- **Preview frame skipping preserves explicit seeks.** Restarting playback from EOF still resets recognition even when a delayed preview skips the first few frames.
 - **Every accepted change emits exactly one event**, not one per frame it stays on screen.
 - **Recognition state is reset** whenever you seek/jump in the video, load a different video, edit the region list, capture/clear an arrow reference, or click New Session - never carried over incorrectly across a discontinuity.
 - **Confidence numbers** (OCR confidence, or arrow similarity score) are shown as-is from the underlying measurement and are not a calibrated accuracy probability.

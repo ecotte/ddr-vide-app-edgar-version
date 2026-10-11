@@ -10,8 +10,9 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+import cv2
 
-from app.ocr_engine import OcrEngine, _select_numeric_group
+from app.ocr_engine import OcrEngine, _extract_score_glyphs, _select_numeric_group, score_templates_from_label
 
 
 def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
@@ -103,3 +104,24 @@ def test_template_match_accepts_distinct_digit(monkeypatch):
 
     assert result.raw_text == "0"
     assert result.error is None
+
+
+@pytest.mark.parametrize("text", ["6", "65", "123", "1234"])
+def test_tightly_cropped_short_scores_are_segmented_and_recognized(text):
+    image = np.zeros((50, 200, 3), dtype=np.uint8)
+    cv2.putText(image, text, (5, 37), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    x, y, w, h = cv2.boundingRect(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY))
+    crop = image[y - 4:y + h + 4, x - 4:x + w + 4]
+    _, boxes, glyphs = _extract_score_glyphs(crop)
+    assert len(boxes) == len(glyphs) == len(text)
+    assert "".join(digit for digit, _ in score_templates_from_label(crop, text)) == text
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [
+        _detection(box[0], box[1], digit, 0.99)
+        for box, digit in zip(boxes, text)
+    ]
+    result = engine.recognize_score_digits(crop)
+    assert result.raw_text == text
+    assert result.error is None
+    assert engine._reader.recognize.call_args.kwargs["horizontal_list"] == boxes

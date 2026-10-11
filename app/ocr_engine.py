@@ -227,7 +227,7 @@ def _extract_score_glyphs(
     candidates = [
         stat for stat in stats[1:]
         if stat[3] >= 8
-        and 3 <= stat[2] <= min(crop_w * 0.2, stat[3] * 1.5)
+        and 3 <= stat[2] <= stat[3] * 1.5
     ]
     rows = [
         [

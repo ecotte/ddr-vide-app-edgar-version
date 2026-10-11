@@ -63,6 +63,7 @@ class AnalysisSession:
         self._numeric_evidence: Dict[str, tuple[int, int, int]] = {}
         self._last_numeric_frame: Dict[str, tuple[int, int]] = {}
         self._last_observed_score: Dict[str, int] = {}
+        self._generation = 0
         self._score_lock = threading.RLock()
         self._combo_lock = threading.RLock()
         self._arrow_lock = threading.RLock()
@@ -73,6 +74,10 @@ class AnalysisSession:
         self.recording_enabled = True
 
     # -- configuration -------------------------------------------------
+    @property
+    def generation(self) -> int:
+        return self._generation
+
     def set_regions(self, regions: List[Region]) -> None:
         """Replace the active region set. Always resets tracking state,
         since previous trackers no longer correspond 1:1 to new regions.
@@ -81,6 +86,7 @@ class AnalysisSession:
         so calling this again after capturing a new reference picks it up.
         """
         with self._score_lock, self._combo_lock, self._arrow_lock:
+            self._generation += 1
             self.regions = list(regions)
             self._trackers = {}
             self._arrow_references = {}
@@ -126,6 +132,7 @@ class AnalysisSession:
     def reset_tracking(self) -> None:
         """Call on seek / new video load / new session."""
         with self._score_lock, self._combo_lock, self._arrow_lock:
+            self._generation += 1
             for tracker in self._trackers.values():
                 tracker.reset()
             self._last_numeric_accept_time_ms = {}
@@ -133,12 +140,19 @@ class AnalysisSession:
             self._last_numeric_frame = {}
             self._last_observed_score = {}
 
+    def new_session(self) -> None:
+        """Drain active analysis before resetting its session and tracking."""
+        with self._score_lock, self._combo_lock, self._arrow_lock:
+            self.event_bus.new_session()
+            self.reset_tracking()
+
     def start(self) -> None:
         with self._score_lock, self._combo_lock, self._arrow_lock:
             self.is_running = True
 
     def stop(self) -> None:
         with self._score_lock, self._combo_lock, self._arrow_lock:
+            self._generation += 1
             self.is_running = False
 
     def tracker_for(self, region: Region) -> Tracker:
@@ -181,6 +195,7 @@ class AnalysisSession:
                 decoded[digit] = images
             self._score_templates[region.key()] = decoded
             self._numeric_evidence.pop(region.key(), None)
+            self._generation += 1
 
     # -- per-frame processing -------------------------------------------
     def process_frame(
@@ -203,10 +218,16 @@ class AnalysisSession:
             return self._process_frame(frame, frame_index, video_time_ms, regions)
 
     def process_background_numeric_frame(
-        self, frame: np.ndarray, frame_index: int, video_time_ms: int
+        self, frame: np.ndarray, frame_index: int, video_time_ms: int,
+        *, expected_session_id: Optional[str] = None,
+        expected_generation: Optional[int] = None,
     ) -> Optional[FrameAnalysisResult]:
-        results = []
-        with self._score_lock:
+        session_id = expected_session_id if expected_session_id is not None else self.event_bus.session_id
+        generation = expected_generation if expected_generation is not None else self._generation
+        with self._score_lock, self._combo_lock:
+            if session_id != self.event_bus.session_id or generation != self._generation:
+                return None
+            results = []
             score_regions = [
                 region
                 for region in self.regions
@@ -217,14 +238,13 @@ class AnalysisSession:
             )
             if score_result is not None:
                 results.append(score_result)
-        with self._combo_lock:
             combo_regions = [region for region in self.regions if region.kind == "combo"]
             combo_result = self._process_frame(
                 frame, frame_index, video_time_ms, combo_regions
             )
             if combo_result is not None:
                 results.append(combo_result)
-        return _merge_frame_results(results)
+            return _merge_frame_results(results)
 
     def process_fast_score_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
