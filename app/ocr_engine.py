@@ -14,6 +14,7 @@ app.recognition.
 """
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass
 from typing import List, Optional
@@ -61,6 +62,9 @@ class OcrEngine:
                 return
             try:
                 import easyocr  # imported lazily: heavy import (torch)
+                import torch
+
+                torch.set_num_threads(1)
                 self._reader = easyocr.Reader(config.OCR_LANGUAGES, gpu=False, verbose=False)
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 self._init_error = (
@@ -94,10 +98,9 @@ class OcrEngine:
         if not detections:
             return OcrResult(raw_text="", confidence=None, error=None)
 
-        # Sort left-to-right so multi-blob digit strings read in order.
-        detections.sort(key=lambda d: min(pt[0] for pt in d[0]))
-        text = "".join(d[1] for d in detections)
-        confidences: List[float] = [float(d[2]) for d in detections if len(d) > 2]
+        selected = _select_numeric_group(detections, processed.shape[1])
+        text = "".join(_longest_digit_run(d[1]) for d in selected)
+        confidences: List[float] = [float(d[2]) for d in selected if len(d) > 2]
         confidence = min(confidences) if confidences else None
         return OcrResult(raw_text=text, confidence=confidence, error=None)
 
@@ -166,3 +169,46 @@ def _preprocess_for_ocr(crop_bgr: np.ndarray) -> np.ndarray:
     if scale != 1:
         gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
     return gray
+
+
+def _longest_digit_run(text: str) -> str:
+    runs = re.findall(r"\d+", text)
+    return max(runs, key=len, default="")
+
+
+def _select_numeric_group(detections: list, image_width: int) -> list:
+    numeric = [d for d in detections if _longest_digit_run(d[1])]
+    if not numeric:
+        return []
+    numeric.sort(key=lambda d: min(point[0] for point in d[0]))
+
+    groups = [[numeric[0]]]
+    for detection in numeric[1:]:
+        previous = groups[-1][-1]
+        previous_right = max(point[0] for point in previous[0])
+        current_left = min(point[0] for point in detection[0])
+        previous_height = max(point[1] for point in previous[0]) - min(
+            point[1] for point in previous[0]
+        )
+        current_height = max(point[1] for point in detection[0]) - min(
+            point[1] for point in detection[0]
+        )
+        max_internal_gap = max(4.0, min(previous_height, current_height) * 0.6)
+        if current_left - previous_right <= max_internal_gap:
+            groups[-1].append(detection)
+        else:
+            groups.append([detection])
+
+    image_center = image_width / 2
+
+    def group_rank(group):
+        left = min(min(point[0] for point in detection[0]) for detection in group)
+        right = max(max(point[0] for point in detection[0]) for detection in group)
+        digit_count = sum(len(_longest_digit_run(detection[1])) for detection in group)
+        confidence = min(
+            (float(detection[2]) for detection in group if len(detection) > 2),
+            default=0.0,
+        )
+        return digit_count, confidence, -abs(((left + right) / 2) - image_center)
+
+    return max(groups, key=group_rank)
