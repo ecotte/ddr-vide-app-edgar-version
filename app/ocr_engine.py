@@ -137,45 +137,23 @@ class OcrEngine:
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI, not crashed
             return OcrResult(raw_text="", confidence=None, error=f"OCR error: {exc}")
 
+        text = "".join(detection[1] for detection in detections)
+        confidences = [float(detection[2]) for detection in detections]
+        confidence = min(confidences) if confidences else None
         if len(detections) != len(boxes) or any(
-            not _first_digit(detection[1]) for detection in detections
-        ):
-            return OcrResult(raw_text="", confidence=None, error=None)
-        text = "".join(_first_digit(detection[1]) for detection in detections)
-        confidences = [
-            1.0 if len(_longest_digit_run(detection[1])) > 1 else float(detection[2])
+            len(detection[1]) != 1 or detection[1] not in config.OCR_DIGIT_ALLOWLIST
             for detection in detections
-        ]
+        ):
+            return OcrResult(
+                raw_text=text,
+                confidence=confidence,
+                error="Ambiguous score glyph: expected exactly one digit per box.",
+            )
         return OcrResult(
             raw_text=text,
-            confidence=min(confidences) if confidences else None,
+            confidence=confidence,
             error=None,
         )
-
-    def learn_score_templates(self, crop_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
-        self.ensure_ready()
-        if self._init_error is not None or crop_bgr is None or crop_bgr.size == 0:
-            return []
-        gray, boxes, glyphs = _extract_score_glyphs(crop_bgr)
-        if not boxes:
-            return []
-        with self._recognition_lock:
-            detections = self._reader.recognize(
-                gray,
-                horizontal_list=boxes,
-                free_list=[],
-                decoder="beamsearch",
-                batch_size=len(boxes),
-                allowlist=config.OCR_DIGIT_ALLOWLIST,
-                detail=1,
-            )
-        learned = []
-        for detection, glyph in zip(detections, glyphs):
-            run = _longest_digit_run(detection[1])
-            confidence = float(detection[2])
-            if len(run) == 1 and confidence >= config.SCORE_TEMPLATE_LEARN_CONFIDENCE:
-                learned.append((run, glyph))
-        return learned
 
     def recognize_score_from_templates(
         self,
@@ -194,28 +172,33 @@ class OcrEngine:
 
         digits = []
         confidences = []
+        ambiguous = False
         for glyph in glyphs:
-            best_digit = None
-            best_score = 0.0
+            ranked = []
             for digit, examples in templates.items():
-                scores = [
-                    1.0 - float(
-                        np.mean(cv2.absdiff(glyph, example))
-                    ) / 255.0
-                    for example in examples
-                ]
-                score = float(np.median(scores))
-                if score > best_score:
-                    best_digit = digit
-                    best_score = score
-            if best_digit is None or best_score < 0.72:
-                return OcrResult(raw_text="", confidence=best_score, error=None)
+                if not examples:
+                    continue
+                score = max(_score_glyph_similarity(glyph, example) for example in examples)
+                ranked.append((score, digit))
+            ranked.sort(reverse=True)
+            if len(ranked) < 2:
+                return OcrResult(
+                    raw_text="", confidence=None,
+                    error="Score templates need at least two digit classes to assess ambiguity.",
+                )
+            best_score, best_digit = ranked[0]
+            if best_score < 0.72 or best_score - ranked[1][0] < 0.02:
+                ambiguous = True
             digits.append(best_digit)
             confidences.append(best_score)
         return OcrResult(
             raw_text="".join(digits),
             confidence=min(confidences),
-            error=None,
+            error=(
+                "Ambiguous score templates: digit matches are too close or too weak; "
+                "reading rejected."
+                if ambiguous else None
+            ),
         )
 
 
@@ -233,35 +216,64 @@ def _longest_digit_run(text: str) -> str:
     return max(runs, key=len, default="")
 
 
-def _first_digit(text: str) -> str:
-    run = _longest_digit_run(text)
-    return run[0] if run else ""
-
-
 def _extract_score_glyphs(
     crop_bgr: np.ndarray,
 ) -> tuple[np.ndarray, list[list[int]], list[np.ndarray]]:
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY)
+    # This HUD dims leading zeroes below 100. Keep them for spatial alignment.
+    _, binary = cv2.threshold(gray, 32, 255, cv2.THRESH_BINARY)
     _, _, stats, _ = cv2.connectedComponentsWithStats(binary)
     crop_h, crop_w = gray.shape[:2]
+    candidates = [
+        stat for stat in stats[1:]
+        if stat[3] >= 8
+        and 3 <= stat[2] <= min(crop_w * 0.2, stat[3] * 1.5)
+    ]
+    rows = [
+        [
+            other for other in candidates
+            if abs(int(other[3]) - int(anchor[3])) <= anchor[3] * 0.2
+            and abs(int(other[1] + other[3]) - int(anchor[1] + anchor[3])) <= anchor[3] * 0.2
+        ]
+        for anchor in candidates
+    ]
+    row = max(rows, key=len, default=[])
     boxes = []
     glyphs = []
-    for x, y, w, h, _ in sorted(stats[1:], key=lambda stat: stat[0]):
-        if (
-            h >= max(8, round(crop_h * 0.35))
-            and w >= 3
-            and w <= crop_w * 0.2
-            and y < crop_h * 0.5
-        ):
-            boxes.append([
-                max(0, int(x) - 4),
-                min(crop_w, int(x + w) + 4),
-                max(0, int(y) - 4),
-                min(crop_h, int(y + h) + 4),
-            ])
-            glyphs.append(_normalize_score_glyph(binary[y:y + h, x:x + w]))
+    for x, y, w, h, _ in sorted(row, key=lambda stat: stat[0]):
+        boxes.append([
+            max(0, int(x) - 4),
+            min(crop_w, int(x + w) + 4),
+            max(0, int(y) - 4),
+            min(crop_h, int(y + h) + 4),
+        ])
+        ink = gray[y:y + h, x:x + w]
+        # The low detection threshold finds dim zeroes but also JPEG shadows.
+        # Normalize contrast per digit, then trim shadows before fitting.
+        _, ink = cv2.threshold(ink, float(ink.max()) * 0.4, 255, cv2.THRESH_BINARY)
+        left, top, width, height = cv2.boundingRect(ink)
+        glyphs.append(_normalize_score_glyph(ink[top:top + height, left:left + width]))
     return gray, boxes, glyphs
+
+
+def score_templates_from_label(
+    crop_bgr: np.ndarray, score: str,
+) -> list[tuple[str, np.ndarray]]:
+    text = score.strip()
+    if not re.fullmatch(r"[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+", text):
+        raise ValueError("Enter digits only, optionally with thousands separators.")
+    digits = text.replace(",", "")
+    if crop_bgr is None or crop_bgr.size == 0:
+        raise ValueError("No score image is available. Display a clear score frame first.")
+    _, _, glyphs = _extract_score_glyphs(crop_bgr)
+    if not glyphs:
+        raise ValueError("No digit shapes found. Try a clearer frame or a tighter score region.")
+    if len(digits) != len(glyphs):
+        raise ValueError(
+            f"Found {len(glyphs)} digit shapes, but the entered score has {len(digits)} digits. "
+            "Include visible leading zeros, or choose a clearer frame/tighter region."
+        )
+    return list(zip(digits, glyphs))
 
 
 def _normalize_score_glyph(glyph: np.ndarray) -> np.ndarray:
@@ -278,6 +290,15 @@ def _normalize_score_glyph(glyph: np.ndarray) -> np.ndarray:
     y = (target_h - resized_h) // 2
     canvas[y:y + resized_h, x:x + resized_w] = resized
     return canvas
+
+
+def _score_glyph_similarity(glyph: np.ndarray, example: np.ndarray) -> float:
+    foreground = glyph > 0
+    reference = example > 0
+    union = np.count_nonzero(foreground | reference)
+    if union == 0:
+        return 1.0
+    return float(np.count_nonzero(foreground & reference) / union)
 
 
 def _select_numeric_group(detections: list, image_width: int) -> list:

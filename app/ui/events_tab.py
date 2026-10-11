@@ -1,4 +1,4 @@
-"""Events table: recorded score_changed / combo_changed events."""
+"""Events table for unconfirmed observations and confirmed numeric/arrow events."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -51,7 +51,7 @@ class EventsTab(ttk.Frame):
             "event_type": 120,
             "player": 60,
             "field": 70,
-            "detail": 160,
+            "detail": 220,
             "video_time_ms": 120,
             "observed_at_utc": 190,
         }
@@ -83,6 +83,8 @@ class EventsTab(ttk.Frame):
     @staticmethod
     def _format_detail(event) -> str:
         payload = event.payload
+        if event.event_type == "score_observed":
+            return f"UNCONFIRMED: {payload.get('observed_value')}"
         if "previous_value" in payload or "new_value" in payload:
             prev = payload.get("previous_value")
             new = payload.get("new_value")

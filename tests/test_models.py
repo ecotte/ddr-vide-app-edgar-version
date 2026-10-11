@@ -46,11 +46,22 @@ def test_score_digit_templates_round_trip():
     region = Region(
         label="Score", player="P1", kind="score", x=1, y=2, w=3, h=4,
         digit_templates={"9": ["template-a", "template-b"]},
+        digit_templates_reviewed=True,
     )
 
     restored = Region.from_dict(region.to_dict())
 
     assert restored.digit_templates == {"9": ["template-a", "template-b"]}
+    assert restored.digit_templates_reviewed is True
+
+
+def test_old_layout_templates_are_not_automatically_trusted():
+    data = Region(
+        label="Score", player="P1", kind="score", x=0, y=0, w=10, h=10,
+        digit_templates={"9": ["old-automatic-example"]},
+    ).to_dict()
+    del data["digit_templates_reviewed"]
+    assert Region.from_dict(data).digit_templates_reviewed is False
 
 
 def test_numeric_region_round_trip_defaults_direction_to_none():

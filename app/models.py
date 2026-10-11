@@ -37,6 +37,8 @@ class Region:
     direction: Optional[str] = None  # only for kind == "arrow"
     reference_images: Dict[str, List[str]] = field(default_factory=dict)
     digit_templates: Dict[str, List[str]] = field(default_factory=dict)
+    digit_templates_reviewed: bool = False
+    score_template_version: int = 0
 
     def __post_init__(self) -> None:
         normalized = {}
@@ -80,6 +82,8 @@ class Region:
             "digit_templates": {
                 digit: list(images) for digit, images in self.digit_templates.items()
             },
+            "digit_templates_reviewed": self.digit_templates_reviewed,
+            "score_template_version": self.score_template_version,
         }
 
     @staticmethod
@@ -95,6 +99,8 @@ class Region:
             direction=d.get("direction"),
             reference_images=dict(d.get("reference_images", {})),
             digit_templates=dict(d.get("digit_templates", {})),
+            digit_templates_reviewed=d.get("digit_templates_reviewed") is True,
+            score_template_version=int(d.get("score_template_version", 0)),
         )
 
 

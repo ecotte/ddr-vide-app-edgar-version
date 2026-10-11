@@ -36,6 +36,7 @@ class RegionFrameResult:
     raw_text: str = ""
     confidence: Optional[float] = None  # OCR confidence, or arrow similarity score
     error: Optional[str] = None         # OCR error, or an arrow calibration/crop note
+    validation_note: Optional[str] = None  # numeric reading pending or rejected by acceptance rules
     candidate_value: Optional[int] = None  # score/combo only
     accepted_value: Optional[int] = None   # score/combo only
     arrow_state: Optional[str] = None      # arrow only: "hit" / "miss" / "idle"
@@ -59,8 +60,9 @@ class AnalysisSession:
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._score_templates: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
-        self._pending_combo_start: Dict[str, tuple[int, int]] = {}
-        self._score_candidate_evidence: Dict[str, Dict[int, tuple[int, int]]] = {}
+        self._numeric_evidence: Dict[str, tuple[int, int, int]] = {}
+        self._last_numeric_frame: Dict[str, tuple[int, int]] = {}
+        self._last_observed_score: Dict[str, int] = {}
         self._score_lock = threading.RLock()
         self._combo_lock = threading.RLock()
         self._arrow_lock = threading.RLock()
@@ -84,8 +86,9 @@ class AnalysisSession:
             self._arrow_references = {}
             self._score_templates = {}
             self._last_numeric_accept_time_ms = {}
-            self._pending_combo_start = {}
-            self._score_candidate_evidence = {}
+            self._numeric_evidence = {}
+            self._last_numeric_frame = {}
+            self._last_observed_score = {}
             for r in self.regions:
                 if r.kind == "arrow":
                     self._trackers[r.key()] = ArrowStateTracker(self.arrow_min_confirm_frames)
@@ -100,29 +103,14 @@ class AnalysisSession:
                             decoded[state] = images
                     self._arrow_references[r.key()] = decoded
                 else:
-                    self._trackers[r.key()] = TemporalValueTracker(self.required_consecutive_frames)
+                    self._trackers[r.key()] = TemporalValueTracker(1)
                     if r.kind == "score":
-                        decoded_templates = {}
-                        for digit, encoded_images in r.digit_templates.items():
-                            images = []
-                            for encoded in encoded_images:
-                                image = image_utils.decode_base64_png_to_crop(encoded)
-                                if image is not None:
-                                    images.append(
-                                        image
-                                        if image.ndim == 2
-                                        else image[:, :, 0]
-                                    )
-                            if images:
-                                decoded_templates[digit] = images
-                        self._score_templates[r.key()] = decoded_templates
+                        self.update_score_templates(r)
 
     def set_required_consecutive_frames(self, n: int) -> None:
         with self._score_lock, self._combo_lock:
             self.required_consecutive_frames = n
-            for tracker in self._trackers.values():
-                if isinstance(tracker, TemporalValueTracker):
-                    tracker.required_consecutive_frames = n
+            self._numeric_evidence.clear()
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         with self._arrow_lock:
@@ -141,8 +129,9 @@ class AnalysisSession:
             for tracker in self._trackers.values():
                 tracker.reset()
             self._last_numeric_accept_time_ms = {}
-            self._pending_combo_start = {}
-            self._score_candidate_evidence = {}
+            self._numeric_evidence = {}
+            self._last_numeric_frame = {}
+            self._last_observed_score = {}
 
     def start(self) -> None:
         with self._score_lock, self._combo_lock, self._arrow_lock:
@@ -164,9 +153,34 @@ class AnalysisSession:
 
     def has_complete_score_templates(self, region: Region) -> bool:
         with self._score_lock:
-            return _has_complete_score_templates(
-                self._score_templates.get(region.key(), {})
+            return self.uses_score_templates(region) and _has_complete_score_templates(
+                self._score_templates.get(region.key(), {}), min_examples=1
             )
+
+    def uses_score_templates(self, region: Region) -> bool:
+        with self._score_lock:
+            return (
+                region.digit_templates_reviewed
+                and region.score_template_version == config.SCORE_TEMPLATE_VERSION
+                and any(
+                    self._score_templates.get(region.key(), {}).values()
+                )
+            )
+
+    def update_score_templates(self, region: Region) -> None:
+        """Refresh calibration without resetting accepted values or event history."""
+        with self._score_lock:
+            decoded = {}
+            for digit, examples in region.digit_templates.items():
+                images = []
+                for encoded in examples:
+                    image = image_utils.decode_base64_png_to_crop(encoded)
+                    if image is None or image.shape[:2] != (32, 24):
+                        raise ValueError(f"Invalid score template for digit {digit}.")
+                    images.append(image[:, :, 0])
+                decoded[digit] = images
+            self._score_templates[region.key()] = decoded
+            self._numeric_evidence.pop(region.key(), None)
 
     # -- per-frame processing -------------------------------------------
     def process_frame(
@@ -197,7 +211,6 @@ class AnalysisSession:
                 region
                 for region in self.regions
                 if region.kind == "score"
-                and not self.has_complete_score_templates(region)
             ]
             score_result = self._process_frame(
                 frame, frame_index, video_time_ms, score_regions
@@ -216,14 +229,9 @@ class AnalysisSession:
     def process_fast_score_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
     ) -> Optional[FrameAnalysisResult]:
+        """Numeric events require background OCR, never template-only guesses."""
         with self._score_lock:
-            regions = [
-                region
-                for region in self.regions
-                if region.kind == "score"
-                and self.has_complete_score_templates(region)
-            ]
-            return self._process_frame(frame, frame_index, video_time_ms, regions)
+            return self._process_frame(frame, frame_index, video_time_ms, [])
 
     def process_arrow_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
@@ -252,11 +260,11 @@ class AnalysisSession:
             crop = _safe_crop(frame, region, frame_w, frame_h)
             if region.kind == "arrow":
                 result, event = self._process_arrow_region(region, crop, frame_index, video_time_ms)
+                events = [event] if event is not None else []
             else:
-                result, event = self._process_numeric_region(region, crop, frame_index, video_time_ms)
+                result, events = self._process_numeric_region(region, crop, frame_index, video_time_ms)
             region_results.append(result)
-            if event is not None:
-                new_events.append(event)
+            new_events.extend(events)
 
         processing_ms = (time.perf_counter() - start_time) * 1000.0
         return FrameAnalysisResult(
@@ -265,62 +273,53 @@ class AnalysisSession:
 
     def _process_numeric_region(self, region, crop, frame_index, video_time_ms):
         tracker: TemporalValueTracker = self._trackers[region.key()]
+        previous_frame = self._last_numeric_frame.get(region.key())
+        if previous_frame is not None and (
+            frame_index <= previous_frame[0] or video_time_ms <= previous_frame[1]
+        ):
+            return RegionFrameResult(
+                region=region, accepted_value=tracker.accepted_value, crop=crop,
+                validation_note="Waiting for a new video frame; repeated frames cannot confirm a value.",
+            ), []
+        self._last_numeric_frame[region.key()] = (frame_index, video_time_ms)
+        template_verified = False
         if region.kind == "score":
             templates = self._score_templates.get(region.key(), {})
-            using_score_templates = _has_complete_score_templates(templates)
-            if using_score_templates:
-                ocr_result = self.ocr_engine.recognize_score_from_templates(
-                    crop, templates
+            ocr_result = self.ocr_engine.recognize_score_digits(crop)
+            if self.uses_score_templates(region) and ocr_result.error is None:
+                template_result = self.ocr_engine.recognize_score_from_templates(crop, templates)
+                template_verified = (
+                    template_result.error is None
+                    and parse_digits(template_result.raw_text) is not None
+                    and parse_digits(template_result.raw_text) == parse_digits(ocr_result.raw_text)
                 )
-            else:
-                ocr_result = self.ocr_engine.recognize_score_digits(crop)
         else:
             ocr_result = self.ocr_engine.recognize_digits(crop)
         max_digits = config.FIELD_MAX_DIGITS.get(region.kind)
         candidate = None
+        parsed_candidate = None
         validation_error = None
         if ocr_result.error is None:
             candidate = parse_digits(ocr_result.raw_text, max_digits=max_digits)
+            parsed_candidate = candidate
             if (
-                region.kind == "score"
-                and candidate is not None
+                candidate is not None
                 and (
                     ocr_result.confidence is None
-                    or ocr_result.confidence < config.SCORE_EVIDENCE_MIN_CONFIDENCE
+                    or (
+                        ocr_result.confidence < (
+                            config.COMBO_MIN_CONFIDENCE if region.kind == "combo"
+                            else config.SCORE_EVIDENCE_MIN_CONFIDENCE
+                        )
+                        and not template_verified
+                    )
                 )
             ):
                 validation_error = (
-                    f"Ignored low-confidence score reading {candidate}; "
-                    "keeping the previous accepted score."
+                    f"Ignored low-confidence {region.kind} reading {candidate}; "
+                    "keeping the previous accepted value."
                 )
                 candidate = None
-            if (
-                region.kind == "score"
-                and candidate is not None
-                and not using_score_templates
-                and ocr_result.confidence < config.SCORE_DIRECT_ACCEPT_CONFIDENCE
-            ):
-                evidence = self._score_candidate_evidence.setdefault(region.key(), {})
-                stale_values = [
-                    value
-                    for value, (_, last_seen_ms) in evidence.items()
-                    if video_time_ms - last_seen_ms > config.SCORE_EVIDENCE_WINDOW_MS
-                ]
-                for value in stale_values:
-                    del evidence[value]
-                count, _ = evidence.get(candidate, (0, video_time_ms))
-                count += 1
-                evidence[candidate] = (count, video_time_ms)
-                if count < config.SCORE_EVIDENCE_REQUIRED_SAMPLES:
-                    validation_error = (
-                        f"Waiting for repeated evidence for score {candidate} "
-                        f"({count}/{config.SCORE_EVIDENCE_REQUIRED_SAMPLES})."
-                    )
-                    candidate = None
-                else:
-                    self._score_candidate_evidence[region.key()] = {}
-            elif region.kind == "score" and candidate is not None:
-                self._score_candidate_evidence[region.key()] = {}
             if (
                 region.kind == "score"
                 and candidate is not None
@@ -332,43 +331,6 @@ class AnalysisSession:
                     f"keeping {tracker.accepted_value}."
                 )
                 candidate = None
-            if (
-                region.kind == "combo"
-                and candidate is not None
-                and tracker.accepted_value is None
-                and tracker.required_consecutive_frames == 1
-            ):
-                pending_start = self._pending_combo_start.get(region.key())
-                if pending_start is None:
-                    self._pending_combo_start[region.key()] = (candidate, video_time_ms)
-                    validation_error = (
-                        f"Waiting for a second plausible combo reading after {candidate}."
-                    )
-                    candidate = None
-                else:
-                    pending_value, pending_time_ms = pending_start
-                    elapsed_ms = max(0, video_time_ms - pending_time_ms)
-                    max_increase = max(
-                        config.COMBO_MIN_ALLOWED_INCREASE,
-                        math.ceil(
-                            elapsed_ms * config.COMBO_MAX_INCREASE_PER_SECOND / 1000
-                        ),
-                    )
-                    if candidate < pending_value:
-                        self._pending_combo_start[region.key()] = (candidate, video_time_ms)
-                        validation_error = (
-                            f"Replaced tentative combo {pending_value} with lower reading "
-                            f"{candidate}; waiting for confirmation."
-                        )
-                        candidate = None
-                    elif candidate > pending_value + max_increase:
-                        validation_error = (
-                            f"Ignored implausible tentative combo jump from "
-                            f"{pending_value} to {candidate}."
-                        )
-                        candidate = None
-                    else:
-                        del self._pending_combo_start[region.key()]
             if region.kind == "combo" and candidate is not None and tracker.accepted_value is not None:
                 previous_time_ms = self._last_numeric_accept_time_ms.get(region.key(), video_time_ms)
                 elapsed_ms = max(0, video_time_ms - previous_time_ms)
@@ -385,7 +347,61 @@ class AnalysisSession:
                     )
                     candidate = None
 
-        event = None
+        if candidate is None:
+            self._numeric_evidence.pop(region.key(), None)
+        elif candidate == tracker.accepted_value:
+            self._numeric_evidence.pop(region.key(), None)
+        else:
+            direct_threshold = (
+                config.COMBO_MIN_CONFIDENCE if region.kind == "combo"
+                else config.SCORE_DIRECT_ACCEPT_CONFIDENCE
+            )
+            high_confidence_reading = ocr_result.confidence >= direct_threshold
+            required = max(
+                self.required_consecutive_frames,
+                1 if high_confidence_reading else config.NUMERIC_CONFIRMATION_SAMPLES,
+            )
+            previous_value, count, first_time = self._numeric_evidence.get(
+                region.key(), (candidate, 0, video_time_ms)
+            )
+            if previous_value != candidate or video_time_ms - first_time > config.NUMERIC_CONFIRMATION_WINDOW_MS:
+                count, first_time = 0, video_time_ms
+            count += 1
+            self._numeric_evidence[region.key()] = (candidate, count, first_time)
+            if count < required:
+                validation_error = (
+                    f"Waiting for repeated evidence for {region.kind} {candidate} "
+                    f"({count}/{required})."
+                )
+                candidate = None
+            else:
+                self._numeric_evidence.pop(region.key(), None)
+
+        events = []
+        if (
+            region.kind == "score" and parsed_candidate is not None
+            and self.recording_enabled
+            and self._last_observed_score.get(region.key()) != parsed_candidate
+        ):
+            observation = self.event_bus.make_event(
+                event_type=config.SCORE_OBSERVED_EVENT_TYPE,
+                payload={
+                    "field": "score",
+                    "region_label": region.label,
+                    "observed_value": parsed_candidate,
+                    "raw_text": ocr_result.raw_text,
+                    "confirmed": False,
+                    "accepted_value": tracker.accepted_value,
+                    "validation_note": validation_error,
+                },
+                frame_index=frame_index,
+                video_time_ms=video_time_ms,
+                player=None if region.player == "Unknown" else region.player,
+                confidence=ocr_result.confidence,
+            )
+            self.event_bus.record(observation)
+            events.append(observation)
+            self._last_observed_score[region.key()] = parsed_candidate
         change = tracker.observe(candidate)
         if change is not None:
             self._last_numeric_accept_time_ms[region.key()] = video_time_ms
@@ -407,18 +423,20 @@ class AnalysisSession:
                 confidence=ocr_result.confidence,
             )
             self.event_bus.record(event)
+            events.append(event)
 
         result = RegionFrameResult(
             region=region,
             raw_text=ocr_result.raw_text,
             confidence=ocr_result.confidence,
-            error=ocr_result.error or validation_error,
-            candidate_value=candidate,
+            error=ocr_result.error,
+            validation_note=validation_error,
+            candidate_value=parsed_candidate,
             accepted_value=tracker.accepted_value,
-            is_unreadable=candidate is None,
+            is_unreadable=parsed_candidate is None,
             crop=crop,
         )
-        return result, event
+        return result, events
 
     def _process_arrow_region(self, region, crop, frame_index, video_time_ms):
         tracker: ArrowStateTracker = self._trackers[region.key()]
@@ -499,5 +517,7 @@ def _merge_frame_results(results: List[FrameAnalysisResult]) -> Optional[FrameAn
     )
 
 
-def _has_complete_score_templates(templates: Dict[str, List[np.ndarray]]) -> bool:
-    return all(len(templates.get(digit, [])) >= 3 for digit in "0123456789")
+def _has_complete_score_templates(
+    templates: Dict[str, List[np.ndarray]], min_examples: int = 3,
+) -> bool:
+    return all(len(templates.get(digit, [])) >= min_examples for digit in "0123456789")

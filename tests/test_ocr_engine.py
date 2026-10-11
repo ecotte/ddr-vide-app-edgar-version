@@ -6,7 +6,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.ocr_engine import _first_digit, _select_numeric_group
+from unittest.mock import Mock
+
+import numpy as np
+import pytest
+
+from app.ocr_engine import OcrEngine, _select_numeric_group
 
 
 def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
@@ -49,5 +54,52 @@ def test_numeric_group_prefers_higher_confidence_when_lengths_tie():
     assert [detection[1] for detection in selected] == ["34"]
 
 
-def test_single_score_glyph_uses_only_first_digit_from_duplicated_reading():
-    assert _first_digit("68") == "6"
+@pytest.mark.parametrize("text", ["68", "", "x"])
+def test_ambiguous_score_glyph_is_rejected_without_fabricating_confidence(monkeypatch, text):
+    crop = np.zeros((32, 24, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        "app.ocr_engine._extract_score_glyphs",
+        lambda _: (crop[:, :, 0], [[0, 24, 0, 32]], [crop[:, :, 0]]),
+    )
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 24, text, 0.2)]
+
+    result = engine.recognize_score_digits(crop)
+
+    assert result.raw_text == text
+    assert result.confidence == 0.2
+    assert "expected exactly one digit" in result.error
+
+
+def test_template_match_rejects_nearly_tied_digits(monkeypatch):
+    glyph = np.full((32, 24), 255, dtype=np.uint8)
+    other = glyph.copy()
+    other[0, 0] = 0
+    monkeypatch.setattr(
+        "app.ocr_engine._extract_score_glyphs",
+        lambda _: (glyph, [[0, 24, 0, 32]], [glyph]),
+    )
+    result = OcrEngine().recognize_score_from_templates(
+        np.zeros((32, 24, 3), dtype=np.uint8),
+        {"0": [glyph] * 3, "6": [other] * 3},
+    )
+
+    assert result.confidence == 1.0
+    assert result.raw_text == "0"
+    assert "Ambiguous score templates" in result.error
+
+
+def test_template_match_accepts_distinct_digit(monkeypatch):
+    glyph = np.zeros((32, 24), dtype=np.uint8)
+    monkeypatch.setattr(
+        "app.ocr_engine._extract_score_glyphs",
+        lambda _: (glyph, [[0, 24, 0, 32]], [glyph]),
+    )
+    result = OcrEngine().recognize_score_from_templates(
+        np.zeros((32, 24, 3), dtype=np.uint8),
+        {"0": [glyph] * 3, "6": [np.full_like(glyph, 255)] * 3},
+    )
+
+    assert result.raw_text == "0"
+    assert result.error is None

@@ -356,6 +356,10 @@ class VideoTab(ttk.Frame):
         ttk.Label(row, textvariable=candidate_var).grid(row=2, column=1, sticky="w")
         ttk.Label(row, textvariable=accepted_var).grid(row=3, column=1, sticky="w")
         ttk.Label(row, textvariable=status_var).grid(row=4, column=1, sticky="w")
+        if r.kind == "score":
+            ttk.Button(
+                row, text="Teach score...", command=lambda reg=r: self.controller.teach_score(reg),
+            ).grid(row=5, column=1, sticky="w", pady=(4, 0))
         self._region_rows[r.key()] = {
             "kind": "numeric",
             "thumb_label": thumb_label,
