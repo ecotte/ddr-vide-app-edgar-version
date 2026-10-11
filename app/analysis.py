@@ -329,9 +329,7 @@ class AnalysisSession:
 
 
 def _is_plausible_combo_change(previous: int, candidate: int, max_increase: int) -> bool:
-    if candidate >= previous:
-        return candidate - previous <= max_increase
-    return candidate <= config.COMBO_RESET_MAX_VALUE
+    return previous <= candidate <= previous + max_increase
 
 
 def _safe_crop(frame: np.ndarray, region: Region, frame_w: int, frame_h: int) -> np.ndarray:

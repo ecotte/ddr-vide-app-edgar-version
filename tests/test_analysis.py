@@ -213,7 +213,7 @@ def test_combo_rejects_large_overlay_jump_and_keeps_accepted_value():
     assert "Ignored implausible combo reading" in result.region_results[0].error
 
 
-def test_combo_allows_low_reset_after_occlusion():
+def test_combo_rejects_decrease_after_occlusion():
     bus = EventBus()
     ocr = FakeOcrEngine(["100", "100", "4", "4"])
     session = AnalysisSession(bus, ocr)
@@ -225,8 +225,8 @@ def test_combo_allows_low_reset_after_occlusion():
     for frame_index in range(4):
         session.process_frame(_frame(), frame_index, frame_index * 33)
 
-    assert session.tracker_for(region).accepted_value == 4
-    assert [event.payload["new_value"] for event in bus.events] == [100, 4]
+    assert session.tracker_for(region).accepted_value == 100
+    assert [event.payload["new_value"] for event in bus.events] == [100]
 
 
 def test_split_frame_processing_keeps_arrow_and_numeric_regions_separate():

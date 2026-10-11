@@ -40,10 +40,9 @@ SCORE_MIN_GLYPH_CONFIDENCE = 0.90
 
 # Combo digits may be completely hidden by passing arrows. OCR output from
 # those frames must not replace a previously trusted combo with an impossible
-# jump. Genuine combo resets become visible again at a low value.
+# jump or any lower value.
 COMBO_MIN_ALLOWED_INCREASE = 10
 COMBO_MAX_INCREASE_PER_SECOND = 60
-COMBO_RESET_MAX_VALUE = 30
 
 # Recognized region "kinds" for milestone 1+. Each numeric kind maps to an
 # event type; "arrow" is handled separately (see ARROW_EVENT_TYPES below).

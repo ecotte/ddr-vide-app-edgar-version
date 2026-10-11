@@ -27,7 +27,7 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 - For `arrow` regions: let you capture multiple "Hit" and/or "Miss" example snapshots directly from the video (pause on a frame that clearly shows that state, click "Add Hit ref"/"Add Miss ref"), then compare every later frame's crop against all those examples using generic image similarity - never a built-in assumption about what a hit or miss looks like for your skin.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo (a value is only "accepted" after N consecutive matching frames) and a separate edge-triggered debouncer for arrows (a hit/miss flash is reported once per pulse, since it's often brief rather than steady) - see section 6.
-- Reject implausible combo jumps caused by arrows completely obscuring the combo digits, retaining the last accepted combo until a plausible value becomes visible again.
+- Reject combo decreases and implausible jumps caused by arrows completely obscuring the combo digits, retaining the last accepted combo until a plausible higher value becomes visible again.
 - Record `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` events in a table, with recording on/off and clear-table controls.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 
@@ -123,6 +123,7 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 **Score / combo:**
 - **An unreadable frame never becomes zero.** If OCR can't read a region on a given frame (blocked, blank, format doesn't look like digits), the previously accepted value is simply kept until a new value is confirmed. You'll see "unreadable this frame (previous accepted value kept)" in the panel.
 - **Accepted scores never decrease.** Score OCR segments fixed-height digit glyphs so commas and other short punctuation are excluded, rejects low-confidence transition frames, and retains the previous score whenever a lower reading appears.
+- **Accepted combos never decrease.** Lower readings and implausibly large jumps are treated as arrow occlusion or OCR noise, so they do not replace the accepted combo or emit events.
 - **A value only becomes "accepted" (and only then emits an event) after N analyzed samples agree**, where N is the "Consistency frames" setting. The default is 1 because background OCR samples frames while score and combo can change rapidly. Raising N rejects more transient OCR errors but can prevent events entirely when each sampled frame contains a newer value. Combo readings also have a separate plausibility check that rejects unrealistic jumps caused by arrows obscuring the digits.
 - **Important limitation the temporal filter cannot fix:** if OCR is *consistently* wrong for the same digits (a stable misread, not a one-frame glitch), the consistency filter will still "accept" that wrong value, because it only rejects readings that fail to repeat - it cannot know the true value. See section 7 for a real example of this happening. This is why the app always shows you the raw OCR text next to the accepted value, so you can visually sanity-check it.
 
