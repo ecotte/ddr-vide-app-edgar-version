@@ -21,15 +21,16 @@ from app.ocr_engine import OcrEngine, OcrResult
 class FakeOcrEngine(OcrEngine):
     """Returns canned text per call instead of running real OCR."""
 
-    def __init__(self, script):
+    def __init__(self, script, confidence=0.9):
         super().__init__()
         self._script = list(script)  # list of raw text strings to return, in order
         self._i = 0
+        self._confidence = confidence
 
     def recognize_digits(self, crop_bgr):
         text = self._script[min(self._i, len(self._script) - 1)]
         self._i += 1
-        return OcrResult(raw_text=text, confidence=0.9, error=None)
+        return OcrResult(raw_text=text, confidence=self._confidence, error=None)
 
     def recognize_score_digits(self, crop_bgr):
         return self.recognize_digits(crop_bgr)
@@ -111,6 +112,38 @@ def test_score_never_accepts_or_emits_a_decreasing_value():
     assert rejected.region_results[0].accepted_value == 100
     assert rejected.region_results[0].is_unreadable is True
     assert "Ignored decreasing score reading" in rejected.region_results[0].error
+
+
+def test_lower_confidence_score_requires_repeated_evidence():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["999650", "999650"], confidence=0.54))
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    first = session.process_numeric_frame(_frame(), 0, 1000)
+    session.process_numeric_frame(_frame(), 1, 1200)
+
+    assert first.region_results[0].accepted_value is None
+    assert "Waiting for repeated evidence" in first.region_results[0].error
+    assert session.tracker_for(region).accepted_value == 999650
+    assert [event.payload["new_value"] for event in bus.events] == [999650]
+
+
+def test_single_lower_confidence_transition_error_is_not_accepted():
+    bus = EventBus()
+    session = AnalysisSession(
+        bus, FakeOcrEngine(["997580", "999622", "999650", "999650"], confidence=0.54)
+    )
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    for frame_index, time_ms in enumerate((1000, 1200, 1400, 1600)):
+        session.process_numeric_frame(_frame(), frame_index, time_ms)
+
+    assert session.tracker_for(region).accepted_value == 999650
+    assert [event.payload["new_value"] for event in bus.events] == [999650]
 
 
 def test_genuine_change_emits_exactly_one_event():

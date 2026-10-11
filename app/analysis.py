@@ -59,6 +59,7 @@ class AnalysisSession:
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
         self._pending_combo_start: Dict[str, tuple[int, int]] = {}
+        self._score_candidate_evidence: Dict[str, Dict[int, tuple[int, int]]] = {}
         self._numeric_lock = threading.RLock()
         self._arrow_lock = threading.RLock()
         self.required_consecutive_frames = config.DEFAULT_REQUIRED_CONSECUTIVE_FRAMES
@@ -81,6 +82,7 @@ class AnalysisSession:
             self._arrow_references = {}
             self._last_numeric_accept_time_ms = {}
             self._pending_combo_start = {}
+            self._score_candidate_evidence = {}
             for r in self.regions:
                 if r.kind == "arrow":
                     self._trackers[r.key()] = ArrowStateTracker(self.arrow_min_confirm_frames)
@@ -122,6 +124,7 @@ class AnalysisSession:
                 tracker.reset()
             self._last_numeric_accept_time_ms = {}
             self._pending_combo_start = {}
+            self._score_candidate_evidence = {}
 
     def start(self) -> None:
         with self._numeric_lock, self._arrow_lock:
@@ -210,7 +213,7 @@ class AnalysisSession:
                 and candidate is not None
                 and (
                     ocr_result.confidence is None
-                    or ocr_result.confidence < config.SCORE_MIN_GLYPH_CONFIDENCE
+                    or ocr_result.confidence < config.SCORE_EVIDENCE_MIN_CONFIDENCE
                 )
             ):
                 validation_error = (
@@ -218,6 +221,32 @@ class AnalysisSession:
                     "keeping the previous accepted score."
                 )
                 candidate = None
+            if (
+                region.kind == "score"
+                and candidate is not None
+                and ocr_result.confidence < config.SCORE_DIRECT_ACCEPT_CONFIDENCE
+            ):
+                evidence = self._score_candidate_evidence.setdefault(region.key(), {})
+                stale_values = [
+                    value
+                    for value, (_, last_seen_ms) in evidence.items()
+                    if video_time_ms - last_seen_ms > config.SCORE_EVIDENCE_WINDOW_MS
+                ]
+                for value in stale_values:
+                    del evidence[value]
+                count, _ = evidence.get(candidate, (0, video_time_ms))
+                count += 1
+                evidence[candidate] = (count, video_time_ms)
+                if count < config.SCORE_EVIDENCE_REQUIRED_SAMPLES:
+                    validation_error = (
+                        f"Waiting for repeated evidence for score {candidate} "
+                        f"({count}/{config.SCORE_EVIDENCE_REQUIRED_SAMPLES})."
+                    )
+                    candidate = None
+                else:
+                    self._score_candidate_evidence[region.key()] = {}
+            elif region.kind == "score" and candidate is not None:
+                self._score_candidate_evidence[region.key()] = {}
             if (
                 region.kind == "score"
                 and candidate is not None

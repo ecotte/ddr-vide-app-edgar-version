@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.ocr_engine import _select_numeric_group
+from app.ocr_engine import _first_digit, _select_numeric_group
 
 
 def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
@@ -47,3 +47,7 @@ def test_numeric_group_prefers_higher_confidence_when_lengths_tie():
     selected = _select_numeric_group(detections, image_width=100)
 
     assert [detection[1] for detection in selected] == ["34"]
+
+
+def test_single_score_glyph_uses_only_first_digit_from_duplicated_reading():
+    assert _first_digit("68") == "6"

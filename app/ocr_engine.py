@@ -151,10 +151,15 @@ class OcrEngine:
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI, not crashed
             return OcrResult(raw_text="", confidence=None, error=f"OCR error: {exc}")
 
-        if len(detections) != len(boxes) or any(not detection[1] for detection in detections):
+        if len(detections) != len(boxes) or any(
+            not _first_digit(detection[1]) for detection in detections
+        ):
             return OcrResult(raw_text="", confidence=None, error=None)
-        text = "".join(detection[1] for detection in detections)
-        confidences = [float(detection[2]) for detection in detections]
+        text = "".join(_first_digit(detection[1]) for detection in detections)
+        confidences = [
+            1.0 if len(_longest_digit_run(detection[1])) > 1 else float(detection[2])
+            for detection in detections
+        ]
         return OcrResult(
             raw_text=text,
             confidence=min(confidences) if confidences else None,
@@ -174,6 +179,11 @@ def _preprocess_for_ocr(crop_bgr: np.ndarray) -> np.ndarray:
 def _longest_digit_run(text: str) -> str:
     runs = re.findall(r"\d+", text)
     return max(runs, key=len, default="")
+
+
+def _first_digit(text: str) -> str:
+    run = _longest_digit_run(text)
+    return run[0] if run else ""
 
 
 def _select_numeric_group(detections: list, image_width: int) -> list:
