@@ -244,6 +244,8 @@ class VideoTab(ttk.Frame):
         status_box.pack(fill="x", pady=(6, 0))
         self.ocr_status_var = tk.StringVar(value="OCR engine: not loaded yet")
         ttk.Label(status_box, textvariable=self.ocr_status_var).pack(anchor="w")
+        self.calibration_status_var = tk.StringVar(value="Score calibration: not started")
+        ttk.Label(status_box, textvariable=self.calibration_status_var).pack(anchor="w")
         self.processing_status_var = tk.StringVar(value="")
         ttk.Label(status_box, textvariable=self.processing_status_var).pack(anchor="w")
         self.error_status_var = tk.StringVar(value="")
@@ -297,6 +299,9 @@ class VideoTab(ttk.Frame):
 
     def set_processing_status(self, text: str) -> None:
         self.processing_status_var.set(text)
+
+    def set_calibration_status(self, text: str) -> None:
+        self.calibration_status_var.set(text)
 
     def set_error_status(self, text: str) -> None:
         self.error_status_var.set(text)

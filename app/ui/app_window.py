@@ -527,8 +527,8 @@ class App(tk.Tk):
         )
         if region is None:
             return
-        self.video_tab.set_processing_status(
-            f"Calibrating fast score digits for {region.label} in the background..."
+        self.video_tab.set_calibration_status(
+            f"Score calibration: learning digits for {region.label}..."
         )
         self._calibration_attempted_keys.add(region.key())
         self._calibration_future = self._calibration_executor.submit(
@@ -605,7 +605,9 @@ class App(tk.Tk):
         try:
             region_key, templates = future.result()
         except Exception as exc:  # noqa: BLE001 - worker failures must be visible
-            self.video_tab.set_error_status(f"Score calibration error: {exc}")
+            self.video_tab.set_calibration_status(
+                f"Score calibration: FAILED - {exc}"
+            )
             return
 
         region = next((item for item in self.regions if item.key() == region_key), None)
@@ -625,13 +627,14 @@ class App(tk.Tk):
             if len(region.digit_templates.get(digit, [])) >= 3
         )
         if learned_digits == 10:
-            self.video_tab.set_processing_status(
-                f"Fast score calibration ready for {region.label}. "
+            self.video_tab.set_calibration_status(
+                f"Score calibration: ready for {region.label}. "
                 "Save the layout to keep these templates."
             )
         else:
-            self.video_tab.set_error_status(
-                f"Score calibration learned {learned_digits}/10 digits for {region.label}."
+            self.video_tab.set_calibration_status(
+                f"Score calibration: learned {learned_digits}/10 digits for "
+                f"{region.label}; fast mode is not ready."
             )
         self._start_score_template_calibration()
 

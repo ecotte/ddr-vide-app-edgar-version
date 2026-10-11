@@ -297,10 +297,8 @@ class AnalysisSession:
             if (
                 region.kind == "score"
                 and candidate is not None
-                and (
-                    using_score_templates
-                    or ocr_result.confidence < config.SCORE_DIRECT_ACCEPT_CONFIDENCE
-                )
+                and not using_score_templates
+                and ocr_result.confidence < config.SCORE_DIRECT_ACCEPT_CONFIDENCE
             ):
                 evidence = self._score_candidate_evidence.setdefault(region.key(), {})
                 stale_values = [

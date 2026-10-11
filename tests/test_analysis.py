@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
+from app import image_utils
 from app.analysis import AnalysisSession, _has_complete_score_templates
 from app.event_bus import EventBus
 from app.models import Region
@@ -33,6 +34,9 @@ class FakeOcrEngine(OcrEngine):
         return OcrResult(raw_text=text, confidence=self._confidence, error=None)
 
     def recognize_score_digits(self, crop_bgr):
+        return self.recognize_digits(crop_bgr)
+
+    def recognize_score_from_templates(self, crop_bgr, templates):
         return self.recognize_digits(crop_bgr)
 
 
@@ -107,6 +111,25 @@ def test_fast_score_templates_require_three_examples_of_every_digit():
 
     assert _has_complete_score_templates(complete) is True
     assert _has_complete_score_templates(incomplete) is False
+
+
+def test_fast_template_score_changes_are_accepted_immediately():
+    encoded = image_utils.encode_crop_to_base64_png(
+        np.zeros((32, 24), dtype=np.uint8)
+    )
+    region = _score_region()
+    region.digit_templates = {
+        digit: [encoded, encoded, encoded] for digit in "0123456789"
+    }
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100", "200"]))
+    session.set_regions([region])
+    session.start()
+
+    session.process_fast_score_frame(_frame(), 0, 0)
+    session.process_fast_score_frame(_frame(), 1, 33)
+
+    assert [event.payload["new_value"] for event in bus.events] == [100, 200]
 
 
 def test_score_never_accepts_or_emits_a_decreasing_value():
