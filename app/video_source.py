@@ -66,8 +66,20 @@ class VideoSource:
             self._next_read_index,
             min(frame_index, max(self.frame_count - 1, 0)),
         )
-        self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-        self._next_read_index = frame_index
+        gap = frame_index - self._next_read_index
+        if gap == 0:
+            return
+        # A codec seek re-decodes from a keyframe; small skips are much cheaper
+        # sequentially, without converting discarded frames to BGR.
+        if gap <= 8:
+            while self._next_read_index < frame_index:
+                if not self._cap.grab():
+                    raise IOError("Could not decode a frame while catching up playback.")
+                self._next_read_index += 1
+        else:
+            if not self._cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index):
+                raise IOError("Could not seek forward while catching up playback.")
+            self._next_read_index = frame_index
         self._last_frame_index = frame_index - 1
 
     def current_frame_index(self) -> int:

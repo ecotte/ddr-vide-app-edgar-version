@@ -9,7 +9,7 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app import config
 from app.models import Event
@@ -28,6 +28,12 @@ class EventBus:
         self._sequence: int = 0
         self._events: List[Event] = []
         self._lock = threading.RLock()
+        self._delivery_sink: Optional[Callable[[Event], None]] = None
+
+    def set_delivery_sink(self, sink: Optional[Callable[[Event], None]]) -> None:
+        """Only future recorded events are forwarded; local history is never replayed."""
+        with self._lock:
+            self._delivery_sink = sink
 
     def new_session(self) -> None:
         with self._lock:
@@ -77,6 +83,8 @@ class EventBus:
         """Append an event to the in-memory recorded list (for table/export)."""
         with self._lock:
             self._events.append(event)
+            if self._delivery_sink is not None:
+                self._delivery_sink(event)
 
     def export_jsonl(self, path: str) -> int:
         """Write all currently recorded events to ``path``, one JSON per line.

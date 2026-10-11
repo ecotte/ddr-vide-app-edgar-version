@@ -67,7 +67,7 @@ def test_no_events_while_analysis_not_started():
     assert bus.events == []
 
 
-@pytest.mark.parametrize("confidence", [0.90, 0.995])
+@pytest.mark.parametrize("confidence", [0.70, 0.80, 0.90, 0.995])
 def test_high_confidence_score_advances_without_repeated_values(confidence):
     bus = EventBus()
     session = AnalysisSession(bus, FakeOcrEngine(["100", "110", "120"], confidence))
@@ -83,7 +83,7 @@ def test_high_confidence_score_advances_without_repeated_values(confidence):
 
 def test_score_just_below_direct_threshold_still_requires_confirmation():
     bus = EventBus()
-    session = AnalysisSession(bus, FakeOcrEngine(["100"], confidence=0.899999))
+    session = AnalysisSession(bus, FakeOcrEngine(["100"], confidence=0.699999))
     session.set_regions([_score_region()])
     session.start()
     first = session.process_numeric_frame(_frame(), 0, 0)

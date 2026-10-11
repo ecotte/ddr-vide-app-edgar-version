@@ -2,19 +2,22 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 import tkinter as tk
 from concurrent.futures import Future, ThreadPoolExecutor
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from typing import Optional
 
 import cv2
 from PIL import Image, ImageTk
 
-from app import config, image_utils, layout_store
+from app import config, credential_store, image_utils, layout_store
+from app.credential_store import CredentialStorageError
 from app.analysis import AnalysisSession, RegionFrameResult
 from app.event_bus import EventBus
+from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
 from app.ocr_engine import OcrEngine
@@ -34,6 +37,9 @@ class App(tk.Tk):
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
+        self.publisher = EventstreamPublisher(os.path.join(config.DATA_DIR, "eventstream-outbox.sqlite3"))
+        self._publishing_enabled = False
+        self._publisher_poll_after_id = None
         self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
 
         self.video_source: Optional[VideoSource] = None
@@ -66,6 +72,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._start_ocr_loading()
+        self._poll_publisher_status()
 
     # ------------------------------------------------------------------
     # OCR engine background loading
@@ -214,7 +221,12 @@ class App(tk.Tk):
                 self._schedule_play_tick(delay)
                 return
             if target_frame > self.video_source.current_frame_index():
-                self.video_source.skip_to_frame(target_frame)
+                try:
+                    self.video_source.skip_to_frame(target_frame)
+                except OSError as exc:
+                    self._stop_playing()
+                    self.video_tab.set_error_status(str(exc))
+                    return
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
             self._stop_playing()
@@ -672,6 +684,95 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     # Events tab support
+    def toggle_publishing(self) -> None:
+        if self._publishing_enabled:
+            self.event_bus.set_delivery_sink(None)
+            self._publishing_enabled = False
+            self.publisher.stop()
+            return
+        connection = os.environ.get("DDR_EVENTSTREAM_CONNECTION_STRING", "")
+        entered_locally = False
+        if not connection:
+            try:
+                connection = credential_store.load_connection()
+            except CredentialStorageError as exc:
+                messagebox.showerror("Fabric credential storage", str(exc))
+                return
+        if not connection:
+            connection = simpledialog.askstring(
+                "Connect to Fabric",
+                "Paste the Event Hub SAS connection string (including EntityPath).\n"
+                "It will be saved in Windows Credential Manager for this Windows user.\n"
+                "Use a rotated, unexposed key. Nothing is saved in source files or Git.\n\n"
+                "Connecting sends queued events and future recorded events, including\n"
+                "unconfirmed score observations. No video or reference images are sent.",
+                show="*", parent=self,
+            )
+            entered_locally = True
+        if not connection:
+            return
+        try:
+            self.publisher.start(connection)
+        except ValueError as exc:
+            messagebox.showerror("Fabric configuration", str(exc))
+            return
+        except (sqlite3.Error, OSError):
+            messagebox.showerror(
+                "Fabric queue unavailable",
+                "Cannot open the local delivery queue. Check free disk space and data-folder permissions.",
+            )
+            return
+        self.event_bus.set_delivery_sink(self.publisher.enqueue)
+        self._publishing_enabled = True
+        if entered_locally:
+            try:
+                credential_store.save_connection(connection.strip())
+            except CredentialStorageError as exc:
+                messagebox.showwarning("Fabric credential not saved", str(exc))
+
+    def forget_fabric_connection(self) -> None:
+        if not messagebox.askyesno(
+            "Forget Fabric connection",
+            "Disconnect publishing and remove the saved Windows credential?\n\n"
+            "Pending events remain queued. An in-flight send may still finish.",
+        ):
+            return
+        self.event_bus.set_delivery_sink(None)
+        self._publishing_enabled = False
+        self.publisher.stop()
+        try:
+            credential_store.forget_connection()
+        except CredentialStorageError as exc:
+            messagebox.showerror("Fabric credential storage", str(exc))
+            return
+        if os.environ.get("DDR_EVENTSTREAM_CONNECTION_STRING"):
+            messagebox.showinfo(
+                "Saved credential removed",
+                "DDR_EVENTSTREAM_CONNECTION_STRING is still set in this process's environment. "
+                "Clear it in your launcher and restart the app to use a different connection.",
+            )
+
+    def _poll_publisher_status(self) -> None:
+        status = self.publisher.status()
+        self.events_tab.set_publishing_status(status.text(), self._publishing_enabled)
+        self._publisher_poll_after_id = self.after(500, self._poll_publisher_status)
+
+    def send_mapping_sample(self) -> None:
+        if not self._publishing_enabled:
+            messagebox.showerror("Fabric disconnected", "Connect to Fabric before sending a sample.")
+            return
+        sample_bus = EventBus(source_mode=config.SOURCE_MODE_SYNTHETIC)
+        sample = sample_bus.make_event(
+            "score_changed",
+            {
+                "field": "score", "region_label": "Mapping sample - not gameplay",
+                "previous_value": 1000, "new_value": 1250, "is_test": True,
+            },
+            60, 1000, player="P1", confidence=0.95,
+        )
+        self.event_bus.record(sample)
+        self.events_tab.append_event(sample)
+
     def set_recording_enabled(self, enabled: bool) -> None:
         self.analysis.recording_enabled = enabled
 
@@ -689,6 +790,11 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
         self._stop_playing()
+        self.analysis.stop()
+        self.event_bus.set_delivery_sink(None)
+        if self._publisher_poll_after_id is not None:
+            self.after_cancel(self._publisher_poll_after_id)
+        self.publisher.close()
         if self._analysis_poll_after_id is not None:
             self.after_cancel(self._analysis_poll_after_id)
             self._analysis_poll_after_id = None

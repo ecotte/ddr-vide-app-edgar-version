@@ -220,15 +220,24 @@ def _extract_score_glyphs(
     crop_bgr: np.ndarray,
 ) -> tuple[np.ndarray, list[list[int]], list[np.ndarray]]:
     gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    # This HUD dims leading zeroes below 100. Keep them for spatial alignment.
-    _, binary = cv2.threshold(gray, 32, 255, cv2.THRESH_BINARY)
-    _, _, stats, _ = cv2.connectedComponentsWithStats(binary)
     crop_h, crop_w = gray.shape[:2]
-    candidates = [
-        stat for stat in stats[1:]
-        if stat[3] >= 8
-        and 3 <= stat[2] <= stat[3] * 1.5
-    ]
+    candidates = []
+    # Keep dim zeroes, then recover bright digits joined to HUD borders by shadows.
+    for threshold in (32, 64, 128):
+        _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+        _, _, stats, _ = cv2.connectedComponentsWithStats(binary)
+        for stat in stats[1:]:
+            x, y, w, h, _ = stat
+            if h < 8 or not 3 <= w <= h * 2:
+                continue
+            duplicate = any(
+                abs(int(other[3]) - int(h)) <= max(other[3], h) * 0.2
+                and abs(int(other[1] + other[3]) - int(y + h)) <= max(other[3], h) * 0.2
+                and max(int(other[0]), int(x)) < min(int(other[0] + other[2]), int(x + w))
+                for other in candidates
+            )
+            if not duplicate:
+                candidates.append(stat)
     rows = [
         [
             other for other in candidates

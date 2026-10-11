@@ -31,12 +31,13 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 - Reject combo decreases and implausible jumps caused by arrows completely obscuring the combo digits, retaining the last accepted combo until a plausible higher value becomes visible again.
 - Record `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` events in a table, with recording on/off and clear-table controls.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
+- Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
 **Does not do (by design, for this milestone):**
 - No live/HDMI capture.
 - No judgment-tier text recognition (e.g. "Marvelous"/"Great"/"Miss" as printed text), life gauge, or "final results" recognition. Arrow hit/miss is detected from the arrow receptor's appearance, not from reading judgment text.
 - No tracking of individual falling notes as they travel down the track - only the fixed receptor region per lane.
-- No network publishing of any kind (Fabric Eventstream comes in a later milestone, disabled by default even then).
+- No automatic network publishing: you must explicitly connect in the Events tab. Player registration and stable player UIDs are not implemented yet.
 - No claim that OCR or arrow-similarity readings are accurate. See section 7 for real numbers measured against a real clip.
 
 ---
@@ -124,8 +125,8 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 **Score / combo:**
 - **Score observations are not confirmed scores.** Each changed, readable OCR score emits `score_observed` immediately when recording is enabled, even while confirmation is pending or the value is rejected by acceptance rules. Its payload includes `observed_value`, original `raw_text`, `confirmed: false`, the previously accepted score, and the validation note; the event retains source frame/time and original OCR confidence. The table explicitly labels it **UNCONFIRMED** and JSONL preserves this distinction. Repeated unchanged observations are deduplicated. Only `score_changed` represents an accepted score; observations do not alter monotonic tracking and may be wrong or decrease.
 - **An unreadable frame never becomes zero.** If OCR can't read a region on a given frame (blocked, blank, format doesn't look like digits), the previously accepted value is simply kept until a new value is confirmed. You'll see "unreadable this frame (previous accepted value kept)" in the panel.
-- **Accepted scores never decrease.** Background OCR reads the score independently of templates. With the default consistency setting, a high-confidence OCR reading (at least 0.90) is accepted immediately without waiting for an identical reading or template agreement. Lower-confidence scores must repeat in at least two distinct, advancing video frames within two seconds. Readings below 0.30 confidence additionally require template agreement; without corroboration they are rejected. Missing confidence is rejected. Reported confidence remains the original OCR measurement. Immediate acceptance reduces lag but can still accept a confidently wrong high number; use **New Session** to reset an incorrect baseline.
-- **Score templates are supporting evidence, not ground truth.** Use **Teach score...** on clear frames and type all displayed digits, including leading zeros (commas are allowed). Check the preview's labels before Learn. Extraction retains dim zeros, selects a consistent digit row, and normalizes digit contrast. Mismatched counts are rejected. Partial reference sets can support OCR immediately. Older-format samples are ignored with a status message; repeated OCR remains available without teaching. The first new teaching replaces those outdated samples; subsequent teaching keeps all distinct examples. Save Layout persists changes. Animated/blended digits can still be misidentified.
+- **Accepted scores never decrease.** Background OCR reads the score independently of templates. With the default consistency setting, an OCR reading with confidence of at least 0.70 is accepted immediately without waiting for an identical reading or template agreement. Lower-confidence scores must repeat in at least two distinct, advancing video frames within two seconds. Readings below 0.30 confidence additionally require template agreement; without corroboration they are rejected. Missing confidence is rejected. Reported confidence remains the original OCR measurement. Immediate acceptance reduces lag but can still accept a confidently wrong high number; use **New Session** to reset an incorrect baseline.
+- **Score templates are supporting evidence, not ground truth.** Use **Teach score...** on clear frames and type all displayed digits, including leading zeros (commas are allowed). Check the preview's labels before Learn. Extraction retains dim zeros, supports wide/flat digits up to twice their height, and uses brighter-threshold passes to recover digits joined to HUD borders by shadows without duplicating boxes. It selects a consistent digit row and normalizes contrast. Mismatched counts are rejected. Partial reference sets can support OCR immediately. Older-format samples are ignored with a status message; repeated OCR remains available without teaching. The first new teaching replaces those outdated samples; subsequent teaching keeps all distinct examples. Save Layout persists changes. Animated/blended digits can still be misidentified.
 - **Candidate is separate from accepted.** A readable number awaiting confirmation or rejected by the monotonic rule remains visible as the candidate, with a pending/rejection explanation. It is not mislabeled as an OCR failure or an unreadable crop.
 - **Ambiguous score readings are rejected, not corrected by guessing.** OCR must return exactly one digit per segmented box; multi-character results retain their original confidence and are rejected. Template matching compares foreground strokes (intersection over union), not shared black background, against the closest user-labeled example for each digit. The best digit must exceed the runner-up by at least 0.02 similarity and meet the 0.72 minimum match threshold. Template similarity is not an accuracy probability. Teaching does not rewrite accepted values or old events; use **New Session** to reset an incorrect baseline and event history (export first if you need to preserve them).
 - **Accepted combos never decrease.** Lower readings and implausibly large jumps are treated as arrow occlusion or OCR noise, so they do not replace the accepted combo or emit events.
@@ -143,7 +144,7 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 **Both:**
 - **New Session waits for in-flight numeric analysis before resetting events and tracking.** The old frame finishes under its original session, then its events are cleared. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
 - **End of video flushes the final displayed numeric frame.** It is retained separately from the confirmation neighbor, processed after that pair if needed, and never submitted twice. This guarantees an analysis attempt, not successful OCR or acceptance.
-- **Preview frame skipping preserves explicit seeks.** Restarting playback from EOF still resets recognition even when a delayed preview skips the first few frames.
+- **Preview frame skipping preserves explicit seeks.** Small catch-up gaps (up to eight frames) decode sequentially without rendering discarded frames, avoiding expensive codec seeks; larger gaps still seek forward. Restarting playback from EOF still resets recognition even when a delayed preview skips the first few frames.
 - **Every accepted change emits exactly one event**, not one per frame it stays on screen.
 - **Recognition state is reset** whenever you seek/jump in the video, load a different video, edit the region list, capture/clear an arrow reference, or click New Session - never carried over incorrectly across a discontinuity.
 - **Confidence numbers** (OCR confidence, or arrow similarity score) are shown as-is from the underlying measurement and are not a calibrated accuracy probability.
@@ -240,7 +241,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **I can't see the "Layout profile" box, "Start Analysis" button, or some recognition rows** - the left and right panels of the Video & Regions tab scroll independently once their controls no longer fit the window (this grows as you add more regions, especially several arrow lanes). Hover over the panel and scroll with your mouse wheel, or drag the scrollbar at its right edge, to reach anything below the visible area. If controls seem to be missing entirely, this is almost always the cause - scroll down before assuming a button doesn't exist.
 - **Region drawing does nothing** - make sure **Draw Region** shows **ON** before click-dragging on the canvas.
 - **Loading a layout pops up a resolution-mismatch warning** - this is intentional. The layout was calibrated against a different video size than the one currently open. Choose to fit it with uniform scaling and centered padding, or cancel and recalibrate. Coordinates are never silently reused across a resolution change.
-- **Playback looks slow/choppy while analysis is running** - expected; OCR dominates per-frame time (see section 7). Use frame-stepping for careful calibration, and accept that full-clip analysis takes longer than the clip's own length.
+- **Playback looks slow/choppy while analysis is running** - numeric OCR runs in the background and skips samples rather than slowing the video to OCR speed. Preview playback skips late frames to stay near source time; heavy video decoding/rendering can still cause choppiness. Use frame-stepping for careful calibration. The last OCR-pass time describes recognition latency, not playback speed.
 - **Values seem clearly wrong even though the app "accepted" them** - check the raw OCR text shown in the recognition panel next to the accepted value; a consistent misread will still pass the consistency filter (see section 6/7). Try a tighter crop around just the digits, excluding glow/outline effects.
 - **Nothing appears in the Events tab** - confirm **Record events** is checked (Events tab) and that you clicked **Start Analysis** (Video & Regions tab, in the scrollable "Analysis" box - see the scrolling note above if you can't find it) - the app never runs OCR or emits events unless analysis is explicitly started. Also note that a continuously-animating on-screen score display can genuinely take a couple dozen frames before two consecutive OCR readings match and the first event is accepted - this is expected, not a bug (see section 6/7).
 - **Arrow row says "No hit/miss reference captured yet"** - expected until you click **Capture as Hit**/**Capture as Miss** on that row at least once; nothing is guessed in the meantime.
@@ -332,9 +333,9 @@ holding the similarity score to the matched reference:
 `video_time_ms` is the position inside the video's own timeline;
 `observed_at_utc` is the wall-clock UTC time the event was produced while
 running the app - these are deliberately different clocks and are never
-conflated. `source_mode` is always `"replay"` in this milestone; `"live"`
-and `"synthetic"` are reserved for later milestones/tests and are never
-used for real recorded-video output.
+conflated. Recorded-video recognition uses `source_mode: "replay"`.
+Explicit mapping samples use `"synthetic"` and `payload.is_test: true`;
+`"live"` is reserved for future capture support.
 
 ---
 
@@ -362,13 +363,40 @@ code yet:
 - Tracking individual falling notes as they travel down the track (not just the fixed receptor), including observed color, without assuming what a color means musically.
 - Treating consecutive identical judgments as potentially separate events, and leaving uncertain note-to-judgment associations unresolved rather than guessing.
 - Live HDMI capture as a second `source_mode` alongside recorded-video replay.
-- Publishing events to a Microsoft Fabric Eventstream Custom endpoint via the official `azure-eventhub` SDK, kept independent of capture, with a durable SQLite outbox, retries, stable event IDs across retries, and visible queue status (no exactly-once delivery promise).
-- Publishing disabled by default until explicitly configured and enabled; credentials read only from environment variables, excluded from Git, never logged or requested in chat.
+- Player registration events and stable player UIDs linking sessions across plays.
 
 ---
 
-## 13. Privacy
+## 13. Fabric Eventstream publishing
 
-All video reading, cropping, OCR, and event storage happen locally on
-your machine. Nothing is uploaded anywhere in this milestone - there is
-no network code in the app at all yet.
+### Connect
+
+1. In Fabric, publish an Eventstream with a **Custom endpoint** source. Obtain its **Event Hub** SAS connection string, including `EntityPath`. Use a send-only credential where available. Rotate any key that has been exposed.
+2. Install dependencies using the existing setup, or run `.\.venv\Scripts\python.exe -m pip install -r requirements.txt` for an existing environment.
+3. Open the app's **Events** tab and select **Connect to Fabric...**. Paste the connection string into the masked local prompt once. On Windows it is saved in **Windows Credential Manager**, scoped to your Windows user on this machine, and reused on subsequent connections. It is not written to layouts, the outbox, or Git. Publishing still starts off after every app launch; click **Connect to Fabric...** to enable it. Alternatively, `DDR_EVENTSTREAM_CONNECTION_STRING` in the app process's environment overrides the saved credential and is not copied into the vault. Never paste credentials into chat or commit them.
+4. Select **Send mapping sample** to explicitly enqueue a synthetic `score_changed` event (`source_mode: synthetic`, `payload.is_test: true`, score 1000 to 1250). This sample has its own session ID and does not modify recognition state.
+5. Enable **Record events** and run analysis. All newly recorded events are sent, including **unconfirmed** `score_observed` events. Connecting does not backfill the current in-memory event table. Check **endpoint acknowledged** and **queued** counts, then verify the event in Fabric's preview or destination table. Sender acknowledgement does not prove downstream table ingestion.
+
+### Delivery and failures
+
+- The official `azure-eventhub` SDK sends JSON via AMQP over secure WebSockets (port 443). `session_id` is the partition key; envelopes, event IDs, source-frame timestamps and original confidence values are preserved. No Azure CLI login is required for this SAS connection.
+- Pending JSON is persisted in `data/eventstream-outbox.sqlite3`, which is excluded from Git. Only service-acknowledged events are removed. Network failures retry after 1, 2, 4, ... up to 30 seconds; status shows errors without printing credentials or raw SDK exceptions.
+- Delivery is **at least once**, not exactly once: an acknowledgement lost during a crash/network failure can cause a duplicate. Consumers should deduplicate by `event_id`. Do not treat `score_observed` as accepted gameplay scores; use `score_changed` for that.
+- **Disconnect Fabric** stops forwarding new events and stops retries. An already in-flight send may finish. Unsent events remain queued and resume when you explicitly reconnect to the same endpoint, including after app restart. The app refuses to redirect a nonempty queue to a different endpoint. Rotating a key for the same endpoint is supported.
+- **Forget saved connection** disconnects and removes the app's Windows Credential Manager entry (`DDR Video Event Extractor - Fabric Eventstream`). It does not delete pending events. Use it before entering a rotated key; the next connection prompts again. If you use the environment variable override, update that in your launcher instead. Credential-store failures are reported explicitly; the app never falls back to saving plaintext credentials.
+- **Clear Table** and **New Session** clear local history/tracking as before; they do not cancel queued deliveries or delete already sent Fabric data. **Record events** off stops new recognition events but does not pause delivery of existing queued events. The explicit mapping-sample button still sends when recording is off.
+- Disk/serialization failures are shown as **NOT QUEUED** in the Events tab; affected events remain in the local event table for export. Export before closing if this occurs. A durable queue cannot protect against disk failure. Pending events consume disk space until successfully delivered.
+- Closing the app stops new capture and requests publisher shutdown. An interrupted send remains retryable from the durable queue on the next explicitly enabled connection.
+
+Suggested Eventhouse column types: strings for IDs/event type/player/source mode, `long` for sequence/frame/video time, `datetime` for `observed_at_utc`, `real` for confidence, and `dynamic` for `payload`.
+
+## 14. Privacy
+
+Video reading, cropping, OCR and reference images stay local. Publishing is off
+on every app launch until explicitly enabled. When enabled, recorded event JSON
+(including region labels, player slots, scores, timestamps and session IDs) is
+sent to the configured Fabric endpoint. Do not put sensitive information in
+region labels. Credentials are supplied only through a masked local prompt or
+process environment variable. Connections entered in the prompt are saved only
+in the current user's Windows Credential Manager for this machine. Pending
+event JSON is stored locally in the outbox.

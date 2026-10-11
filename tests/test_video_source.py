@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -137,3 +138,59 @@ def test_preview_skip_preserves_pending_explicit_seek(small_video):
         assert is_seek is False
     finally:
         src.close()
+
+
+@pytest.mark.parametrize("gap", [0, 1, 8, 9])
+def test_preview_skip_uses_grab_for_small_gaps_and_seek_for_large_gaps(gap):
+    src = VideoSource.__new__(VideoSource)
+    src._cap = Mock()
+    src._cap.grab.return_value = True
+    src._cap.set.return_value = True
+    src._cap.read.return_value = (True, np.zeros((2, 2, 3), dtype=np.uint8))
+    src.frame_count = 100
+    src._next_read_index = 1
+    src._last_frame_index = 0
+    src._pending_seek = True
+
+    src.skip_to_frame(1 + gap)
+    assert src.current_frame_index() == 1 + gap
+    assert src._cap.grab.call_count == (gap if gap <= 8 else 0)
+    if gap > 8:
+        src._cap.set.assert_called_once_with(cv2.CAP_PROP_POS_FRAMES, 1 + gap)
+    else:
+        src._cap.set.assert_not_called()
+    assert src.read_next()[1:] == (1 + gap, True)
+    assert src.read_next()[1:] == (2 + gap, False)
+
+
+def test_small_skip_delivers_same_pixels_as_sequential_read(small_video):
+    path, _ = small_video
+    src = VideoSource(path)
+    sequential = VideoSource(path)
+    try:
+        src.read_next()
+        src.skip_to_frame(5)
+        actual, index, is_seek = src.read_next()
+        for _ in range(6):
+            expected, _, _ = sequential.read_next()
+        np.testing.assert_array_equal(actual, expected)
+        assert (index, is_seek) == (5, False)
+    finally:
+        src.close()
+        sequential.close()
+
+
+@pytest.mark.parametrize("gap", [2, 9])
+def test_failed_preview_skip_is_reported_without_claiming_target_frame(gap):
+    src = VideoSource.__new__(VideoSource)
+    src._cap = Mock()
+    src._cap.grab.side_effect = [True, False]
+    src._cap.set.return_value = False
+    src.frame_count = 100
+    src._next_read_index = 1
+    src._last_frame_index = 0
+    src._pending_seek = True
+    with pytest.raises(IOError, match="catching up playback"):
+        src.skip_to_frame(1 + gap)
+    assert src.current_frame_index() == (2 if gap == 2 else 1)
+    assert src._pending_seek

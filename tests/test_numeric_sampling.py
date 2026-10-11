@@ -87,6 +87,26 @@ def test_repeated_paused_frame_is_not_buffered_as_confirmation():
     assert len(jobs) == 1
 
 
+def test_preview_skip_failure_stops_playback_and_surfaces_error(monkeypatch):
+    app, _ = _controller()
+    app.is_playing = True
+    app._playback_started_at = 0
+    app._playback_start_frame = 0
+    app._stop_playing = Mock()
+    app.video_source = SimpleNamespace(
+        fps=60, current_frame_index=lambda: 0,
+        skip_to_frame=Mock(side_effect=IOError("Could not decode while catching up playback.")),
+        read_next=Mock(),
+    )
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: 1)
+    App._play_tick(app)
+    app._stop_playing.assert_called_once()
+    app.video_tab.set_error_status.assert_called_once_with(
+        "Could not decode while catching up playback."
+    )
+    app.video_source.read_next.assert_not_called()
+
+
 def test_seek_discards_old_pair_and_starts_new_generation():
     app, jobs = _controller()
     frame = np.zeros((2, 2, 3), dtype=np.uint8)

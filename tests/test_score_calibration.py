@@ -100,6 +100,48 @@ def test_digit_row_keeps_dark_zero_and_excludes_tall_border():
         score_templates_from_label(crop, "165924")
 
 
+@pytest.mark.parametrize("wide_digit_width", [31, 32, 36])
+def test_wide_flat_digits_are_taught_without_border_or_commas(wide_digit_width):
+    import cv2
+
+    crop = np.zeros((36, 374, 3), dtype=np.uint8)
+    cv2.rectangle(crop, (1, 1), (372, 34), (200, 200, 200), 1)
+    positions = [20, 75, 115, 155, 210, 250, 290]
+    for i, x in enumerate(positions):
+        width = 21 if i == 1 else wide_digit_width
+        crop[10:28, x:x + width] = 48 if i == 0 else 255
+    crop[23:28, 60:65] = 48
+    crop[23:28, 197:202] = 255
+    _, boxes, glyphs = _extract_score_glyphs(crop)
+    assert len(boxes) == len(glyphs) == 7
+    assert [box[0] + 4 for box in boxes] == positions
+    learned = score_templates_from_label(crop, "0,149,837")
+    assert "".join(digit for digit, _ in learned) == "0149837"
+    assert all(glyph.shape == (32, 24) for _, glyph in learned)
+    with pytest.raises(ValueError, match="7 digit shapes"):
+        score_templates_from_label(crop, "149837")
+
+
+@pytest.mark.parametrize("bridge_brightness", [48, 96])
+def test_recovers_digit_joined_to_border_without_losing_dim_zeros(bridge_brightness):
+    import cv2
+
+    crop = np.zeros((36, 374, 3), dtype=np.uint8)
+    cv2.rectangle(crop, (1, 1), (372, 34), (200, 200, 200), 1)
+    positions = [20, 75, 115, 155, 210, 250, 290]
+    for i, x in enumerate(positions):
+        width = 21 if i == 4 else 31
+        crop[10:28, x:x + width] = 48 if i < 2 else 255
+    crop[2:10, 125:128] = bridge_brightness
+    crop[23:28, 60:65] = 48
+    crop[23:28, 197:202] = 255
+    _, boxes, glyphs = _extract_score_glyphs(crop)
+    assert len(boxes) == len(glyphs) == 7
+    assert [box[0] + 4 for box in boxes] == positions
+    learned = score_templates_from_label(crop, "0,032,197")
+    assert "".join(digit for digit, _ in learned) == "0032197"
+
+
 def test_tight_crop_and_single_digit_are_supported():
     crop = np.zeros((24, 80, 3), dtype=np.uint8)
     crop[1:23, 30:46] = 255

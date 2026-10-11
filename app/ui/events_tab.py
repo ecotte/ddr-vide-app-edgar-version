@@ -36,6 +36,25 @@ class EventsTab(ttk.Frame):
         self.count_var = tk.StringVar(value="0 events recorded")
         ttk.Label(top, textvariable=self.count_var).pack(side="right")
 
+        publishing = ttk.Frame(self)
+        publishing.pack(fill="x", pady=(0, 6))
+        self.publish_button = ttk.Button(
+            publishing, text="Connect to Fabric...", command=self.controller.toggle_publishing,
+        )
+        self.publish_button.pack(side="left")
+        self.test_button = ttk.Button(
+            publishing, text="Send mapping sample", command=self.controller.send_mapping_sample,
+            state="disabled",
+        )
+        self.test_button.pack(side="left", padx=8)
+        ttk.Button(
+            publishing, text="Forget saved connection", command=self.controller.forget_fabric_connection,
+        ).pack(side="left")
+        self.publish_status = tk.StringVar(value="Fabric: off - events remain local")
+        ttk.Label(
+            self, textvariable=self.publish_status, wraplength=1000,
+        ).pack(fill="x", pady=(0, 6))
+
         self.tree = ttk.Treeview(self, columns=COLUMNS, show="headings", height=20)
         headings = {
             "sequence": "#",
@@ -98,6 +117,11 @@ class EventsTab(ttk.Frame):
             self.tree.delete(item)
         self._refresh_count()
 
+    def set_publishing_status(self, text: str, enabled: bool) -> None:
+        self.publish_status.set(text)
+        self.publish_button.configure(text="Disconnect Fabric" if enabled else "Connect to Fabric...")
+        self.test_button.configure(state="normal" if enabled else "disabled")
+
     def _refresh_count(self) -> None:
         self.count_var.set(f"{len(self.tree.get_children())} events recorded")
 
@@ -106,7 +130,8 @@ class EventsTab(ttk.Frame):
 
     def _on_clear(self) -> None:
         if messagebox.askyesno(
-            "Clear events", "Clear the events table? This also clears events available for export."
+            "Clear events", "Clear the local events table and export history?\n\n"
+            "This does not delete Fabric data or cancel events already queued for delivery."
         ):
             self.controller.clear_events()
 
