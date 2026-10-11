@@ -36,7 +36,7 @@ FIELD_MAX_DIGITS = {
     "combo": 5,
 }
 
-SCORE_MIN_GLYPH_CONFIDENCE = 0.75
+SCORE_MIN_GLYPH_CONFIDENCE = 0.90
 
 # Combo digits may be completely hidden by passing arrows. OCR output from
 # those frames must not replace a previously trusted combo with an impossible
