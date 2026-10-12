@@ -151,7 +151,9 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 tab.update_recognition_row(
                     region.key(), photo, "454279", 454279, 479820,
                     "Waiting for repeated evidence to lower score from 479820 to 454279 (1/2).",
+                    frame_index=123, video_time_ms=2050,
                 )
+                assert tab._region_rows[region.key()]["source_var"].get() == "OCR frame: 123 | 2050 ms"
         root.update()
         columns = tab.recognition_container.winfo_children()
         assert [col["text"] for col in columns] == ["Player 1", "Player 2", "Unknown player"]

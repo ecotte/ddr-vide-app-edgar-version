@@ -42,6 +42,9 @@ class RegionFrameResult:
     arrow_state: Optional[str] = None      # arrow only: "hit" / "miss" / "idle"
     is_unreadable: bool = False
     crop: Optional[np.ndarray] = None  # kept only for UI preview, not required for logic
+    needs_confirmation: bool = False
+    frame_index: Optional[int] = None
+    video_time_ms: Optional[int] = None
 
 
 @dataclass
@@ -49,6 +52,10 @@ class FrameAnalysisResult:
     region_results: List[RegionFrameResult]
     new_events: List[Event]
     processing_ms: float
+
+    @property
+    def needs_confirmation(self) -> bool:
+        return any(result.needs_confirmation for result in self.region_results)
 
 
 class AnalysisSession:
@@ -231,6 +238,7 @@ class AnalysisSession:
         self, frame: np.ndarray, frame_index: int, video_time_ms: int,
         *, expected_session_id: Optional[str] = None,
         expected_generation: Optional[int] = None,
+        region_keys: Optional[frozenset[str]] = None,
     ) -> Optional[FrameAnalysisResult]:
         session_id = expected_session_id if expected_session_id is not None else self.event_bus.session_id
         generation = expected_generation if expected_generation is not None else self._generation
@@ -241,14 +249,17 @@ class AnalysisSession:
             score_regions = [
                 region
                 for region in self.regions
-                if region.kind == "score"
+                if region.kind == "score" and (region_keys is None or region.key() in region_keys)
             ]
             score_result = self._process_frame(
                 frame, frame_index, video_time_ms, score_regions
             )
             if score_result is not None:
                 results.append(score_result)
-            combo_regions = [region for region in self.regions if region.kind == "combo"]
+            combo_regions = [
+                region for region in self.regions
+                if region.kind == "combo" and (region_keys is None or region.key() in region_keys)
+            ]
             combo_result = self._process_frame(
                 frame, frame_index, video_time_ms, combo_regions
             )
@@ -293,6 +304,8 @@ class AnalysisSession:
                 events = [event] if event is not None else []
             else:
                 result, events = self._process_numeric_region(region, crop, frame_index, video_time_ms)
+            result.frame_index = frame_index
+            result.video_time_ms = video_time_ms
             region_results.append(result)
             new_events.extend(events)
 
@@ -489,6 +502,7 @@ class AnalysisSession:
             accepted_value=tracker.accepted_value,
             is_unreadable=parsed_candidate is None,
             crop=crop,
+            needs_confirmation=region.key() in self._numeric_evidence,
         )
         return result, events
 

@@ -393,6 +393,7 @@ class VideoTab(ttk.Frame):
         candidate_var = tk.StringVar(value="candidate: -")
         accepted_var = tk.StringVar(value="accepted: unknown")
         status_var = tk.StringVar(value="status: -")
+        source_var = tk.StringVar(value="OCR frame: -")
         ttk.Label(row, textvariable=raw_var).grid(row=2, column=0, sticky="w")
         ttk.Label(row, textvariable=candidate_var).grid(row=3, column=0, sticky="w")
         ttk.Label(row, textvariable=accepted_var).grid(row=4, column=0, sticky="w")
@@ -410,6 +411,7 @@ class VideoTab(ttk.Frame):
                     reg, var.get()
                 ),
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(row, textvariable=source_var).grid(row=7, column=0, sticky="w", pady=(4, 0))
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
             "kind": "numeric",
@@ -419,6 +421,7 @@ class VideoTab(ttk.Frame):
             "accepted_var": accepted_var,
             "status_var": status_var,
             "yellow_filter_var": yellow_filter_var,
+            "source_var": source_var,
         }
 
     def _build_arrow_row(self, r, parent=None) -> None:
@@ -474,7 +477,10 @@ class VideoTab(ttk.Frame):
             "miss_ref_label": miss_ref_label,
         }
 
-    def update_recognition_row(self, region_key: str, crop_photo, raw_text, candidate, accepted, status_text) -> None:
+    def update_recognition_row(
+        self, region_key: str, crop_photo, raw_text, candidate, accepted, status_text,
+        *, frame_index=None, video_time_ms=None,
+    ) -> None:
         row = self._region_rows.get(region_key)
         if row is None or row.get("kind") != "numeric":
             return
@@ -485,6 +491,10 @@ class VideoTab(ttk.Frame):
         row["candidate_var"].set(f"candidate: {candidate if candidate is not None else 'unreadable'}")
         row["accepted_var"].set(f"accepted: {accepted if accepted is not None else 'unknown'}")
         row["status_var"].set(f"status: {status_text}")
+        row["source_var"].set(
+            f"OCR frame: {frame_index} | {video_time_ms} ms"
+            if frame_index is not None else "OCR frame: -"
+        )
 
     def update_arrow_recognition_row(
         self, region_key: str, crop_photo, observed_state, confidence, status_text

@@ -56,11 +56,13 @@ class App(tk.Tk):
         self._analysis_frame_index = -1
         self._analysis_is_confirmation = False
         self._confirmation_frame = None
+        self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
         self._dropped_analysis_frames = 0
         self._recognition_photos = {}
+        self._arrow_display_state = {}
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -122,6 +124,7 @@ class App(tk.Tk):
         self.analysis.stop()
         self.analysis.new_session()
         self._confirmation_frame = None
+        self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self._last_frame_position = None
         self._last_frame_bgr = None
@@ -263,6 +266,7 @@ class App(tk.Tk):
 
     def _submit_numeric_analysis(
         self, frame_bgr, frame_index: int, video_time_ms: int, *, confirmation: bool = False,
+        region_keys: Optional[frozenset[str]] = None,
     ) -> None:
         if not self.analysis.is_running:
             return
@@ -273,6 +277,14 @@ class App(tk.Tk):
             return
         if self._analysis_future is not None:
             new_generation = self._analysis_future_generation != self._analysis_generation
+            if (new_generation or frame_index > self._analysis_frame_index) and (
+                self._latest_numeric_frame is None
+                or self._latest_numeric_frame[3] != self._analysis_generation
+                or frame_index > self._latest_numeric_frame[1]
+            ):
+                self._latest_numeric_frame = (
+                    frame_bgr, frame_index, video_time_ms, self._analysis_generation,
+                )
             if (
                 (new_generation or not self._analysis_is_confirmation)
                 and (new_generation or frame_index > self._analysis_frame_index)
@@ -297,6 +309,7 @@ class App(tk.Tk):
             video_time_ms,
             expected_session_id=self.event_bus.session_id,
             expected_generation=self.analysis.generation,
+            region_keys=region_keys,
         )
         self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
 
@@ -332,6 +345,8 @@ class App(tk.Tk):
         self._analysis_future = None
         pending = self._confirmation_frame
         self._confirmation_frame = None
+        latest = self._latest_numeric_frame
+        self._latest_numeric_frame = None
         completed_generation = self._analysis_future_generation
         try:
             result = future.result()
@@ -341,11 +356,26 @@ class App(tk.Tk):
         if completed_generation == self._analysis_generation:
             self._apply_analysis_result(result, self._dropped_analysis_frames)
         self._dropped_analysis_frames = 0
-        if pending is not None and pending[3] == self._analysis_generation:
-            frame, index, timestamp, generation = pending
-            self._submit_numeric_analysis(
-                frame, index, timestamp, confirmation=generation == completed_generation,
+        use_confirmation = (
+            completed_generation == self._analysis_generation
+            and not self._analysis_is_confirmation
+            and result is not None
+            and result.needs_confirmation
+            and pending is not None
+            and pending[3] == self._analysis_generation
+        )
+        next_frame = pending if use_confirmation else latest
+        if next_frame is not None and next_frame[3] == self._analysis_generation:
+            frame, index, timestamp, generation = next_frame
+            region_keys = (
+                frozenset(rr.region.key() for rr in result.region_results if rr.needs_confirmation)
+                if use_confirmation else None
             )
+            self._submit_numeric_analysis(
+                frame, index, timestamp, confirmation=use_confirmation, region_keys=region_keys,
+            )
+            if use_confirmation and latest is not None and latest[1] > index:
+                self._latest_numeric_frame = latest
         self._submit_final_numeric_analysis()
 
     def _apply_analysis_result(
@@ -389,6 +419,14 @@ class App(tk.Tk):
         self.video_tab.redraw_region_overlays(self.regions)
 
     def _update_recognition_row(self, rr: RegionFrameResult) -> None:
+        if rr.region.kind == "arrow":
+            now = time.perf_counter()
+            display_state = (
+                self.analysis.generation, rr.arrow_state, rr.error, rr.is_unreadable,
+            )
+            previous = self._arrow_display_state.get(rr.region.key())
+            if previous is not None and previous[1] == display_state and now - previous[0] < 0.1:
+                return
         photo = self._make_thumbnail_photo(
             rr.crop, self._recognition_photos.get(rr.region.key()),
         )
@@ -399,11 +437,13 @@ class App(tk.Tk):
             self.video_tab.update_arrow_recognition_row(
                 rr.region.key(), photo, rr.arrow_state, rr.confidence, status_text
             )
+            self._arrow_display_state[rr.region.key()] = (now, display_state)
         else:
             tracker_status: TrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_numeric_status(rr, tracker_status)
             self.video_tab.update_recognition_row(
-                rr.region.key(), photo, rr.raw_text, rr.candidate_value, rr.accepted_value, status_text
+                rr.region.key(), photo, rr.raw_text, rr.candidate_value, rr.accepted_value, status_text,
+                frame_index=rr.frame_index, video_time_ms=rr.video_time_ms,
             )
 
     @staticmethod
@@ -698,6 +738,7 @@ class App(tk.Tk):
         self._analysis_generation += 1
         self.analysis.new_session()
         self._confirmation_frame = None
+        self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self.events_tab.clear()
         self.video_tab.set_error_status("")

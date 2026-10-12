@@ -74,11 +74,7 @@ class OcrEngine:
                 )
 
     def recognize_digits(self, crop_bgr: np.ndarray, *, yellow_filter: bool = False) -> OcrResult:
-        """Run OCR on a small crop expected to contain only digits.
-
-        Applies a digit allowlist and a simple upscale, since these fields
-        are typically small regions where EasyOCR benefits from more pixels.
-        """
+        """Read combo digits while ignoring nearby words instead of forcing them into digits."""
         self.ensure_ready()
         if self._init_error is not None:
             return OcrResult(raw_text="", confidence=None, error=self._init_error)
@@ -93,9 +89,27 @@ class OcrEngine:
                     error="No yellow digit signal. Use a clearer frame or disable the yellow-digit filter.",
                 )
             with self._recognition_lock:
+                if yellow_filter:
+                    height, width = processed.shape
+                    direct = self._reader.recognize(
+                        processed,
+                        horizontal_list=[[0, width, 0, height]],
+                        free_list=[],
+                        decoder="beamsearch",
+                        detail=1,
+                    )
+                    if len(direct) == 1:
+                        text, confidence = direct[0][1:3]
+                        text = _combo_digit_text(text)
+                        if (
+                            0 < len(text) <= config.FIELD_MAX_DIGITS["combo"]
+                            and all(digit in config.OCR_DIGIT_ALLOWLIST for digit in text)
+                            and confidence is not None
+                            and confidence >= config.COMBO_MIN_CONFIDENCE
+                        ):
+                            return OcrResult(raw_text=text, confidence=float(confidence))
                 detections = self._reader.readtext(
                     processed,
-                    allowlist=config.OCR_DIGIT_ALLOWLIST,
                     detail=1,
                     paragraph=False,
                 )
@@ -106,7 +120,7 @@ class OcrEngine:
             return OcrResult(raw_text="", confidence=None, error=None)
 
         selected = _select_numeric_group(detections, processed.shape[1])
-        text = "".join(_longest_digit_run(d[1]) for d in selected)
+        text = "".join(_combo_digit_text(d[1]) for d in selected)
         confidences: List[float] = [float(d[2]) for d in selected if len(d) > 2]
         confidence = min(confidences) if confidences else None
         return OcrResult(raw_text=text, confidence=confidence, error=None)
@@ -221,9 +235,9 @@ def _preprocess_for_ocr(crop_bgr: np.ndarray, *, yellow_filter: bool = False) ->
     return gray
 
 
-def _longest_digit_run(text: str) -> str:
-    runs = re.findall(r"\d+", text)
-    return max(runs, key=len, default="")
+def _combo_digit_text(text: str) -> str:
+    compact = "".join(text.split())
+    return compact if re.fullmatch(r"[0-9]+", compact) else ""
 
 
 def _extract_score_glyphs(
@@ -321,7 +335,7 @@ def _score_glyph_similarity(glyph: np.ndarray, example: np.ndarray) -> float:
 
 
 def _select_numeric_group(detections: list, image_width: int) -> list:
-    numeric = [d for d in detections if _longest_digit_run(d[1])]
+    numeric = [d for d in detections if _combo_digit_text(d[1])]
     if not numeric:
         return []
     numeric.sort(key=lambda d: min(point[0] for point in d[0]))
@@ -348,7 +362,7 @@ def _select_numeric_group(detections: list, image_width: int) -> list:
     def group_rank(group):
         left = min(min(point[0] for point in detection[0]) for detection in group)
         right = max(max(point[0] for point in detection[0]) for detection in group)
-        digit_count = sum(len(_longest_digit_run(detection[1])) for detection in group)
+        digit_count = sum(len(_combo_digit_text(detection[1])) for detection in group)
         confidence = min(
             (float(detection[2]) for detection in group if len(detection) > 2),
             default=0.0,

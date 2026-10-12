@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from app.analysis import AnalysisSession
+from app.analysis import AnalysisSession, FrameAnalysisResult, RegionFrameResult
 from app.event_bus import EventBus
 from app.models import Region
 from app.ocr_engine import OcrEngine, OcrResult
@@ -35,6 +35,7 @@ def _controller():
         _analysis_frame_index=-1,
         _analysis_is_confirmation=False,
         _confirmation_frame=None,
+        _latest_numeric_frame=None,
         _final_numeric_frame=None,
         _last_frame_bgr=None,
         _last_frame_position=None,
@@ -52,7 +53,188 @@ def _controller():
     return controller, jobs
 
 
-def test_busy_ocr_keeps_first_neighbor_then_skips_to_current_playback():
+def _display_controller():
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(
+            generation=0,
+            tracker_for=Mock(return_value=SimpleNamespace(status=lambda: None)),
+        ),
+        _arrow_display_state={},
+        _recognition_photos={},
+        _make_thumbnail_photo=Mock(return_value="photo"),
+        _format_arrow_status=Mock(return_value="idle"),
+        _format_numeric_status=Mock(return_value="stable"),
+        video_tab=Mock(),
+        events_tab=Mock(),
+    )
+    controller._update_recognition_row = MethodType(App._update_recognition_row, controller)
+    return controller
+
+
+def test_unchanged_arrow_previews_are_limited_to_ten_updates_per_second(monkeypatch):
+    controller = _display_controller()
+    rr = RegionFrameResult(
+        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"),
+        arrow_state="idle", crop=np.zeros((20, 20, 3), dtype=np.uint8),
+    )
+    clock = [0.0]
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: clock[0])
+    for timestamp in (0.0, 0.016, 0.032, 0.099, 0.1):
+        clock[0] = timestamp
+        controller._update_recognition_row(rr)
+    assert controller.video_tab.update_arrow_recognition_row.call_count == 2
+    assert controller._make_thumbnail_photo.call_count == 2
+
+
+@pytest.mark.parametrize("change", ["state", "error", "unreadable", "generation", "player"])
+def test_arrow_state_errors_and_tracking_resets_update_without_waiting(monkeypatch, change):
+    controller = _display_controller()
+    rr = RegionFrameResult(
+        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"), arrow_state="idle",
+    )
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: 0.0)
+    controller._update_recognition_row(rr)
+    if change == "state":
+        rr.arrow_state = "hit"
+    elif change == "error":
+        rr.error = "Missing arrow reference"
+    elif change == "unreadable":
+        rr.is_unreadable = True
+    elif change == "generation":
+        controller.analysis.generation += 1
+    else:
+        rr.region = Region("Up", "P2", "arrow", 0, 0, 20, 20, direction="Up")
+    controller._update_recognition_row(rr)
+    assert controller.video_tab.update_arrow_recognition_row.call_count == 2
+
+
+def test_preview_pacing_never_drops_events_or_delays_numeric_results(monkeypatch):
+    controller = _display_controller()
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: 0.0)
+    arrow = RegionFrameResult(
+        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"), arrow_state="idle",
+    )
+    events = [object(), object()]
+    for event in events:
+        App._apply_analysis_result(controller, FrameAnalysisResult([arrow], [event], 1), 0)
+    assert controller.video_tab.update_arrow_recognition_row.call_count == 1
+    assert [call.args[0] for call in controller.events_tab.append_event.call_args_list] == events
+    for kind in ("combo", "score"):
+        rr = RegionFrameResult(Region(kind, "P1", kind, 0, 0, 20, 20))
+        for _ in range(2):
+            App._apply_analysis_result(controller, FrameAnalysisResult([rr], [], 1), 0)
+    assert controller.video_tab.update_recognition_row.call_count == 4
+
+
+def _numeric_result(needs_confirmation=False):
+    return FrameAnalysisResult([
+        RegionFrameResult(
+            Region("Combo", "P1", "combo", 0, 0, 2, 2),
+            needs_confirmation=needs_confirmation,
+        ),
+    ], [], 1)
+
+
+@pytest.mark.parametrize("result", [_numeric_result(), None])
+def test_finished_job_goes_directly_to_latest_frame_without_unneeded_confirmation(result):
+    app, jobs = _controller()
+    frames = [np.full((2, 2, 3), i, dtype=np.uint8) for i in range(40)]
+    for i, frame in enumerate(frames):
+        app._submit_numeric_analysis(frame, i, i * 17)
+    assert len(jobs) == 1
+    assert app._confirmation_frame[1] == 1
+    assert app._latest_numeric_frame[1] == 39
+    jobs[0][0].set_result(result)
+    app._poll_analysis_result()
+    assert len(jobs) == 2
+    assert jobs[1][1][0] is frames[39]
+    assert jobs[1][1][1:] == (39, 663)
+    assert not app._analysis_is_confirmation
+    jobs[1][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert len(jobs) == 2
+
+
+def test_confirmation_preserves_latest_paused_frame_and_cannot_chain_old_neighbors():
+    app, jobs = _controller()
+    for i in range(40):
+        app._submit_numeric_analysis(np.full((2, 2, 3), i, dtype=np.uint8), i, i * 17)
+    jobs[0][0].set_result(_numeric_result(needs_confirmation=True))
+    app._poll_analysis_result()
+    assert jobs[1][1][1] == 1
+    assert app._latest_numeric_frame[1] == 39
+    jobs[1][0].set_result(_numeric_result(needs_confirmation=True))
+    app._poll_analysis_result()
+    assert jobs[2][1][1] == 39
+    assert not app._analysis_is_confirmation
+    jobs[2][0].set_result(_numeric_result(needs_confirmation=True))
+    app._poll_analysis_result()
+    assert len(jobs) == 3
+
+
+@pytest.mark.parametrize("kind,text,confidence,needs_confirmation", [
+    ("combo", "179", 0.99, False), ("combo", "179", 0.4, False),
+    ("combo", "", 0.99, False), ("score", "363009", 0.5, True),
+    ("score", "363009", 0.99, False),
+])
+def test_analysis_requests_confirmation_only_for_pending_evidence(
+    monkeypatch, kind, text, confidence, needs_confirmation,
+):
+    engine = OcrEngine()
+    monkeypatch.setattr(engine, "recognize_digits", lambda _: OcrResult(text, confidence))
+    monkeypatch.setattr(engine, "recognize_score_digits", lambda _: OcrResult(text, confidence))
+    analysis = AnalysisSession(EventBus(), engine)
+    analysis.set_regions([Region(kind, "P1", kind, 0, 0, 2, 2)])
+    analysis.start()
+    result = analysis.process_background_numeric_frame(np.zeros((2, 2, 3), dtype=np.uint8), 123, 2050)
+    assert result.needs_confirmation is needs_confirmation
+    assert result.region_results[0].frame_index == 123
+    assert result.region_results[0].video_time_ms == 2050
+
+
+def test_confirmation_only_runs_pending_fields_and_does_not_reread_other_player(monkeypatch):
+    engine = OcrEngine()
+    score_ocr = Mock(return_value=OcrResult("100", 0.5))
+    combo_ocr = Mock(return_value=OcrResult("65", 0.99))
+    monkeypatch.setattr(engine, "recognize_score_digits", score_ocr)
+    monkeypatch.setattr(engine, "recognize_digits", combo_ocr)
+    bus = EventBus()
+    analysis = AnalysisSession(bus, engine)
+    analysis.set_regions([
+        Region("Score", "P1", "score", 0, 0, 2, 2),
+        Region("Combo", "P1", "combo", 0, 0, 2, 2),
+        Region("Combo", "P2", "combo", 0, 0, 2, 2),
+    ])
+    analysis.start()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    first = analysis.process_background_numeric_frame(frame, 0, 0)
+    keys = frozenset(rr.region.key() for rr in first.region_results if rr.needs_confirmation)
+    assert keys == frozenset({"P1:score"})
+    confirmed = analysis.process_background_numeric_frame(frame, 1, 17, region_keys=keys)
+    assert [rr.region.key() for rr in confirmed.region_results] == ["P1:score"]
+    assert confirmed.region_results[0].accepted_value == 100
+    assert score_ocr.call_count == 2
+    assert combo_ocr.call_count == 2
+    latest = analysis.process_background_numeric_frame(frame, 40, 680)
+    assert len(latest.region_results) == 3
+    assert combo_ocr.call_count == 4
+
+
+def test_scheduler_passes_only_pending_region_keys_to_confirmation_worker():
+    app, _ = _controller()
+    future = Future()
+    app._analysis_executor.submit = Mock(return_value=future)
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    app._submit_numeric_analysis(frame, 0, 0)
+    app._submit_numeric_analysis(frame, 1, 17)
+    result = _numeric_result(needs_confirmation=True)
+    result.region_results.append(RegionFrameResult(Region("Score", "P1", "score", 0, 0, 2, 2)))
+    future.set_result(result)
+    app._poll_analysis_result()
+    assert app._analysis_executor.submit.call_args.kwargs["region_keys"] == frozenset({"P1:combo"})
+
+
+def test_busy_ocr_keeps_first_neighbor_when_needed_then_skips_to_current_playback():
     app, jobs = _controller()
     frames = [np.full((2, 2, 3), i, dtype=np.uint8) for i in range(5)]
     for i in range(3):
@@ -61,19 +243,22 @@ def test_busy_ocr_keeps_first_neighbor_then_skips_to_current_playback():
     assert app._confirmation_frame[0] is frames[1]
     assert app._dropped_analysis_frames == 1
 
-    jobs[0][0].set_result("first")
+    jobs[0][0].set_result(_numeric_result(needs_confirmation=True))
     app._poll_analysis_result()
     assert len(jobs) == 2
     assert jobs[1][1][0] is frames[1]
     assert jobs[1][1][1:] == (1, 17)
     app._submit_numeric_analysis(frames[3], 3, 51)
     assert app._confirmation_frame is None
-    jobs[1][0].set_result("confirmation")
+    jobs[1][0].set_result(_numeric_result())
     app._poll_analysis_result()
-    assert len(jobs) == 2
-    app._submit_numeric_analysis(frames[4], 4, 68)
     assert len(jobs) == 3
-    assert jobs[2][1][0] is frames[4]
+    assert jobs[2][1][0] is frames[3]
+    app._submit_numeric_analysis(frames[4], 4, 68)
+    jobs[2][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert len(jobs) == 4
+    assert jobs[3][1][0] is frames[4]
 
 
 def test_combo_filter_checkbox_updates_controller_and_retains_loaded_setting():
@@ -123,7 +308,7 @@ def test_repeated_paused_frame_is_not_buffered_as_confirmation():
     app._submit_numeric_analysis(frame, 10, 170)
     app._submit_numeric_analysis(frame, 10, 170)
     assert app._confirmation_frame is None
-    jobs[0][0].set_result("first")
+    jobs[0][0].set_result(_numeric_result())
     app._poll_analysis_result()
     assert len(jobs) == 1
 
@@ -155,7 +340,7 @@ def test_seek_discards_old_pair_and_starts_new_generation():
     app._submit_numeric_analysis(frame, 11, 187)
     app._analysis_generation += 1
     app._submit_numeric_analysis(frame, 0, 0)
-    jobs[0][0].set_result("old")
+    jobs[0][0].set_result(_numeric_result())
     app._poll_analysis_result()
     app._apply_analysis_result.assert_not_called()
     assert jobs[1][1][1:] == (0, 0)
@@ -181,7 +366,7 @@ def test_eof_flushes_final_frame_after_preserving_confirmation_pair(during_confi
     app._submit_numeric_analysis(frames[0], 0, 0)
     app._submit_numeric_analysis(frames[1], 1, 17)
     if during_confirmation:
-        jobs[0][0].set_result(None)
+        jobs[0][0].set_result(_numeric_result(needs_confirmation=True))
         app._poll_analysis_result()
     app._submit_numeric_analysis(frames[2], 2, 34)
     app._last_frame_bgr = frames[2]
@@ -192,7 +377,7 @@ def test_eof_flushes_final_frame_after_preserving_confirmation_pair(during_confi
     App._play_tick(app)
     assert not app.is_playing
     while app._analysis_future is not None:
-        app._analysis_future.set_result(None)
+        app._analysis_future.set_result(_numeric_result(needs_confirmation=True))
         app._poll_analysis_result()
     assert [args[1:] for _, args in jobs] == [(0, 0), (1, 17), (2, 34)]
     assert jobs[-1][1][0] is frames[2]

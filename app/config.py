@@ -88,6 +88,6 @@ DEFAULT_ARROW_MIN_CONFIRM_FRAMES = 1
 # --- OCR ------------------------------------------------------------------
 # EasyOCR language model(s) to load. Kept to English/digits for score+combo.
 OCR_LANGUAGES = ["en"]
-# Digit-only allowlist keeps OCR focused on numeric fields, which are the
-# only field kinds supported in milestone 1.
+# Score glyph OCR uses this allowlist; combo OCR recognizes surrounding text
+# and then keeps only digits, rather than forcing words into numbers.
 OCR_DIGIT_ALLOWLIST = "0123456789"

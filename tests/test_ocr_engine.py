@@ -35,6 +35,7 @@ def test_yellow_filter_keeps_actual_ocr_text_and_confidence(text, confidence):
     crop = np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8)
     engine = OcrEngine()
     engine._reader = Mock()
+    engine._reader.recognize.return_value = []
     engine._reader.readtext.return_value = [_detection(0, 303, text, confidence)]
     result = engine.recognize_digits(crop, yellow_filter=True)
     assert result.raw_text == text
@@ -53,6 +54,107 @@ def test_yellow_filter_does_not_fall_back_to_white_glow():
     assert result.raw_text == ""
     assert result.confidence is None
     assert "No yellow digit signal" in result.error
+    engine._reader.readtext.assert_not_called()
+
+
+@pytest.mark.parametrize("text,confidence", [("161", 0.90), ("388", 0.995), ("0", 1.0)])
+def test_yellow_combo_fast_path_preserves_digits_and_confidence(text, confidence):
+    crop = np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8)
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 303, text, confidence)]
+    result = engine.recognize_digits(crop, yellow_filter=True)
+    assert result.raw_text == text
+    assert result.confidence == confidence
+    assert result.error is None
+    engine._reader.readtext.assert_not_called()
+    assert engine._reader.recognize.call_args.kwargs["horizontal_list"] == [[0, 303, 0, 180]]
+
+
+@pytest.mark.parametrize("direct", [
+    [], [_detection(0, 303, "323", 0.899999)],
+    [_detection(0, 303, "161", None)],
+    [_detection(0, 303, "123456", 0.99)],
+    [_detection(0, 303, "1b1", 0.99)],
+    [_detection(0, 303, "", 0.99)],
+    [_detection(0, 140, "1", 0.99), _detection(140, 303, "61", 0.99)],
+])
+def test_yellow_combo_fast_path_falls_back_for_weak_or_invalid_results(direct):
+    crop = np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8)
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = direct
+    engine._reader.readtext.return_value = [_detection(0, 303, "161", 0.94)]
+    result = engine.recognize_digits(crop, yellow_filter=True)
+    assert result.raw_text == "161"
+    assert result.confidence == 0.94
+    engine._reader.readtext.assert_called_once()
+
+
+def test_unfiltered_combo_keeps_detector_path():
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.readtext.return_value = [_detection(0, 303, "65", 0.99)]
+    result = engine.recognize_digits(np.zeros((180, 303, 3), dtype=np.uint8))
+    assert result.raw_text == "65"
+    engine._reader.recognize.assert_not_called()
+    assert "allowlist" not in engine._reader.readtext.call_args.kwargs
+
+
+@pytest.mark.parametrize("yellow_filter", [False, True])
+def test_combo_ignores_nearby_words_and_mixed_alphanumeric_detections(yellow_filter):
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 303, "44combo", 0.99)]
+    engine._reader.readtext.return_value = [
+        _detection(0, 90, "Marvellous", 0.99),
+        _detection(100, 180, "44", 0.96),
+        _detection(181, 215, "c0mbo", 0.99),
+        _detection(216, 250, "combo", 0.99),
+        _detection(251, 270, "P1", 0.99),
+    ]
+    crop = np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8)
+    result = engine.recognize_digits(crop, yellow_filter=yellow_filter)
+    assert result.raw_text == "44"
+    assert result.confidence == 0.96
+    assert result.error is None
+    assert "allowlist" not in engine._reader.readtext.call_args.kwargs
+    if yellow_filter:
+        assert "allowlist" not in engine._reader.recognize.call_args.kwargs
+
+
+def test_text_only_combo_does_not_create_a_number():
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.readtext.return_value = [
+        _detection(0, 100, "c0mb0", 0.99),
+        _detection(101, 200, "P1", 0.99),
+    ]
+    result = engine.recognize_digits(np.zeros((180, 303, 3), dtype=np.uint8))
+    assert result.raw_text == ""
+    assert result.confidence is None
+
+
+@pytest.mark.parametrize("yellow_filter", [False, True])
+def test_combo_allows_spaces_between_digits_without_inventing_characters(yellow_filter):
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 303, "6 5", 0.94)]
+    engine._reader.readtext.return_value = [_detection(0, 303, "6 5", 0.94)]
+    result = engine.recognize_digits(
+        np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8), yellow_filter=yellow_filter,
+    )
+    assert result.raw_text == "65"
+    assert result.confidence == 0.94
+
+
+def test_yellow_combo_fast_path_surfaces_engine_failures():
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = RuntimeError("recognizer failed")
+    result = engine.recognize_digits(np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8), yellow_filter=True)
+    assert "recognizer failed" in result.error
+    assert result.raw_text == ""
     engine._reader.readtext.assert_not_called()
 
 
