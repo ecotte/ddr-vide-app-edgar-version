@@ -197,6 +197,16 @@ class AnalysisSession:
             self._numeric_evidence.pop(region.key(), None)
             self._generation += 1
 
+    def set_combo_yellow_filter(self, region: Region, enabled: bool) -> None:
+        """Change preprocessing without mixing evidence from the two modes."""
+        if region.kind != "combo":
+            raise ValueError("The yellow-digit filter is only available for combo regions.")
+        with self._combo_lock:
+            region.combo_yellow_filter = enabled
+            self._numeric_evidence.pop(region.key(), None)
+            self._last_numeric_frame.pop(region.key(), None)
+            self._generation += 1
+
     # -- per-frame processing -------------------------------------------
     def process_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
@@ -313,6 +323,8 @@ class AnalysisSession:
                     and parse_digits(template_result.raw_text) is not None
                     and parse_digits(template_result.raw_text) == parse_digits(ocr_result.raw_text)
                 )
+        elif region.combo_yellow_filter:
+            ocr_result = self.ocr_engine.recognize_digits(crop, yellow_filter=True)
         else:
             ocr_result = self.ocr_engine.recognize_digits(crop)
         max_digits = config.FIELD_MAX_DIGITS.get(region.kind)
@@ -345,13 +357,20 @@ class AnalysisSession:
                 and candidate is not None
                 and tracker.accepted_value is not None
                 and candidate < tracker.accepted_value
+                and ocr_result.confidence < config.SCORE_DIRECT_ACCEPT_CONFIDENCE
             ):
                 validation_error = (
-                    f"Ignored decreasing score reading {candidate}; "
+                    f"Ignored low-confidence score correction {candidate}; "
+                    f"corrections require confidence >= {config.SCORE_DIRECT_ACCEPT_CONFIDENCE:.2f}; "
                     f"keeping {tracker.accepted_value}."
                 )
                 candidate = None
-            if region.kind == "combo" and candidate is not None and tracker.accepted_value is not None:
+            if (
+                region.kind == "combo"
+                and candidate is not None
+                and tracker.accepted_value is not None
+                and candidate >= tracker.accepted_value
+            ):
                 previous_time_ms = self._last_numeric_accept_time_ms.get(region.key(), video_time_ms)
                 elapsed_ms = max(0, video_time_ms - previous_time_ms)
                 max_increase = max(
@@ -377,9 +396,14 @@ class AnalysisSession:
                 else config.SCORE_DIRECT_ACCEPT_CONFIDENCE
             )
             high_confidence_reading = ocr_result.confidence >= direct_threshold
+            is_decrease = (
+                tracker.accepted_value is not None
+                and candidate < tracker.accepted_value
+            )
             required = max(
                 self.required_consecutive_frames,
-                1 if high_confidence_reading else config.NUMERIC_CONFIRMATION_SAMPLES,
+                config.NUMERIC_CONFIRMATION_SAMPLES
+                if is_decrease or not high_confidence_reading else 1,
             )
             previous_value, count, first_time = self._numeric_evidence.get(
                 region.key(), (candidate, 0, video_time_ms)
@@ -393,9 +417,19 @@ class AnalysisSession:
                     f"Waiting for repeated evidence for {region.kind} {candidate} "
                     f"({count}/{required})."
                 )
+                if is_decrease:
+                    validation_error = (
+                        f"Waiting for repeated evidence to lower {region.kind} from "
+                        f"{tracker.accepted_value} to {candidate} ({count}/{required})."
+                    )
                 candidate = None
             else:
                 self._numeric_evidence.pop(region.key(), None)
+                if is_decrease:
+                    validation_error = (
+                        f"{region.kind.capitalize()} corrected from {tracker.accepted_value} to {candidate} "
+                        f"after {count} matching high-confidence readings."
+                    )
 
         events = []
         if (

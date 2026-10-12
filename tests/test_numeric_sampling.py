@@ -76,6 +76,47 @@ def test_busy_ocr_keeps_first_neighbor_then_skips_to_current_playback():
     assert jobs[2][1][0] is frames[4]
 
 
+def test_combo_filter_checkbox_updates_controller_and_retains_loaded_setting():
+    import tkinter as tk
+    from tkinter import ttk
+    from app.ui.video_tab import VideoTab
+
+    app, _ = _controller()
+    combo = Region("Combo", "P1", "combo", 0, 0, 50, 20)
+    score = Region("Score", "P1", "score", 0, 0, 50, 20)
+    app.analysis = AnalysisSession(app.event_bus)
+    app.analysis.set_regions([combo, score])
+    app.set_combo_yellow_filter = MethodType(App.set_combo_yellow_filter, app)
+    app._last_frame_position = (10, 330)
+    app._last_frame_bgr = np.zeros((20, 50, 3), dtype=np.uint8)
+    app._submit_numeric_analysis = Mock()
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        view = SimpleNamespace(
+            recognition_container=ttk.Frame(root), controller=app, _region_rows={},
+        )
+        VideoTab._build_numeric_row(view, combo)
+        row = view.recognition_container.winfo_children()[0]
+        checkbox, = [w for w in row.winfo_children() if isinstance(w, ttk.Checkbutton)]
+        assert not view._region_rows[combo.key()]["yellow_filter_var"].get()
+        checkbox.invoke()
+        assert combo.combo_yellow_filter
+        assert app._analysis_generation == 1
+        app._submit_numeric_analysis.assert_called_once_with(app._last_frame_bgr, 10, 330)
+        assert "Save Layout" in app.video_tab.set_processing_status.call_args.args[0]
+        loaded_combo = Region.from_dict(combo.to_dict())
+        VideoTab._build_numeric_row(view, loaded_combo)
+        assert view._region_rows[combo.key()]["yellow_filter_var"].get()
+        VideoTab._build_numeric_row(view, score)
+        assert view._region_rows[score.key()]["yellow_filter_var"] is None
+        checkbox.invoke()
+        assert not combo.combo_yellow_filter
+        assert app._analysis_generation == 2
+    finally:
+        root.destroy()
+
+
 def test_repeated_paused_frame_is_not_buffered_as_confirmation():
     app, jobs = _controller()
     frame = np.zeros((2, 2, 3), dtype=np.uint8)

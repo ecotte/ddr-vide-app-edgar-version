@@ -39,6 +39,7 @@ class Region:
     digit_templates: Dict[str, List[str]] = field(default_factory=dict)
     digit_templates_reviewed: bool = False
     score_template_version: int = 0
+    combo_yellow_filter: bool = False
 
     def __post_init__(self) -> None:
         normalized = {}
@@ -84,6 +85,7 @@ class Region:
             },
             "digit_templates_reviewed": self.digit_templates_reviewed,
             "score_template_version": self.score_template_version,
+            "combo_yellow_filter": self.combo_yellow_filter,
         }
 
     @staticmethod
@@ -101,6 +103,7 @@ class Region:
             digit_templates=dict(d.get("digit_templates", {})),
             digit_templates_reviewed=d.get("digit_templates_reviewed") is True,
             score_template_version=int(d.get("score_template_version", 0)),
+            combo_yellow_filter=d.get("combo_yellow_filter") is True,
         )
 
 

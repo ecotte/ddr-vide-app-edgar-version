@@ -52,6 +52,28 @@ def test_list_layout_names_returns_saved_profiles():
     assert set(names) == {"alpha", "beta"}
 
 
+def test_combo_yellow_filter_round_trip_and_rescale():
+    profile = _sample_profile()
+    profile.regions[1].combo_yellow_filter = True
+    layout_store.save_layout(profile)
+    loaded = layout_store.load_layout(profile.profile_name)
+    assert not loaded.regions[0].combo_yellow_filter
+    assert loaded.regions[1].combo_yellow_filter
+    scaled = layout_store.rescale_profile(loaded, 1280, 720)
+    assert not scaled.regions[0].combo_yellow_filter
+    assert scaled.regions[1].combo_yellow_filter
+    layout_store.save_layout(scaled)
+    assert layout_store.load_layout(profile.profile_name).regions[1].combo_yellow_filter
+
+
+def test_legacy_layouts_default_to_unfiltered_combo():
+    data = _sample_profile().to_dict()
+    for region in data["regions"]:
+        region.pop("combo_yellow_filter")
+    loaded = LayoutProfile.from_dict(data)
+    assert all(not region.combo_yellow_filter for region in loaded.regions)
+
+
 def test_load_layout_checked_raises_on_resolution_mismatch():
     layout_store.save_layout(_sample_profile("hd", width=1920, height=1080))
     with pytest.raises(layout_store.ResolutionMismatchError) as exc_info:

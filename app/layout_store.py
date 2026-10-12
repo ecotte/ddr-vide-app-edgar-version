@@ -153,6 +153,7 @@ def rescale_profile(profile: LayoutProfile, new_width: int, new_height: int) -> 
                 },
                 digit_templates_reviewed=r.digit_templates_reviewed,
                 score_template_version=r.score_template_version,
+                combo_yellow_filter=r.combo_yellow_filter,
             )
         )
     return LayoutProfile(

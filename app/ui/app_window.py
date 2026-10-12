@@ -60,6 +60,7 @@ class App(tk.Tk):
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
         self._dropped_analysis_frames = 0
+        self._recognition_photos = {}
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -388,7 +389,10 @@ class App(tk.Tk):
         self.video_tab.redraw_region_overlays(self.regions)
 
     def _update_recognition_row(self, rr: RegionFrameResult) -> None:
-        photo = self._make_thumbnail_photo(rr.crop)
+        photo = self._make_thumbnail_photo(
+            rr.crop, self._recognition_photos.get(rr.region.key()),
+        )
+        self._recognition_photos[rr.region.key()] = photo
         if rr.region.kind == "arrow":
             tracker_status: ArrowTrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_arrow_status(rr, tracker_status)
@@ -403,15 +407,21 @@ class App(tk.Tk):
             )
 
     @staticmethod
-    def _make_thumbnail_photo(crop) -> Optional[ImageTk.PhotoImage]:
+    def _make_thumbnail_photo(crop, existing=None, *, max_width=240, max_height=96) -> Optional[ImageTk.PhotoImage]:
         if crop is None or crop.size == 0:
             return None
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(crop_rgb)
         w, h = pil_img.size
-        up = max(1, 120 // max(w, 1))
-        if up > 1:
-            pil_img = pil_img.resize((w * up, h * up), Image.NEAREST)
+        scale = min(max(1, 120 // max(w, 1)), max_width / w, max_height / h)
+        if scale != 1:
+            pil_img = pil_img.resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                Image.Resampling.LANCZOS if scale < 1 else Image.Resampling.NEAREST,
+            )
+        if existing is not None and (existing.width(), existing.height()) == pil_img.size:
+            existing.paste(pil_img)
+            return existing
         return ImageTk.PhotoImage(pil_img)
 
     @staticmethod
@@ -480,7 +490,7 @@ class App(tk.Tk):
         self._analysis_generation += 1
         self.analysis.set_regions(self.regions)  # reload decoded references, resets tracking
 
-        photo = self._make_thumbnail_photo(crop)
+        photo = self._make_thumbnail_photo(crop, max_width=96, max_height=64)
         self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo, len(references))
         self.video_tab.set_processing_status(
             f"Captured '{state}' reference {len(references)} for {region.label} at the current frame."
@@ -594,6 +604,17 @@ class App(tk.Tk):
             "; ".join(statuses) if statuses else "Score calibration: no score region"
         )
 
+    def set_combo_yellow_filter(self, region: Region, enabled: bool) -> None:
+        self.analysis.set_combo_yellow_filter(region, enabled)
+        self._analysis_generation += 1
+        self.video_tab.set_processing_status(
+            f"{region.label}: yellow-digit filter {'on' if enabled else 'off'}. "
+            "Save Layout to keep this setting. Accepted values and existing events are unchanged."
+        )
+        if self._last_frame_position is not None:
+            index, timestamp = self._last_frame_position
+            self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
+
     def teach_score(self, region: Region) -> None:
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", "Open a video and display a clear score first.")
@@ -647,7 +668,7 @@ class App(tk.Tk):
                 if not encoded_images:
                     continue
                 img = image_utils.decode_base64_png_to_crop(encoded_images[-1])
-                photo = self._make_thumbnail_photo(img)
+                photo = self._make_thumbnail_photo(img, max_width=96, max_height=64)
                 self.video_tab.set_arrow_reference_thumbnail(
                     region.key(), state, photo, len(encoded_images)
                 )

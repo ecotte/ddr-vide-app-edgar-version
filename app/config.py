@@ -44,7 +44,7 @@ SCORE_TEMPLATE_VERSION = 1
 
 # Combo digits may be completely hidden by passing arrows. OCR output from
 # those frames must not replace a previously trusted combo with an impossible
-# jump or any lower value.
+# jump. Lower values require repeated high-confidence numeric evidence.
 COMBO_MIN_ALLOWED_INCREASE = 10
 COMBO_MAX_INCREASE_PER_SECOND = 60
 COMBO_MIN_CONFIDENCE = 0.90

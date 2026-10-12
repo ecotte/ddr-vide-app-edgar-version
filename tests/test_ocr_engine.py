@@ -12,11 +12,48 @@ import numpy as np
 import pytest
 import cv2
 
-from app.ocr_engine import OcrEngine, _extract_score_glyphs, _select_numeric_group, score_templates_from_label
+from app.ocr_engine import OcrEngine, _extract_score_glyphs, _preprocess_for_ocr, _select_numeric_group, score_templates_from_label
 
 
 def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
     return ([[left, top], [right, top], [right, bottom], [left, bottom]], text, confidence)
+
+
+def test_yellow_filter_suppresses_glow_and_arrows_without_changing_default():
+    crop = np.zeros((200, 6, 3), dtype=np.uint8)
+    crop[:] = [
+        (0, 255, 255), (255, 255, 255), (255, 0, 255),
+        (0, 0, 255), (240, 30, 40), (40, 170, 200),
+    ]
+    filtered = _preprocess_for_ocr(crop, yellow_filter=True)
+    np.testing.assert_array_equal(filtered[0], [255, 0, 0, 0, 0, 130])
+    np.testing.assert_array_equal(_preprocess_for_ocr(crop), cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY))
+
+
+@pytest.mark.parametrize("text,confidence", [("323", 0.7365), ("828", 0.99)])
+def test_yellow_filter_keeps_actual_ocr_text_and_confidence(text, confidence):
+    crop = np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8)
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.readtext.return_value = [_detection(0, 303, text, confidence)]
+    result = engine.recognize_digits(crop, yellow_filter=True)
+    assert result.raw_text == text
+    assert result.confidence == confidence
+    assert result.error is None
+    np.testing.assert_array_equal(
+        engine._reader.readtext.call_args.args[0],
+        _preprocess_for_ocr(crop, yellow_filter=True),
+    )
+
+
+def test_yellow_filter_does_not_fall_back_to_white_glow():
+    engine = OcrEngine()
+    engine._reader = Mock()
+    result = engine.recognize_digits(np.full((20, 30, 3), 255, dtype=np.uint8), yellow_filter=True)
+    assert result.raw_text == ""
+    assert result.confidence is None
+    assert "No yellow digit signal" in result.error
+    engine._reader.readtext.assert_not_called()
 
 
 def test_numeric_group_ignores_isolated_digit_shapes_beyond_spaces():

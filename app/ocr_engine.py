@@ -73,7 +73,7 @@ class OcrEngine:
                     f"completed successfully. Original error: {exc}"
                 )
 
-    def recognize_digits(self, crop_bgr: np.ndarray) -> OcrResult:
+    def recognize_digits(self, crop_bgr: np.ndarray, *, yellow_filter: bool = False) -> OcrResult:
         """Run OCR on a small crop expected to contain only digits.
 
         Applies a digit allowlist and a simple upscale, since these fields
@@ -86,7 +86,12 @@ class OcrEngine:
             return OcrResult(raw_text="", confidence=None, error="Empty crop (region out of frame bounds?)")
 
         try:
-            processed = _preprocess_for_ocr(crop_bgr)
+            processed = _preprocess_for_ocr(crop_bgr, yellow_filter=yellow_filter)
+            if yellow_filter and not np.any(processed):
+                return OcrResult(
+                    raw_text="", confidence=None,
+                    error="No yellow digit signal. Use a clearer frame or disable the yellow-digit filter.",
+                )
             with self._recognition_lock:
                 detections = self._reader.readtext(
                     processed,
@@ -202,8 +207,13 @@ class OcrEngine:
         )
 
 
-def _preprocess_for_ocr(crop_bgr: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+def _preprocess_for_ocr(crop_bgr: np.ndarray, *, yellow_filter: bool = False) -> np.ndarray:
+    if yellow_filter:
+        blue, green, red = cv2.split(crop_bgr)
+        # Yellow has both red and green, unlike white glow or red/pink arrows.
+        gray = cv2.subtract(np.minimum(red, green), blue)
+    else:
+        gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape[:2]
     scale = 3 if max(h, w) < 200 else 1
     if scale != 1:
