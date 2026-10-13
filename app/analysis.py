@@ -214,6 +214,15 @@ class AnalysisSession:
             self._last_numeric_frame.pop(region.key(), None)
             self._generation += 1
 
+    def set_combo_fast_mode(self, region: Region, enabled: bool) -> None:
+        if region.kind != "combo":
+            raise ValueError("Fast live mode is only available for combo regions.")
+        with self._combo_lock:
+            region.combo_fast_mode = enabled
+            self._numeric_evidence.pop(region.key(), None)
+            self._last_numeric_frame.pop(region.key(), None)
+            self._generation += 1
+
     # -- per-frame processing -------------------------------------------
     def process_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
@@ -336,6 +345,10 @@ class AnalysisSession:
                     and parse_digits(template_result.raw_text) is not None
                     and parse_digits(template_result.raw_text) == parse_digits(ocr_result.raw_text)
                 )
+        elif region.combo_fast_mode:
+            ocr_result = self.ocr_engine.recognize_digits(
+                crop, yellow_filter=region.combo_yellow_filter, fast_mode=True,
+            )
         elif region.combo_yellow_filter:
             ocr_result = self.ocr_engine.recognize_digits(crop, yellow_filter=True)
         else:

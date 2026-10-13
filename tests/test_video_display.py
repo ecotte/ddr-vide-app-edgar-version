@@ -175,9 +175,19 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 button.invoke()
                 controller.teach_score.assert_called_with(region)
             elif region.kind == "combo":
-                checkbox, = [w for w in card.winfo_children() if isinstance(w, ttk.Checkbutton)]
+                checkbox, = [
+                    w for w in card.winfo_children()
+                    if isinstance(w, ttk.Checkbutton) and w["text"] == "Yellow-digit filter"
+                ]
                 checkbox.invoke()
                 controller.set_combo_yellow_filter.assert_called_with(region, True)
+                fast, = [
+                    w for w in card.winfo_children()
+                    if isinstance(w, ttk.Checkbutton) and w["text"] == "Fast live combo"
+                ]
+                fast.invoke()
+                controller.set_combo_fast_mode.assert_called_with(region, True)
+                assert "(unconfirmed)" in row_data["candidate_var"].get()
             else:
                 buttons = [
                     button for frame in card.winfo_children() if isinstance(frame, ttk.Frame)

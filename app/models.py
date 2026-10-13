@@ -40,6 +40,7 @@ class Region:
     digit_templates_reviewed: bool = False
     score_template_version: int = 0
     combo_yellow_filter: bool = False
+    combo_fast_mode: bool = False
 
     def __post_init__(self) -> None:
         normalized = {}
@@ -86,6 +87,7 @@ class Region:
             "digit_templates_reviewed": self.digit_templates_reviewed,
             "score_template_version": self.score_template_version,
             "combo_yellow_filter": self.combo_yellow_filter,
+            "combo_fast_mode": self.combo_fast_mode,
         }
 
     @staticmethod
@@ -104,6 +106,7 @@ class Region:
             digit_templates_reviewed=d.get("digit_templates_reviewed") is True,
             score_template_version=int(d.get("score_template_version", 0)),
             combo_yellow_filter=d.get("combo_yellow_filter") is True,
+            combo_fast_mode=d.get("combo_fast_mode") is True,
         )
 
 

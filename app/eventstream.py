@@ -92,6 +92,24 @@ class Outbox:
         with self._lock, self._db:
             self._db.execute("DELETE FROM pending WHERE id=?", (row_id,))
 
+    def next_events(self, limit: int = 100) -> list[tuple[int, str, str]]:
+        if limit < 1:
+            raise ValueError("Outbox read limit must be positive.")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, session_id, body FROM pending ORDER BY id LIMIT ?", (limit,),
+            ).fetchall()
+        group = []
+        for row in rows:
+            if group and row[1] != group[0][1]:
+                break
+            group.append(row)
+        return group
+
+    def acknowledge_many(self, row_ids: list[int]) -> None:
+        with self._lock, self._db:
+            self._db.executemany("DELETE FROM pending WHERE id=?", [(row_id,) for row_id in row_ids])
+
     def count(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
@@ -102,7 +120,7 @@ class Outbox:
 
 
 class Sender(Protocol):
-    def send(self, body: str, session_id: str) -> None: ...
+    def send_many(self, bodies: list[str], session_id: str) -> int: ...
     def close(self) -> None: ...
 
 
@@ -117,11 +135,25 @@ class EventHubSender:
         )
 
     def send(self, body: str, session_id: str) -> None:
+        self.send_many([body], session_id)
+
+    def send_many(self, bodies: list[str], session_id: str) -> int:
+        if not bodies:
+            raise ValueError("Cannot send an empty event group.")
         batch = self._client.create_batch(partition_key=session_id)
-        event = EventData(body)
-        event.content_type = "application/json"
-        batch.add(event)
+        count = 0
+        for body in bodies:
+            event = EventData(body)
+            event.content_type = "application/json"
+            try:
+                batch.add(event)
+            except ValueError:
+                if not count:
+                    raise
+                break
+            count += 1
         self._client.send_batch(batch, timeout=15)
+        return count
 
     def close(self) -> None:
         self._client.close()
@@ -233,16 +265,17 @@ class EventstreamPublisher:
             connection_string = ""
             while not self._stop.is_set():
                 try:
-                    row = outbox.next_event()
-                    if row is None:
+                    rows = outbox.next_events()
+                    if not rows:
                         self._wake.wait(0.5)
                         self._wake.clear()
                         continue
-                    row_id, session_id, body = row
-                    sender.send(body, session_id)
-                    outbox.acknowledge(row_id)
+                    sent = sender.send_many([row[2] for row in rows], rows[0][1])
+                    if type(sent) is not int or not 1 <= sent <= len(rows):
+                        raise ValueError("Sender returned an invalid acknowledged event count.")
+                    outbox.acknowledge_many([row[0] for row in rows[:sent]])
                     with self._lock:
-                        self._sent += 1
+                        self._sent += sent
                         if not self._not_queued:
                             self._error = ""
                     delay = 1

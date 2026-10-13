@@ -709,6 +709,35 @@ def test_combo_just_below_confidence_floor_is_not_accepted():
     assert bus.events == []
 
 
+def test_fast_live_combo_retains_accepted_value_for_uncertain_candidates(monkeypatch):
+    engine = FakeOcrEngine([])
+    readings = iter([OcrResult("77", 0.99), OcrResult("100", 0.6), OcrResult("106", 0.99)])
+    recognize = Mock(side_effect=lambda *args, **kwargs: next(readings))
+    monkeypatch.setattr(engine, "recognize_digits", recognize)
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    generation = session.generation
+    session.set_combo_fast_mode(region, True)
+    assert session.generation > generation
+    result = session.process_background_numeric_frame(_frame(), 60, 1000).region_results[0]
+    assert result.candidate_value == 100
+    assert result.accepted_value == 77
+    assert result.confidence == 0.6
+    assert "low-confidence" in result.validation_note
+    assert len(bus.events) == 1
+    assert recognize.call_args.kwargs == {"yellow_filter": False, "fast_mode": True}
+    result = session.process_background_numeric_frame(_frame(), 120, 2000).region_results[0]
+    assert result.accepted_value == 106
+    assert [event.payload["new_value"] for event in bus.events] == [77, 106]
+    session.set_combo_fast_mode(region, False)
+    assert not region.combo_fast_mode
+    assert session.tracker_for(region).accepted_value == 106
+
+
 def test_combo_filter_routes_only_enabled_region_and_keeps_confidence_floor(monkeypatch):
     engine = FakeOcrEngine(["100"])
     seen_modes = []

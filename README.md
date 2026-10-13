@@ -1,5 +1,36 @@
 # DDR Video Event Extractor - Milestone 1 (recorded video)
 
+See the [architecture diagram and data-flow guide](docs/architecture.md) for the
+desktop pipeline, both publishers, Rayfin hosting, Fabric items, authentication,
+storage, and latency boundaries. - Milestone 1 (recorded video)
+
+## Rayfin live scoreboard
+
+The Fabric sender immediately groups up to 100 already-queued events from the
+same session into an SDK request, bounded by the service's message-size limit.
+It never waits for a batch timer or for more events to arrive. A lone event sends
+immediately; bursts avoid one network acknowledgment per event. Events remain
+individual JSON messages in original queue order and are deleted locally only
+after acknowledgment. Failed sends retain the whole unacknowledged group for retry.
+This improves outbox throughput without changing Eventhouse ingestion policies
+or the independent Rayfin scoreboard path.
+
+An optional [Rayfin scoreboard](scoreboard/README.md) displays current P1/P2
+scores, combos, and per-arrow hit counts without waiting for Eventhouse ingestion.
+It requires Microsoft sign-in (anonymous data access is blocked by this tenant).
+Enable **Events > Share live scoreboard**. The desktop manages its Rayfin SDK
+connection automatically; there is no local server, snapshot file, or broadcaster
+tab to run. The publisher and viewer each wait one second after the previous
+request completes; latency is not guaranteed to be sub-second.
+Sharing is off at startup, excludes synthetic samples, and does not change
+the existing durable Fabric publishing path. - Milestone 1 (recorded video)
+
+Wide, flat score rows are stretched vertically for OCR when the median padded
+digit-box width/height ratio is at least 1.3. This targets skins whose flattened
+`1` was read as `7`; ordinary score proportions, saved teaching templates, crop
+previews, and confidence thresholds are unchanged. Low-confidence results still
+require confirmation and can remain unaccepted. - Milestone 1 (recorded video)
+
 A local Windows desktop application that watches a **recorded** Dance
 Dance Revolution gameplay video, lets you calibrate on-screen regions
 (score, combo, and per-lane arrow receptors), reads the score/combo
@@ -109,6 +140,8 @@ For yellow combo digits with a white glow, try **Yellow-digit filter** in that c
 With this filter enabled, combo OCR first tries recognition directly on the crop, avoiding the expensive text-detection stage. It uses that result only for a single digits-only reading within the combo length limit and with at least 0.90 confidence. Otherwise it falls back to the existing detector on the same filtered crop. Confidence is never increased artificially, and normal confirmation and jump checks still apply. Clear crops can be much faster; obstructed or uncertain crops still incur detector latency, and either OCR path can make mistakes. Unfiltered combos and scores keep their existing OCR paths.
 
 Combo OCR allows the engine to recognize surrounding words such as "combo", then ignores text and mixed letter/number detections instead of forcing letters into digits. Spaces between digits are removed (`6 5` becomes `65`), but letters are never substituted or stripped out of mixed detections to manufacture a number. This applies with and without the yellow filter, including the fast path. A mixed detection is left unreadable until a clearer frame separates the number from the text; OCR can still mistake a letter for a digit. Score glyph OCR retains its digit allowlist.
+
+For fresher combo updates, enable **Fast live combo** in that region's card and **Save Layout**. This opt-in mode runs recognition directly on the crop and never invokes slow text detection, even when the reading is uncertain. It works with or without the yellow filter. Readable candidates that differ from the accepted value are labeled **unconfirmed**; readings below 0.90 confidence cannot replace the accepted combo or emit combo-change events. Non-numeric/mixed results remain unreadable with a visible explanation. Existing jump and correction rules still apply. Keep the crop tight around the digits: this mode can miss readings the full detector would recover and can still make confident mistakes. Disable it to restore detector fallback. Old layouts default to off; saving/loading or rescaling preserves the choice. Toggling clears pending evidence without erasing accepted values or events. Score OCR remains unchanged and still contributes to the worker's total latency.
 
 ### 5b. Arrow lanes (hit/miss, per direction per player)
 

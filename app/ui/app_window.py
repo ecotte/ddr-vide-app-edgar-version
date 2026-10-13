@@ -17,6 +17,7 @@ from app import config, credential_store, image_utils, layout_store
 from app.credential_store import CredentialStorageError
 from app.analysis import AnalysisSession, RegionFrameResult
 from app.event_bus import EventBus
+from app.live_scoreboard import LiveScoreboard
 from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
@@ -37,6 +38,8 @@ class App(tk.Tk):
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
+        self.live_scoreboard = LiveScoreboard()
+        self.event_bus.set_live_sink(self.live_scoreboard.record)
         self.publisher = EventstreamPublisher(os.path.join(config.DATA_DIR, "eventstream-outbox.sqlite3"))
         self._publishing_enabled = False
         self._publisher_poll_after_id = None
@@ -257,6 +260,7 @@ class App(tk.Tk):
 
         self._last_frame_bgr = frame_bgr  # available for arrow reference capture regardless of analysis state
         self._last_frame_position = (frame_index, video_time_ms)
+        self.live_scoreboard.advance_video(video_time_ms, is_seek=is_seek)
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
 
@@ -655,6 +659,17 @@ class App(tk.Tk):
             index, timestamp = self._last_frame_position
             self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
 
+    def set_combo_fast_mode(self, region: Region, enabled: bool) -> None:
+        self.analysis.set_combo_fast_mode(region, enabled)
+        self._analysis_generation += 1
+        self.video_tab.set_processing_status(
+            f"{region.label}: fast live combo {'on' if enabled else 'off'}. "
+            "Save Layout to keep this setting. Acceptance thresholds are unchanged."
+        )
+        if self._last_frame_position is not None:
+            index, timestamp = self._last_frame_position
+            self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
+
     def teach_score(self, region: Region) -> None:
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", "Open a video and display a clear score first.")
@@ -817,7 +832,28 @@ class App(tk.Tk):
     def _poll_publisher_status(self) -> None:
         status = self.publisher.status()
         self.events_tab.set_publishing_status(status.text(), self._publishing_enabled)
+        self.events_tab.set_scoreboard_status(self.live_scoreboard.status())
+        self.events_tab.scoreboard_var.set(self.live_scoreboard.active)
         self._publisher_poll_after_id = self.after(500, self._poll_publisher_status)
+
+    def toggle_scoreboard(self, enabled: bool) -> None:
+        if enabled:
+            if not messagebox.askyesno(
+                "Share live scoreboard",
+                "Publish future recorded scores, combos and arrow-hit insights directly to Rayfin? "
+                "Microsoft sign-in may open once. Authorized scoreboard viewers can see these values.\n\n"
+                "No video, reference images or credentials are shared. "
+                "Fabric publishing is independent. Start sharing before starting a new game.",
+            ):
+                self.events_tab.scoreboard_var.set(False)
+                return
+            try:
+                self.live_scoreboard.start(self.event_bus.session_id)
+            except ValueError as exc:
+                self.events_tab.scoreboard_var.set(False)
+                messagebox.showerror("Scoreboard publisher", str(exc))
+        else:
+            self.live_scoreboard.stop()
 
     def send_mapping_sample(self) -> None:
         if not self._publishing_enabled:
@@ -853,6 +889,8 @@ class App(tk.Tk):
     def _on_close(self) -> None:
         self._stop_playing()
         self.analysis.stop()
+        self.event_bus.set_live_sink(None)
+        self.live_scoreboard.stop()
         self.event_bus.set_delivery_sink(None)
         if self._publisher_poll_after_id is not None:
             self.after_cancel(self._publisher_poll_after_id)

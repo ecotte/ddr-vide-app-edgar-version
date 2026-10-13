@@ -283,7 +283,10 @@ def test_combo_filter_checkbox_updates_controller_and_retains_loaded_setting():
         )
         VideoTab._build_numeric_row(view, combo)
         row = view.recognition_container.winfo_children()[0]
-        checkbox, = [w for w in row.winfo_children() if isinstance(w, ttk.Checkbutton)]
+        checkbox, = [
+            w for w in row.winfo_children()
+            if isinstance(w, ttk.Checkbutton) and w["text"] == "Yellow-digit filter"
+        ]
         assert not view._region_rows[combo.key()]["yellow_filter_var"].get()
         checkbox.invoke()
         assert combo.combo_yellow_filter

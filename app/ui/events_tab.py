@@ -54,6 +54,16 @@ class EventsTab(ttk.Frame):
         ttk.Label(
             self, textvariable=self.publish_status, wraplength=1000,
         ).pack(fill="x", pady=(0, 6))
+        self.scoreboard_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self, text="Share live scoreboard",
+            variable=self.scoreboard_var,
+            command=lambda: self.controller.toggle_scoreboard(self.scoreboard_var.get()),
+        ).pack(anchor="w")
+        self.scoreboard_status = tk.StringVar(value="Live scoreboard: off")
+        ttk.Label(self, textvariable=self.scoreboard_status, wraplength=1000).pack(
+            fill="x", pady=(0, 6),
+        )
 
         self.tree = ttk.Treeview(self, columns=COLUMNS, show="headings", height=20)
         headings = {
@@ -121,6 +131,9 @@ class EventsTab(ttk.Frame):
         self.publish_status.set(text)
         self.publish_button.configure(text="Disconnect Fabric" if enabled else "Connect to Fabric...")
         self.test_button.configure(state="normal" if enabled else "disabled")
+
+    def set_scoreboard_status(self, text: str) -> None:
+        self.scoreboard_status.set(text)
 
     def _refresh_count(self) -> None:
         self.count_var.set(f"{len(self.tree.get_children())} events recorded")

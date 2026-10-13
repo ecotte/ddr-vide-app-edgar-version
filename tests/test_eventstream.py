@@ -54,6 +54,11 @@ class FakeSender:
     def close(self):
         self.closed = True
 
+    def send_many(self, bodies, session_id):
+        for body in bodies:
+            self.send(body, session_id)
+        return len(bodies)
+
 
 @pytest.mark.parametrize("connection", [
     "", "SharedAccessKey=secret",
@@ -205,7 +210,7 @@ def test_failed_ack_retains_event_for_at_least_once_retry(tmp_path, monkeypatch)
     try:
         publisher.start(CONNECTION)
         monkeypatch.setattr(
-            publisher._outbox, "acknowledge", Mock(side_effect=sqlite3.OperationalError())
+            publisher._outbox, "acknowledge_many", Mock(side_effect=sqlite3.OperationalError())
         )
         publisher.enqueue(sample())
         wait_until(lambda: not publisher.running)
@@ -231,6 +236,135 @@ def test_sdk_uses_json_session_partition_and_acknowledged_send(monkeypatch):
     assert factory.call_args.kwargs["retry_total"] == 0
     sender.close()
     client.close.assert_called_once()
+
+
+def test_existing_hundred_event_backlog_sends_in_one_request_without_waiting(tmp_path):
+    path = str(tmp_path / "queue.sqlite3")
+    bus = EventBus()
+    events = [sample(bus) for _ in range(100)]
+    queue = Outbox(path, TARGET)
+    for event in events:
+        queue.enqueue(event)
+    queue.close()
+    sender = FakeSender()
+    sender.send_many = Mock(wraps=sender.send_many)
+    publisher = EventstreamPublisher(path, lambda _: sender)
+    try:
+        publisher.start(CONNECTION)
+        wait_until(lambda: publisher.status().sent == 100)
+        assert publisher.status().pending == 0
+        sender.send_many.assert_called_once()
+        assert [json.loads(body)["event_id"] for body in sender.send_many.call_args.args[0]] == [
+            event.event_id for event in events
+        ]
+    finally:
+        publisher.close(5)
+
+
+def test_outbox_groups_are_bounded_ordered_and_do_not_cross_sessions(tmp_path):
+    queue = Outbox(str(tmp_path / "queue.sqlite3"), TARGET)
+    a, b = EventBus(), EventBus()
+    events = [sample(a) for _ in range(105)] + [sample(b), sample(a)]
+    try:
+        for event in events:
+            queue.enqueue(event)
+        first = queue.next_events()
+        assert len(first) == 100
+        queue.acknowledge_many([row[0] for row in first])
+        for size, session in ((5, a.session_id), (1, b.session_id), (1, a.session_id)):
+            rows = queue.next_events()
+            assert len(rows) == size
+            assert all(row[1] == session for row in rows)
+            queue.acknowledge_many([row[0] for row in rows])
+        assert queue.next_events() == []
+    finally:
+        queue.close()
+
+
+def test_sdk_sends_only_fitting_prefix_and_reports_acknowledged_count(monkeypatch):
+    client = Mock()
+    client.create_batch.return_value.add.side_effect = [None, None, ValueError("batch full")]
+    monkeypatch.setattr(
+        "app.eventstream.EventHubProducerClient.from_connection_string", lambda *a, **kw: client,
+    )
+    sender = EventHubSender(CONNECTION)
+    assert sender.send_many(['{"n":1}', '{"n":2}', '{"n":3}'], "session") == 2
+    client.send_batch.assert_called_once()
+
+
+def test_sdk_oversized_first_event_is_reported_without_sending(monkeypatch):
+    client = Mock()
+    client.create_batch.return_value.add.side_effect = ValueError("event too large")
+    monkeypatch.setattr(
+        "app.eventstream.EventHubProducerClient.from_connection_string", lambda *a, **kw: client,
+    )
+    with pytest.raises(ValueError):
+        EventHubSender(CONNECTION).send_many(["large"], "session")
+    client.send_batch.assert_not_called()
+
+
+def test_only_acknowledged_prefix_is_removed_before_next_send(tmp_path):
+    path = str(tmp_path / "queue.sqlite3")
+    bus = EventBus()
+    events = [sample(bus) for _ in range(3)]
+    queue = Outbox(path, TARGET)
+    for event in events:
+        queue.enqueue(event)
+    queue.close()
+    entered, release = threading.Event(), threading.Event()
+    groups = []
+
+    class PartialSender(FakeSender):
+        def send_many(self, bodies, session_id):
+            groups.append(bodies)
+            if len(groups) == 1:
+                return 2
+            entered.set()
+            assert release.wait(5)
+            return len(bodies)
+
+    publisher = EventstreamPublisher(path, lambda _: PartialSender())
+    try:
+        publisher.start(CONNECTION)
+        assert entered.wait(5)
+        assert publisher.status().sent == 2
+        assert publisher.status().pending == 1
+        assert len(groups[0]) == 3
+        assert [json.loads(body)["event_id"] for body in groups[1]] == [events[2].event_id]
+        release.set()
+        wait_until(lambda: publisher.status().sent == 3)
+    finally:
+        release.set()
+        publisher.close(5)
+
+
+def test_failed_group_retains_every_event_and_retries_same_payloads(tmp_path):
+    path = str(tmp_path / "queue.sqlite3")
+    bus = EventBus()
+    queue = Outbox(path, TARGET)
+    for _ in range(3):
+        queue.enqueue(sample(bus))
+    queue.close()
+    groups = []
+
+    class FailingGroup(FakeSender):
+        def send_many(self, bodies, session_id):
+            groups.append((bodies, session_id))
+            if len(groups) == 1:
+                raise OSError("private transport detail")
+            return len(bodies)
+
+    publisher = EventstreamPublisher(path, lambda _: FailingGroup())
+    try:
+        publisher.start(CONNECTION)
+        wait_until(lambda: bool(publisher.status().error))
+        assert publisher.status().pending == 3
+        assert publisher.status().sent == 0
+        assert "private" not in publisher.status().error
+        wait_until(lambda: publisher.status().sent == 3)
+        assert groups[0] == groups[1]
+    finally:
+        publisher.close(5)
 
 
 def test_mapping_sample_is_synthetic_and_does_not_change_gameplay_session():

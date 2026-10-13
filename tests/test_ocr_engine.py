@@ -19,6 +19,26 @@ def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
     return ([[left, top], [right, top], [right, bottom], [left, bottom]], text, confidence)
 
 
+@pytest.mark.parametrize("width,height,stretch", [(39, 26, 3), (35, 30, 1), (24, 32, 1)])
+def test_only_wide_flat_score_rows_are_stretched_for_ocr(monkeypatch, width, height, stretch):
+    gray = np.zeros((height + 10, width + 10), dtype=np.uint8)
+    boxes = [[0, width, 0, height]]
+    monkeypatch.setattr(
+        "app.ocr_engine._extract_score_glyphs",
+        lambda _: (gray, boxes, [np.zeros((32, 24), dtype=np.uint8)]),
+    )
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, width, "1", 0.96)]
+    result = engine.recognize_score_digits(np.zeros((*gray.shape, 3), dtype=np.uint8))
+    args, kwargs = engine._reader.recognize.call_args
+    assert args[0].shape == (gray.shape[0] * stretch, gray.shape[1])
+    assert kwargs["horizontal_list"] == [[0, width, 0, height * stretch]]
+    assert boxes == [[0, width, 0, height]]
+    assert result.raw_text == "1"
+    assert result.confidence == 0.96
+
+
 def test_yellow_filter_suppresses_glow_and_arrows_without_changing_default():
     crop = np.zeros((200, 6, 3), dtype=np.uint8)
     crop[:] = [
@@ -155,6 +175,34 @@ def test_yellow_combo_fast_path_surfaces_engine_failures():
     result = engine.recognize_digits(np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8), yellow_filter=True)
     assert "recognizer failed" in result.error
     assert result.raw_text == ""
+    engine._reader.readtext.assert_not_called()
+
+
+@pytest.mark.parametrize("yellow_filter", [False, True])
+@pytest.mark.parametrize("confidence", [0.1, 0.899999, 0.90, 0.99])
+def test_fast_live_mode_never_runs_detector_and_preserves_confidence(yellow_filter, confidence):
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 303, "1 06", confidence)]
+    result = engine.recognize_digits(
+        np.full((180, 303, 3), (0, 255, 255), dtype=np.uint8),
+        yellow_filter=yellow_filter, fast_mode=True,
+    )
+    assert result.raw_text == "106"
+    assert result.confidence == confidence
+    assert result.error is None
+    engine._reader.readtext.assert_not_called()
+
+
+@pytest.mark.parametrize("text", ["combo", "1b6", "", "123456"])
+def test_fast_live_mode_reports_unreadable_without_falling_back(text):
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 303, text, 0.99)]
+    result = engine.recognize_digits(np.zeros((180, 303, 3), dtype=np.uint8), fast_mode=True)
+    assert result.raw_text == ""
+    assert result.confidence is None
+    assert "slow detection is disabled" in result.error
     engine._reader.readtext.assert_not_called()
 
 

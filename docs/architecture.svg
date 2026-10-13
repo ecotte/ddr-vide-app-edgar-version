@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1320" viewBox="0 0 1800 1320" role="img" aria-labelledby="title desc">
+  <title id="title">DDR overall architecture: desktop directly publishes live state and event history</title>
+  <desc id="desc">A shared desktop recognition pipeline feeds an EventBus. One branch publishes current player state through a desktop-managed SDK worker to Rayfin SQL and a remote viewer. The other sends queued events to Eventstream, Eventhouse, and the DDR Live dashboard. No local web server, snapshot file, or broadcaster tab is required.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9Z" fill="#bdcce0"/></marker>
+    <marker id="green" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9Z" fill="#60e1cf"/></marker>
+    <marker id="purple" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 L9 4.5 L0 9Z" fill="#b5a5ff"/></marker>
+    <style>
+      text { font-family: 'Segoe UI', Arial, sans-serif; fill: #edf4ff; }
+      .title { font-size: 32px; font-weight: 700; }
+      .heading { font-size: 21px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 650; }
+      .body { font-size: 16px; fill: #c9d7e9; }
+      .small { font-size: 14px; fill: #b3c5de; }
+      .boundary { fill: #0e1a2b; stroke: #35475e; stroke-width: 1.5; rx: 18; }
+      .box { fill: #182840; stroke: #6883a4; stroke-width: 1.5; rx: 12; }
+      .live { fill: #123736; stroke: #60d4c2; stroke-width: 1.5; rx: 12; }
+      .history { fill: #282641; stroke: #a597e5; stroke-width: 1.5; rx: 12; }
+      .line { fill: none; stroke: #bdcce0; stroke-width: 2.5; marker-end: url(#arrow); }
+      .live-line { fill: none; stroke: #60e1cf; stroke-width: 3; marker-end: url(#green); }
+      .history-line { fill: none; stroke: #b5a5ff; stroke-width: 3; marker-end: url(#purple); }
+      .control { fill: none; stroke: #bdcce0; stroke-width: 1.7; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1800" height="1320" fill="#080f1d"/>
+  <text x="35" y="48" class="title">Dance Dance Revolution - one overall architecture</text>
+  <text x="35" y="78" class="body">The desktop directly publishes current scoreboard state and durable event history through two independent paths.</text>
+  <rect x="30" y="105" width="1740" height="465" class="boundary"/>
+  <text x="55" y="140" class="heading">WORKSHOP PC - DDR DESKTOP APP</text>
+  <rect x="55" y="165" width="290" height="125" class="box"/>
+  <text x="73" y="194" class="label">Video + saved layout</text>
+  <text x="73" y="221" class="body">OpenCV frames and video time</text>
+  <text x="73" y="245" class="body">P1/P2 regions; arrow references</text>
+  <text x="73" y="270" class="body">Score teaching + OCR settings</text>
+  <path d="M345 226 H389" class="line"/>
+  <rect x="395" y="165" width="365" height="125" class="box"/>
+  <text x="413" y="194" class="label">Recognition / analysis</text>
+  <text x="413" y="221" class="body">Arrows: similarity + hit/miss edges</text>
+  <text x="413" y="245" class="body">Score/combo: background OCR</text>
+  <text x="413" y="270" class="body">Latest frame + bounded confirmation</text>
+  <path d="M760 226 H804" class="line"/>
+  <rect x="810" y="165" width="390" height="125" class="box"/>
+  <text x="828" y="194" class="label">Validation + recognition panel</text>
+  <text x="828" y="221" class="body">Raw OCR -> candidate -> accepted</text>
+  <text x="828" y="245" class="body">Confidence, repeats, jumps, corrections</text>
+  <text x="828" y="270" class="body">Unconfirmed observations stay separate</text>
+  <path d="M1200 226 H1244" class="line"/>
+  <rect x="1250" y="165" width="495" height="125" class="box"/>
+  <text x="1268" y="194" class="label">EventBus - shared event fan-out</text>
+  <text x="1268" y="221" class="body">Record events; event_id / session_id / sequence</text>
+  <text x="1268" y="245" class="body">Score, combo, observation, hit and miss events</text>
+  <text x="1268" y="270" class="body">Local Events table + optional JSONL export</text>
+  <path d="M1495 290 V320 H445 V374" class="live-line"/>
+  <path d="M1495 320 H1355 V374" class="history-line"/>
+  <circle cx="1495" cy="320" r="5" fill="#edf4ff"/>
+  <text x="468" y="348" class="body" style="fill:#79e8d7">Share live scoreboard ON</text>
+  <text x="1080" y="348" class="body" style="fill:#c7baff">Connect to Fabric ON</text>
+  <rect x="55" y="380" width="780" height="155" class="live"/>
+  <text x="73" y="410" class="label">Desktop scoreboard publisher - managed automatically by the app</text>
+  <text x="73" y="438" class="body">Calculate current scores, combos, arrow counts, balance and five-second hit pace</text>
+  <text x="73" y="463" class="body">In-memory state -> private process pipes -> Rayfin SDK worker</text>
+  <text x="73" y="488" class="body">One latest-state write at a time; acknowledgment/error returned to desktop UI</text>
+  <text x="73" y="514" class="small">No local website, Vite server, snapshot file, or broadcaster tab to run</text>
+  <rect x="965" y="380" width="780" height="155" class="history"/>
+  <text x="983" y="410" class="label">Durable outbox + Python Event Hub publisher</text>
+  <text x="983" y="438" class="body">EventBus -> data/eventstream-outbox.sqlite3 -> background sender</text>
+  <text x="983" y="463" class="body">Up to 100 already-waiting events; no batch-collection timer</text>
+  <text x="983" y="488" class="body">Preserve order; delete only acknowledged rows; retry failed sends</text>
+  <text x="983" y="514" class="small">Full event history includes misses; each event remains a separate JSON message</text>
+  <path d="M200 290 V355 H42 V453 H54" class="control"/>
+  <text x="60" y="345" class="small">Video time ages hit pace</text>
+  <text x="35" y="605" class="body">Live state replaces old state; event history is retained. Both paths originate in the same desktop app.</text>
+  <rect x="30" y="635" width="1740" height="400" class="boundary"/>
+  <text x="55" y="674" class="heading">MICROSOFT FABRIC</text>
+  <text x="1110" y="674" class="heading">Workspace: Dance Dance Revolution</text>
+  <path d="M445 535 V704" class="live-line"/>
+  <path d="M1355 535 V615 H1050 V704" class="history-line"/>
+  <text x="465" y="630" class="small">HTTPS current-state upsert</text>
+  <text x="1090" y="632" class="small">AMQP over WebSockets :443</text>
+  <rect x="55" y="710" width="780" height="110" class="live"/>
+  <text x="73" y="741" class="label">DDR Scoreboard - Rayfin / Fabric AppBackend</text>
+  <text x="73" y="769" class="body">GraphQL / Data API Builder writes and reads</text>
+  <text x="73" y="795" class="body">Also hosts the React scoreboard frontend</text>
+  <path d="M445 820 V864" class="live-line"/>
+  <rect x="55" y="870" width="780" height="125" class="live"/>
+  <text x="73" y="900" class="label">DDR Scoreboard - SQL Database</text>
+  <text x="73" y="928" class="body">One LiveBoard row: latest snapshot + publishedAt heartbeat</text>
+  <text x="73" y="953" class="body">Current values and insights, not a second copy of event history</text>
+  <text x="73" y="979" class="small">Publisher waits one second after each completed request; latest state wins locally</text>
+  <rect x="965" y="710" width="780" height="110" class="history"/>
+  <text x="983" y="741" class="label">DDR-events - Eventstream</text>
+  <text x="983" y="769" class="body">Event Hub-compatible source -> Direct ingestion + JSON mapping</text>
+  <text x="983" y="795" class="body">Receives original recorded event envelopes</text>
+  <path d="M1355 820 V864" class="history-line"/>
+  <rect x="965" y="870" width="780" height="125" class="history"/>
+  <text x="983" y="900" class="label">DDR-Telemetry - Eventhouse</text>
+  <text x="983" y="928" class="body">Contains DDR-Telemetry KQL Database -> raw_events table</text>
+  <text x="983" y="953" class="body">Persistent history; streaming ingestion enabled</text>
+  <text x="983" y="979" class="small">Dashboard queries deduplicate event_id and select the latest gameplay session</text>
+  <path d="M445 995 V1074" class="live-line"/>
+  <path d="M1355 995 V1074" class="history-line"/>
+  <path d="M835 765 H885 V1130 H834" class="live-line"/>
+  <text x="70" y="1060" class="small">Latest state via data API; frontend assets from AppBackend</text>
+  <text x="985" y="1060" class="small">KQL queries</text>
+  <rect x="55" y="1080" width="780" height="110" class="live"/>
+  <text x="73" y="1110" class="label">Remote scoreboard viewer - browser</text>
+  <text x="73" y="1138" class="body">P1/P2 scores, combos, per-arrow hits, arrow balance and hit pace</text>
+  <text x="73" y="1165" class="small">One-second query cycle; disconnected warning after 15 s without a new heartbeat</text>
+  <rect x="965" y="1080" width="780" height="110" class="history"/>
+  <text x="983" y="1110" class="label">DDR Live - Real-Time Dashboard</text>
+  <text x="983" y="1138" class="body">14 KQL tiles; ten-second refresh; trends, accepted values and events</text>
+  <text x="983" y="1165" class="small">Synthetic test events excluded; separate from the live Rayfin scoreboard</text>
+  <rect x="400" y="1230" width="1000" height="60" class="box"/>
+  <text x="418" y="1256" class="label">VS Code + Rayfin CLI + Fabric APIs - build, deploy and configure</text>
+  <text x="418" y="1279" class="small">Vite is a frontend development/build tool only, not part of the workshop data path.</text>
+  <path d="M400 1260 H30 V765 H54" class="control"/>
+  <path d="M1400 1260 H1765 V1135 H1746" class="control"/>
+  <text x="35" y="1310" class="small">Solid: data flow. Dashed: video timing / configuration. No Eventhouse-to-Rayfin link. Polling interval is not an end-to-end latency guarantee.</text>
+</svg>

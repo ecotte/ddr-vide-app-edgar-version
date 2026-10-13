@@ -73,7 +73,9 @@ class OcrEngine:
                     f"completed successfully. Original error: {exc}"
                 )
 
-    def recognize_digits(self, crop_bgr: np.ndarray, *, yellow_filter: bool = False) -> OcrResult:
+    def recognize_digits(
+        self, crop_bgr: np.ndarray, *, yellow_filter: bool = False, fast_mode: bool = False,
+    ) -> OcrResult:
         """Read combo digits while ignoring nearby words instead of forcing them into digits."""
         self.ensure_ready()
         if self._init_error is not None:
@@ -89,7 +91,7 @@ class OcrEngine:
                     error="No yellow digit signal. Use a clearer frame or disable the yellow-digit filter.",
                 )
             with self._recognition_lock:
-                if yellow_filter:
+                if yellow_filter or fast_mode:
                     height, width = processed.shape
                     direct = self._reader.recognize(
                         processed,
@@ -105,9 +107,14 @@ class OcrEngine:
                             0 < len(text) <= config.FIELD_MAX_DIGITS["combo"]
                             and all(digit in config.OCR_DIGIT_ALLOWLIST for digit in text)
                             and confidence is not None
-                            and confidence >= config.COMBO_MIN_CONFIDENCE
+                            and (fast_mode or confidence >= config.COMBO_MIN_CONFIDENCE)
                         ):
                             return OcrResult(raw_text=text, confidence=float(confidence))
+                    if fast_mode:
+                        return OcrResult(
+                            raw_text="", confidence=None,
+                            error="Fast combo OCR could not isolate a number; slow detection is disabled.",
+                        )
                 detections = self._reader.readtext(
                     processed,
                     detail=1,
@@ -141,6 +148,12 @@ class OcrEngine:
 
         if not boxes or len(boxes) > config.FIELD_MAX_DIGITS["score"]:
             return OcrResult(raw_text="", confidence=None, error=None)
+
+        # Some HUDs squash digits horizontally; restore their vertical proportion
+        # for OCR only, leaving teaching templates and displayed crops unchanged.
+        if np.median([(right - left) / (bottom - top) for left, right, top, bottom in boxes]) >= 1.3:
+            gray = cv2.resize(gray, None, fx=1, fy=3, interpolation=cv2.INTER_CUBIC)
+            boxes = [[left, right, top * 3, bottom * 3] for left, right, top, bottom in boxes]
 
         try:
             with self._recognition_lock:

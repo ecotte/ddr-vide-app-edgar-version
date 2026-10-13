@@ -403,6 +403,7 @@ class VideoTab(ttk.Frame):
                 row, text="Teach score...", command=lambda reg=r: self.controller.teach_score(reg),
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
         yellow_filter_var = None
+        fast_mode_var = None
         if r.kind == "combo":
             yellow_filter_var = tk.BooleanVar(value=r.combo_yellow_filter)
             ttk.Checkbutton(
@@ -411,7 +412,12 @@ class VideoTab(ttk.Frame):
                     reg, var.get()
                 ),
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(row, textvariable=source_var).grid(row=7, column=0, sticky="w", pady=(4, 0))
+            fast_mode_var = tk.BooleanVar(value=r.combo_fast_mode)
+            ttk.Checkbutton(
+                row, text="Fast live combo", variable=fast_mode_var,
+                command=lambda reg=r, var=fast_mode_var: self.controller.set_combo_fast_mode(reg, var.get()),
+            ).grid(row=7, column=0, sticky="w")
+        ttk.Label(row, textvariable=source_var).grid(row=8, column=0, sticky="w", pady=(4, 0))
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
             "kind": "numeric",
@@ -422,6 +428,7 @@ class VideoTab(ttk.Frame):
             "status_var": status_var,
             "yellow_filter_var": yellow_filter_var,
             "source_var": source_var,
+            "fast_mode_var": fast_mode_var,
         }
 
     def _build_arrow_row(self, r, parent=None) -> None:
@@ -488,7 +495,10 @@ class VideoTab(ttk.Frame):
             self._region_thumb_refs[region_key] = crop_photo
             row["thumb_label"].configure(image=crop_photo)
         row["raw_var"].set(f"raw OCR: {raw_text!r}" if raw_text else "raw OCR: (empty)")
-        row["candidate_var"].set(f"candidate: {candidate if candidate is not None else 'unreadable'}")
+        unconfirmed = " (unconfirmed)" if candidate is not None and candidate != accepted else ""
+        row["candidate_var"].set(
+            f"candidate: {candidate if candidate is not None else 'unreadable'}{unconfirmed}"
+        )
         row["accepted_var"].set(f"accepted: {accepted if accepted is not None else 'unknown'}")
         row["status_var"].set(f"status: {status_text}")
         row["source_var"].set(

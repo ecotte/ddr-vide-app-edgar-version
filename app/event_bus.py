@@ -29,6 +29,11 @@ class EventBus:
         self._events: List[Event] = []
         self._lock = threading.RLock()
         self._delivery_sink: Optional[Callable[[Event], None]] = None
+        self._live_sink: Optional[Callable[[Optional[Event], str], None]] = None
+
+    def set_live_sink(self, sink: Optional[Callable[[Optional[Event], str], None]]) -> None:
+        with self._lock:
+            self._live_sink = sink
 
     def set_delivery_sink(self, sink: Optional[Callable[[Event], None]]) -> None:
         """Only future recorded events are forwarded; local history is never replayed."""
@@ -40,6 +45,8 @@ class EventBus:
             self.session_id = str(uuid.uuid4())
             self._sequence = 0
             self._events = []
+            if self._live_sink is not None:
+                self._live_sink(None, self.session_id)
 
     def clear_events(self) -> None:
         """Clear the recorded/displayed events list without starting a new
@@ -83,6 +90,8 @@ class EventBus:
         """Append an event to the in-memory recorded list (for table/export)."""
         with self._lock:
             self._events.append(event)
+            if self._live_sink is not None:
+                self._live_sink(event, self.session_id)
             if self._delivery_sink is not None:
                 self._delivery_sink(event)
 
