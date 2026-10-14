@@ -35,3 +35,5 @@ data/*
 .idea/
 Thumbs.db
 .DS_Store
+data/live-scoreboard.json
+data/live-scoreboard.tmp

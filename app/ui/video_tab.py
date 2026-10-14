@@ -13,6 +13,30 @@ MAX_DISPLAY_W = 960
 MAX_DISPLAY_H = 540
 
 
+def fit_display_size(
+    source_width: int,
+    source_height: int,
+    max_width: int,
+    max_height: int,
+) -> tuple[int, int, float]:
+    if source_width <= 0 or source_height <= 0:
+        raise ValueError("Source dimensions must be positive.")
+    if max_width <= 0 or max_height <= 0:
+        raise ValueError("Display dimensions must be positive.")
+    scale = min(1.0, max_width / source_width, max_height / source_height)
+    return (
+        max(1, round(source_width * scale)),
+        max(1, round(source_height * scale)),
+        scale,
+    )
+
+
+def next_playback_delay_ms(fps: float, processing_seconds: float) -> int:
+    frame_interval_ms = 1000.0 / fps if fps > 0 else 33.0
+    processing_ms = max(0.0, processing_seconds * 1000.0)
+    return max(1, round(frame_interval_ms - processing_ms))
+
+
 class _ScrollableFrame(ttk.Frame):
     """A vertically scrollable container.
 
@@ -74,6 +98,9 @@ class VideoTab(ttk.Frame):
         self._overlay_ids: List[int] = []
         self._region_thumb_refs = {}  # keep PhotoImage refs alive, keyed by region key
         self._photo_image = None  # keep current frame PhotoImage alive
+        self._frame_image_id = None
+        self._frame_image_size = None
+        self._overlay_signature = None
         self._region_rows = {}  # region key -> dict of widgets
         self._suppress_slider_event = False
 
@@ -83,6 +110,7 @@ class VideoTab(ttk.Frame):
     def _build_layout(self) -> None:
         left_scroll = _ScrollableFrame(self)
         left_scroll.grid(row=0, column=0, sticky="nsew")
+        self._left_scroll = left_scroll
         left = left_scroll.inner
 
         right_scroll = _ScrollableFrame(self)
@@ -219,6 +247,8 @@ class VideoTab(ttk.Frame):
         status_box.pack(fill="x", pady=(6, 0))
         self.ocr_status_var = tk.StringVar(value="OCR engine: not loaded yet")
         ttk.Label(status_box, textvariable=self.ocr_status_var).pack(anchor="w")
+        self.calibration_status_var = tk.StringVar(value="Score calibration: not started")
+        ttk.Label(status_box, textvariable=self.calibration_status_var).pack(anchor="w")
         self.processing_status_var = tk.StringVar(value="")
         ttk.Label(status_box, textvariable=self.processing_status_var).pack(anchor="w")
         self.error_status_var = tk.StringVar(value="")
@@ -233,14 +263,28 @@ class VideoTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     # Canvas / video frame display
+    def video_display_limits(self) -> tuple[int, int]:
+        visible_width = self._left_scroll.canvas.winfo_width()
+        if visible_width <= 1:
+            visible_width = MAX_DISPLAY_W
+        return max(1, min(MAX_DISPLAY_W, visible_width - 12)), MAX_DISPLAY_H
+
     def show_frame_image(self, pil_image: Image.Image, display_scale: float) -> None:
         self.display_scale = display_scale
         w, h = pil_image.size
-        self.canvas.config(width=w, height=h)
-        self._photo_image = ImageTk.PhotoImage(pil_image)
-        self.canvas.delete("frame_image")
-        self.canvas.create_image(0, 0, anchor="nw", image=self._photo_image, tags="frame_image")
-        self.canvas.tag_lower("frame_image")
+        if self._frame_image_size != pil_image.size:
+            self.canvas.config(width=w, height=h)
+            self._photo_image = ImageTk.PhotoImage(pil_image)
+            self._frame_image_size = pil_image.size
+            if self._frame_image_id is None:
+                self._frame_image_id = self.canvas.create_image(
+                    0, 0, anchor="nw", image=self._photo_image, tags="frame_image",
+                )
+                self.canvas.tag_lower(self._frame_image_id)
+            else:
+                self.canvas.itemconfigure(self._frame_image_id, image=self._photo_image)
+        else:
+            self._photo_image.paste(pil_image)
 
     def set_video_info(self, text: str) -> None:
         self.video_info_var.set(text)
@@ -267,6 +311,9 @@ class VideoTab(ttk.Frame):
     def set_processing_status(self, text: str) -> None:
         self.processing_status_var.set(text)
 
+    def set_calibration_status(self, text: str) -> None:
+        self.calibration_status_var.set(text)
+
     def set_error_status(self, text: str) -> None:
         self.error_status_var.set(text)
 
@@ -279,6 +326,13 @@ class VideoTab(ttk.Frame):
         self._rebuild_recognition_rows(regions)
 
     def redraw_region_overlays(self, regions) -> None:
+        signature = (
+            self.display_scale,
+            tuple((r.x, r.y, r.w, r.h, r.player, r.kind, r.direction) for r in regions),
+        )
+        if signature == self._overlay_signature:
+            return
+        self._overlay_signature = signature
         for oid in self._overlay_ids:
             self.canvas.delete(oid)
         self._overlay_ids = []
@@ -298,28 +352,73 @@ class VideoTab(ttk.Frame):
         for widget in self.recognition_container.winfo_children():
             widget.destroy()
         self._region_rows = {}
+        self._region_thumb_refs = {}
+        columns = {}
+        for index, player in enumerate(("P1", "P2")):
+            self.recognition_container.columnconfigure(index, weight=1, uniform="players")
+            column = ttk.LabelFrame(self.recognition_container, text=f"Player {index + 1}", padding=4)
+            column.grid(row=0, column=index, sticky="new", padx=(0, 4) if index == 0 else (4, 0))
+            columns[player] = column
+        if any(r.player == "Unknown" for r in regions):
+            columns["Unknown"] = ttk.LabelFrame(
+                self.recognition_container, text="Unknown player", padding=4,
+            )
+            columns["Unknown"].grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for r in regions:
             if r.kind == "arrow":
-                self._build_arrow_row(r)
+                self._build_arrow_row(r, columns[r.player])
             else:
-                self._build_numeric_row(r)
+                self._build_numeric_row(r, columns[r.player])
 
-    def _build_numeric_row(self, r) -> None:
-        row = ttk.Frame(self.recognition_container, relief="groove", padding=4)
+    @staticmethod
+    def _wrap_card_labels(row) -> None:
+        labels = [widget for widget in row.winfo_children() if isinstance(widget, ttk.Label)]
+        for label in labels:
+            label.configure(wraplength=240)
+        row.bind(
+            "<Configure>",
+            lambda event: [label.configure(wraplength=max(40, event.width - 12)) for label in labels],
+        )
+
+    def _build_numeric_row(self, r, parent=None) -> None:
+        row = ttk.Frame(parent if parent is not None else self.recognition_container, relief="groove", padding=4)
         row.pack(fill="x", pady=3)
+        row.columnconfigure(0, weight=1)
         ttk.Label(row, text=f"{r.label} ({r.player}/{r.kind})", font=("", 9, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w"
+            row=0, column=0, sticky="w"
         )
         thumb_label = ttk.Label(row)
-        thumb_label.grid(row=1, column=0, rowspan=3, padx=(0, 8))
+        thumb_label.grid(row=1, column=0, sticky="w", pady=4)
         raw_var = tk.StringVar(value="raw OCR: -")
         candidate_var = tk.StringVar(value="candidate: -")
         accepted_var = tk.StringVar(value="accepted: unknown")
         status_var = tk.StringVar(value="status: -")
-        ttk.Label(row, textvariable=raw_var).grid(row=1, column=1, sticky="w")
-        ttk.Label(row, textvariable=candidate_var).grid(row=2, column=1, sticky="w")
-        ttk.Label(row, textvariable=accepted_var).grid(row=3, column=1, sticky="w")
-        ttk.Label(row, textvariable=status_var).grid(row=4, column=1, sticky="w")
+        source_var = tk.StringVar(value="OCR frame: -")
+        ttk.Label(row, textvariable=raw_var).grid(row=2, column=0, sticky="w")
+        ttk.Label(row, textvariable=candidate_var).grid(row=3, column=0, sticky="w")
+        ttk.Label(row, textvariable=accepted_var).grid(row=4, column=0, sticky="w")
+        ttk.Label(row, textvariable=status_var).grid(row=5, column=0, sticky="w")
+        if r.kind == "score":
+            ttk.Button(
+                row, text="Teach score...", command=lambda reg=r: self.controller.teach_score(reg),
+            ).grid(row=6, column=0, sticky="w", pady=(4, 0))
+        yellow_filter_var = None
+        fast_mode_var = None
+        if r.kind == "combo":
+            yellow_filter_var = tk.BooleanVar(value=r.combo_yellow_filter)
+            ttk.Checkbutton(
+                row, text="Yellow-digit filter", variable=yellow_filter_var,
+                command=lambda reg=r, var=yellow_filter_var: self.controller.set_combo_yellow_filter(
+                    reg, var.get()
+                ),
+            ).grid(row=6, column=0, sticky="w", pady=(4, 0))
+            fast_mode_var = tk.BooleanVar(value=r.combo_fast_mode)
+            ttk.Checkbutton(
+                row, text="Fast live combo", variable=fast_mode_var,
+                command=lambda reg=r, var=fast_mode_var: self.controller.set_combo_fast_mode(reg, var.get()),
+            ).grid(row=7, column=0, sticky="w")
+        ttk.Label(row, textvariable=source_var).grid(row=8, column=0, sticky="w", pady=(4, 0))
+        VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
             "kind": "numeric",
             "thumb_label": thumb_label,
@@ -327,47 +426,54 @@ class VideoTab(ttk.Frame):
             "candidate_var": candidate_var,
             "accepted_var": accepted_var,
             "status_var": status_var,
+            "yellow_filter_var": yellow_filter_var,
+            "source_var": source_var,
+            "fast_mode_var": fast_mode_var,
         }
 
-    def _build_arrow_row(self, r) -> None:
-        row = ttk.Frame(self.recognition_container, relief="groove", padding=4)
+    def _build_arrow_row(self, r, parent=None) -> None:
+        row = ttk.Frame(parent if parent is not None else self.recognition_container, relief="groove", padding=4)
         row.pack(fill="x", pady=3)
+        row.columnconfigure(0, weight=1)
         ttk.Label(row, text=f"{r.label} ({r.player}/arrow/{r.direction})", font=("", 9, "bold")).grid(
-            row=0, column=0, columnspan=4, sticky="w"
+            row=0, column=0, sticky="w"
         )
 
         thumb_label = ttk.Label(row)
-        thumb_label.grid(row=1, column=0, rowspan=3, padx=(0, 8))
+        thumb_label.grid(row=1, column=0, sticky="w", pady=4)
 
         state_var = tk.StringVar(value="state: -")
         confidence_var = tk.StringVar(value="similarity: -")
         status_var = tk.StringVar(value="status: -")
-        ttk.Label(row, textvariable=state_var).grid(row=1, column=1, sticky="w")
-        ttk.Label(row, textvariable=confidence_var).grid(row=2, column=1, sticky="w")
-        ttk.Label(row, textvariable=status_var).grid(row=3, column=1, sticky="w")
+        ttk.Label(row, textvariable=state_var).grid(row=2, column=0, sticky="w")
+        ttk.Label(row, textvariable=confidence_var).grid(row=3, column=0, sticky="w")
+        ttk.Label(row, textvariable=status_var).grid(row=4, column=0, sticky="w")
 
-        ttk.Label(row, text="Hit ref:").grid(row=1, column=2, sticky="w", padx=(12, 0))
-        hit_ref_label = ttk.Label(row, text="(none)")
-        hit_ref_label.grid(row=1, column=3, sticky="w")
-        ttk.Label(row, text="Miss ref:").grid(row=2, column=2, sticky="w", padx=(12, 0))
-        miss_ref_label = ttk.Label(row, text="(none)")
-        miss_ref_label.grid(row=2, column=3, sticky="w")
+        refs = ttk.Frame(row)
+        refs.grid(row=5, column=0, sticky="w", pady=4)
+        ttk.Label(refs, text="Hit ref:").grid(row=0, column=0, sticky="w")
+        hit_ref_label = ttk.Label(refs, text="(none)")
+        hit_ref_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(refs, text="Miss ref:").grid(row=0, column=1, sticky="w")
+        miss_ref_label = ttk.Label(refs, text="(none)")
+        miss_ref_label.grid(row=1, column=1, sticky="w")
 
         btns = ttk.Frame(row)
-        btns.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        btns.grid(row=6, column=0, sticky="w", pady=(4, 0))
         ttk.Button(
-            btns, text="Capture as Hit", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit")
+            btns, text="Add Hit ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit")
         ).grid(row=0, column=0, padx=2)
         ttk.Button(
-            btns, text="Clear Hit ref", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit")
+            btns, text="Clear Hit refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit")
         ).grid(row=0, column=1, padx=2)
         ttk.Button(
-            btns, text="Capture as Miss", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss")
-        ).grid(row=0, column=2, padx=2)
+            btns, text="Add Miss ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss")
+        ).grid(row=1, column=0, padx=2, pady=(4, 0))
         ttk.Button(
-            btns, text="Clear Miss ref", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
-        ).grid(row=0, column=3, padx=2)
+            btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
+        ).grid(row=1, column=1, padx=2, pady=(4, 0))
 
+        VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
             "kind": "arrow",
             "thumb_label": thumb_label,
@@ -378,7 +484,10 @@ class VideoTab(ttk.Frame):
             "miss_ref_label": miss_ref_label,
         }
 
-    def update_recognition_row(self, region_key: str, crop_photo, raw_text, candidate, accepted, status_text) -> None:
+    def update_recognition_row(
+        self, region_key: str, crop_photo, raw_text, candidate, accepted, status_text,
+        *, frame_index=None, video_time_ms=None,
+    ) -> None:
         row = self._region_rows.get(region_key)
         if row is None or row.get("kind") != "numeric":
             return
@@ -386,9 +495,16 @@ class VideoTab(ttk.Frame):
             self._region_thumb_refs[region_key] = crop_photo
             row["thumb_label"].configure(image=crop_photo)
         row["raw_var"].set(f"raw OCR: {raw_text!r}" if raw_text else "raw OCR: (empty)")
-        row["candidate_var"].set(f"candidate: {candidate if candidate is not None else 'unreadable'}")
+        unconfirmed = " (unconfirmed)" if candidate is not None and candidate != accepted else ""
+        row["candidate_var"].set(
+            f"candidate: {candidate if candidate is not None else 'unreadable'}{unconfirmed}"
+        )
         row["accepted_var"].set(f"accepted: {accepted if accepted is not None else 'unknown'}")
         row["status_var"].set(f"status: {status_text}")
+        row["source_var"].set(
+            f"OCR frame: {frame_index} | {video_time_ms} ms"
+            if frame_index is not None else "OCR frame: -"
+        )
 
     def update_arrow_recognition_row(
         self, region_key: str, crop_photo, observed_state, confidence, status_text
@@ -405,7 +521,7 @@ class VideoTab(ttk.Frame):
         )
         row["status_var"].set(f"status: {status_text}")
 
-    def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo) -> None:
+    def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
         if row is None or row.get("kind") != "arrow":
             return
@@ -415,7 +531,7 @@ class VideoTab(ttk.Frame):
             label.configure(image="", text="(none)")
         else:
             self._region_thumb_refs[f"{region_key}:{state}_ref"] = photo
-            label.configure(image=photo, text="")
+            label.configure(image=photo, text=f"{count} ref{'s' if count != 1 else ''}", compound="top")
 
 
     def refresh_layout_names(self) -> None:

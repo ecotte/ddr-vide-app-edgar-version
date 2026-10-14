@@ -25,7 +25,7 @@ SOURCE_MODE_SYNTHETIC = "synthetic"  # used only by tests/demos, never real game
 # digit-animation glitches but delay detection of genuine fast changes
 # (e.g. rapid combo increments). This is intentionally configurable from the
 # UI (Video tab) rather than hard-coded.
-DEFAULT_REQUIRED_CONSECUTIVE_FRAMES = 2
+DEFAULT_REQUIRED_CONSECUTIVE_FRAMES = 1
 
 # Sanity ceilings used as a format check: OCR text producing more digits than
 # this for a given field kind is treated as an invalid/unreadable reading
@@ -36,12 +36,26 @@ FIELD_MAX_DIGITS = {
     "combo": 5,
 }
 
+SCORE_DIRECT_ACCEPT_CONFIDENCE = 0.70
+SCORE_EVIDENCE_MIN_CONFIDENCE = 0.30
+NUMERIC_CONFIRMATION_SAMPLES = 2
+NUMERIC_CONFIRMATION_WINDOW_MS = 2000
+SCORE_TEMPLATE_VERSION = 1
+
+# Combo digits may be completely hidden by passing arrows. OCR output from
+# those frames must not replace a previously trusted combo with an impossible
+# jump. Lower values require repeated high-confidence numeric evidence.
+COMBO_MIN_ALLOWED_INCREASE = 10
+COMBO_MAX_INCREASE_PER_SECOND = 60
+COMBO_MIN_CONFIDENCE = 0.90
+
 # Recognized region "kinds" for milestone 1+. Each numeric kind maps to an
 # event type; "arrow" is handled separately (see ARROW_EVENT_TYPES below).
 FIELD_EVENT_TYPES = {
     "score": "score_changed",
     "combo": "combo_changed",
 }
+SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow"]
 
@@ -74,12 +88,6 @@ DEFAULT_ARROW_MIN_CONFIRM_FRAMES = 1
 # --- OCR ------------------------------------------------------------------
 # EasyOCR language model(s) to load. Kept to English/digits for score+combo.
 OCR_LANGUAGES = ["en"]
-# Digit-only allowlist keeps OCR focused on numeric fields, which are the
-# only field kinds supported in milestone 1.
+# Score glyph OCR uses this allowlist; combo OCR recognizes surrounding text
+# and then keeps only digits, rather than forcing words into numbers.
 OCR_DIGIT_ALLOWLIST = "0123456789"
-
-# --- Playback ---------------------------------------------------------
-# Minimum delay (ms) between scheduled frame ticks while "Play" is active.
-# The actual pace is also limited by however long OCR takes per frame when
-# analysis is running - see README for why playback is not real-time then.
-PLAYBACK_TICK_MS = 15

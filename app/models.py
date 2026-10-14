@@ -7,7 +7,7 @@ contains, and gives us one place to add fields later.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -21,7 +21,7 @@ class Region:
     ``direction`` and ``reference_images`` are only used when
     ``kind == "arrow"``: ``direction`` is one of config.ARROW_DIRECTIONS
     ("Up"/"Down"/"Left"/"Right"), and ``reference_images`` holds
-    user-captured example crops (base64 PNG) keyed by state name ("hit",
+    user-captured example crops (base64 PNG) grouped by state name ("hit",
     "miss") that the arrow classifier compares live frames against. These
     are never pre-supplied by the app - only what the user captures from
     their own footage.
@@ -35,7 +35,32 @@ class Region:
     w: int
     h: int
     direction: Optional[str] = None  # only for kind == "arrow"
-    reference_images: Dict[str, str] = field(default_factory=dict)  # state -> base64 PNG
+    reference_images: Dict[str, List[str]] = field(default_factory=dict)
+    digit_templates: Dict[str, List[str]] = field(default_factory=dict)
+    digit_templates_reviewed: bool = False
+    score_template_version: int = 0
+    combo_yellow_filter: bool = False
+    combo_fast_mode: bool = False
+
+    def __post_init__(self) -> None:
+        normalized = {}
+        for state, images in self.reference_images.items():
+            if isinstance(images, str):
+                normalized[state] = [images]
+            elif isinstance(images, list) and all(isinstance(image, str) for image in images):
+                normalized[state] = list(images)
+            else:
+                raise ValueError(f"Reference images for '{state}' must be a string or list of strings.")
+        self.reference_images = normalized
+        normalized_templates = {}
+        for digit, images in self.digit_templates.items():
+            if isinstance(images, str):
+                normalized_templates[digit] = [images]
+            elif isinstance(images, list) and all(isinstance(image, str) for image in images):
+                normalized_templates[digit] = list(images)
+            else:
+                raise ValueError(f"Digit templates for '{digit}' must be a string or list of strings.")
+        self.digit_templates = normalized_templates
 
     def key(self) -> str:
         """Stable identity for this region used to key recognition trackers."""
@@ -53,7 +78,16 @@ class Region:
             "w": self.w,
             "h": self.h,
             "direction": self.direction,
-            "reference_images": dict(self.reference_images),
+            "reference_images": {
+                state: list(images) for state, images in self.reference_images.items()
+            },
+            "digit_templates": {
+                digit: list(images) for digit, images in self.digit_templates.items()
+            },
+            "digit_templates_reviewed": self.digit_templates_reviewed,
+            "score_template_version": self.score_template_version,
+            "combo_yellow_filter": self.combo_yellow_filter,
+            "combo_fast_mode": self.combo_fast_mode,
         }
 
     @staticmethod
@@ -68,6 +102,11 @@ class Region:
             h=int(d["h"]),
             direction=d.get("direction"),
             reference_images=dict(d.get("reference_images", {})),
+            digit_templates=dict(d.get("digit_templates", {})),
+            digit_templates_reviewed=d.get("digit_templates_reviewed") is True,
+            score_template_version=int(d.get("score_template_version", 0)),
+            combo_yellow_filter=d.get("combo_yellow_filter") is True,
+            combo_fast_mode=d.get("combo_fast_mode") is True,
         )
 
 

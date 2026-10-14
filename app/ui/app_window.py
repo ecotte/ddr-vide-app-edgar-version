@@ -2,24 +2,31 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
+import time
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from concurrent.futures import Future, ThreadPoolExecutor
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from typing import Optional
 
 import cv2
 from PIL import Image, ImageTk
 
-from app import config, image_utils, layout_store
+from app import config, credential_store, image_utils, layout_store
+from app.credential_store import CredentialStorageError
 from app.analysis import AnalysisSession, RegionFrameResult
 from app.event_bus import EventBus
+from app.live_scoreboard import LiveScoreboard
+from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
-from app.ui.video_tab import MAX_DISPLAY_H, MAX_DISPLAY_W, VideoTab
+from app.ui.score_calibration_dialog import ScoreCalibrationDialog
+from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
 from app.video_source import VideoSource
 
 
@@ -31,13 +38,34 @@ class App(tk.Tk):
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
+        self.live_scoreboard = LiveScoreboard()
+        self.event_bus.set_live_sink(self.live_scoreboard.record)
+        self.publisher = EventstreamPublisher(os.path.join(config.DATA_DIR, "eventstream-outbox.sqlite3"))
+        self._publishing_enabled = False
+        self._publisher_poll_after_id = None
         self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
 
         self.video_source: Optional[VideoSource] = None
         self.regions = []  # list[Region]
         self.is_playing = False
         self._play_after_id: Optional[str] = None
+        self._playback_started_at = 0.0
+        self._playback_start_frame = 0
         self._last_frame_bgr = None  # last displayed frame; used for arrow reference capture
+        self._last_frame_position: Optional[tuple[int, int]] = None
+        self._analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
+        self._analysis_future: Optional[Future] = None
+        self._analysis_future_generation = 0
+        self._analysis_frame_index = -1
+        self._analysis_is_confirmation = False
+        self._confirmation_frame = None
+        self._latest_numeric_frame = None
+        self._final_numeric_frame = None
+        self._analysis_generation = 0
+        self._analysis_poll_after_id: Optional[str] = None
+        self._dropped_analysis_frames = 0
+        self._recognition_photos = {}
+        self._arrow_display_state = {}
 
         notebook = ttk.Notebook(self)
         notebook.pack(fill="both", expand=True)
@@ -50,6 +78,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._start_ocr_loading()
+        self._poll_publisher_status()
 
     # ------------------------------------------------------------------
     # OCR engine background loading
@@ -94,9 +123,14 @@ class App(tk.Tk):
         self.video_source = new_source
 
         # A new video is a new session: reset everything recognition-related.
+        self._analysis_generation += 1
         self.analysis.stop()
-        self.event_bus.new_session()
-        self.analysis.reset_tracking()
+        self.analysis.new_session()
+        self._confirmation_frame = None
+        self._latest_numeric_frame = None
+        self._final_numeric_frame = None
+        self._last_frame_position = None
+        self._last_frame_bgr = None
         self.events_tab.clear()
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
@@ -111,12 +145,14 @@ class App(tk.Tk):
             messagebox.showerror("Empty video", "Could not read any frames from this video.")
             return
         self._process_and_update(frame, idx, new_source.video_time_ms_for_frame(idx), is_seek=False)
+        self._refresh_score_calibration_status()
 
     def step_forward(self) -> None:
         if self.video_source is None or self.is_playing:
             return
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
+            self._flush_final_numeric_frame()
             messagebox.showinfo("End of video", "No more frames.")
             return
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
@@ -152,7 +188,14 @@ class App(tk.Tk):
             self._start_playing()
 
     def _start_playing(self) -> None:
+        if self.video_source.is_at_end():
+            # Playback reached the end; restart from the beginning so Play
+            # never appears stuck on the last frame.
+            self.video_source.seek_to_frame(0)
+            self.video_tab.set_error_status("")
         self.is_playing = True
+        self._playback_started_at = time.perf_counter()
+        self._playback_start_frame = self.video_source.current_frame_index()
         self.video_tab.set_play_button_label(True)
         self._schedule_play_tick(0)
 
@@ -169,41 +212,196 @@ class App(tk.Tk):
     def _play_tick(self) -> None:
         if not self.is_playing or self.video_source is None:
             return
+        fps = self.video_source.fps
+        if fps > 0:
+            elapsed = time.perf_counter() - self._playback_started_at
+            target_frame = self._playback_start_frame + int(elapsed * fps)
+            if target_frame < self.video_source.current_frame_index():
+                next_deadline = (
+                    self._playback_started_at
+                    + (
+                        (self.video_source.current_frame_index() - self._playback_start_frame)
+                        / fps
+                    )
+                )
+                delay = max(1, round((next_deadline - time.perf_counter()) * 1000))
+                self._schedule_play_tick(delay)
+                return
+            if target_frame > self.video_source.current_frame_index():
+                try:
+                    self.video_source.skip_to_frame(target_frame)
+                except OSError as exc:
+                    self._stop_playing()
+                    self.video_tab.set_error_status(str(exc))
+                    return
         frame, idx, is_seek = self.video_source.read_next()
         if frame is None:
             self._stop_playing()
+            self._flush_final_numeric_frame()
             self.video_tab.set_error_status("Reached end of video.")
             return
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
-        # While analysis is running, OCR time dominates so we just go as fast
-        # as possible; otherwise pace roughly to the source frame rate so
-        # preview playback looks natural. Either way this is not a
-        # frame-accurate real-time guarantee - see README.
-        if self.analysis.is_running:
-            delay = 1
+        if fps > 0:
+            next_deadline = (
+                self._playback_started_at
+                + ((idx + 1 - self._playback_start_frame) / fps)
+            )
+            delay = max(1, round((next_deadline - time.perf_counter()) * 1000))
         else:
-            delay = int(1000 / self.video_source.fps) if self.video_source.fps > 0 else 33
+            delay = next_playback_delay_ms(0, 0)
         self._schedule_play_tick(delay)
 
     # ------------------------------------------------------------------
     # Frame processing + display
     def _process_and_update(self, frame_bgr, frame_index: int, video_time_ms: int, is_seek: bool) -> None:
         if is_seek:
+            self._analysis_generation += 1
             self.analysis.reset_tracking()
 
         self._last_frame_bgr = frame_bgr  # available for arrow reference capture regardless of analysis state
+        self._last_frame_position = (frame_index, video_time_ms)
+        self.live_scoreboard.advance_video(video_time_ms, is_seek=is_seek)
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
 
-        result = self.analysis.process_frame(frame_bgr, frame_index, video_time_ms)
+        arrow_result = self.analysis.process_arrow_frame(frame_bgr, frame_index, video_time_ms)
+        self._apply_analysis_result(arrow_result, skipped_frames=0)
+        self._submit_numeric_analysis(frame_bgr, frame_index, video_time_ms)
+
+    def _submit_numeric_analysis(
+        self, frame_bgr, frame_index: int, video_time_ms: int, *, confirmation: bool = False,
+        region_keys: Optional[frozenset[str]] = None,
+    ) -> None:
+        if not self.analysis.is_running:
+            return
+        if not any(
+            region.kind in ("score", "combo")
+            for region in self.regions
+        ):
+            return
+        if self._analysis_future is not None:
+            new_generation = self._analysis_future_generation != self._analysis_generation
+            if (new_generation or frame_index > self._analysis_frame_index) and (
+                self._latest_numeric_frame is None
+                or self._latest_numeric_frame[3] != self._analysis_generation
+                or frame_index > self._latest_numeric_frame[1]
+            ):
+                self._latest_numeric_frame = (
+                    frame_bgr, frame_index, video_time_ms, self._analysis_generation,
+                )
+            if (
+                (new_generation or not self._analysis_is_confirmation)
+                and (new_generation or frame_index > self._analysis_frame_index)
+                and (
+                    self._confirmation_frame is None
+                    or self._confirmation_frame[3] != self._analysis_generation
+                )
+            ):
+                self._confirmation_frame = (
+                    frame_bgr, frame_index, video_time_ms, self._analysis_generation,
+                )
+                return
+            self._dropped_analysis_frames += 1
+            return
+        self._analysis_future_generation = self._analysis_generation
+        self._analysis_frame_index = frame_index
+        self._analysis_is_confirmation = confirmation
+        self._analysis_future = self._analysis_executor.submit(
+            self.analysis.process_background_numeric_frame,
+            frame_bgr,
+            frame_index,
+            video_time_ms,
+            expected_session_id=self.event_bus.session_id,
+            expected_generation=self.analysis.generation,
+            region_keys=region_keys,
+        )
+        self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
+
+    def _flush_final_numeric_frame(self) -> None:
+        if not self.analysis.is_running or self._last_frame_position is None:
+            return
+        index, timestamp = self._last_frame_position
+        self._final_numeric_frame = (
+            self._last_frame_bgr, index, timestamp, self._analysis_generation,
+        )
+        self._submit_final_numeric_analysis()
+
+    def _submit_final_numeric_analysis(self) -> None:
+        if self._analysis_future is not None or self._final_numeric_frame is None:
+            return
+        frame, index, timestamp, generation = self._final_numeric_frame
+        self._final_numeric_frame = None
+        if generation != self._analysis_generation:
+            return
+        if self._analysis_future_generation == generation and index <= self._analysis_frame_index:
+            return
+        self._submit_numeric_analysis(frame, index, timestamp, confirmation=True)
+
+    def _poll_analysis_result(self) -> None:
+        self._analysis_poll_after_id = None
+        future = self._analysis_future
+        if future is None:
+            return
+        if not future.done():
+            self._analysis_poll_after_id = self.after(10, self._poll_analysis_result)
+            return
+
+        self._analysis_future = None
+        pending = self._confirmation_frame
+        self._confirmation_frame = None
+        latest = self._latest_numeric_frame
+        self._latest_numeric_frame = None
+        completed_generation = self._analysis_future_generation
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 - worker failures must be visible in the UI
+            self.video_tab.set_error_status(f"Analysis worker error: {exc}")
+            return
+        if completed_generation == self._analysis_generation:
+            self._apply_analysis_result(result, self._dropped_analysis_frames)
+        self._dropped_analysis_frames = 0
+        use_confirmation = (
+            completed_generation == self._analysis_generation
+            and not self._analysis_is_confirmation
+            and result is not None
+            and result.needs_confirmation
+            and pending is not None
+            and pending[3] == self._analysis_generation
+        )
+        next_frame = pending if use_confirmation else latest
+        if next_frame is not None and next_frame[3] == self._analysis_generation:
+            frame, index, timestamp, generation = next_frame
+            region_keys = (
+                frozenset(rr.region.key() for rr in result.region_results if rr.needs_confirmation)
+                if use_confirmation else None
+            )
+            self._submit_numeric_analysis(
+                frame, index, timestamp, confirmation=use_confirmation, region_keys=region_keys,
+            )
+            if use_confirmation and latest is not None and latest[1] > index:
+                self._latest_numeric_frame = latest
+        self._submit_final_numeric_analysis()
+
+    def _apply_analysis_result(
+        self, result, skipped_frames: int
+    ) -> None:
         if result is None:
             return
 
-        self.video_tab.set_processing_status(
-            f"Last recognition pass: {result.processing_ms:.0f} ms across {len(result.region_results)} region(s)"
+        is_numeric_result = (
+            bool(result.region_results) and result.region_results[0].region.kind != "arrow"
         )
+        if is_numeric_result:
+            self.video_tab.set_processing_status(
+                f"Last OCR pass: {result.processing_ms:.0f} ms across "
+                f"{len(result.region_results)} region(s); "
+                f"{skipped_frames} video frame(s) skipped by OCR"
+            )
         errors = [rr.error for rr in result.region_results if rr.error]
-        self.video_tab.set_error_status("; ".join(errors) if errors else "")
+        if errors:
+            self.video_tab.set_error_status("; ".join(errors))
+        elif is_numeric_result:
+            self.video_tab.set_error_status("")
 
         for rr in result.region_results:
             self._update_recognition_row(rr)
@@ -212,46 +410,70 @@ class App(tk.Tk):
 
     def _display_current_frame(self, frame_bgr) -> None:
         src_h, src_w = frame_bgr.shape[:2]
-        scale = min(1.0, MAX_DISPLAY_W / src_w, MAX_DISPLAY_H / src_h)
-        disp_w, disp_h = max(1, int(src_w * scale)), max(1, int(src_h * scale))
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
+        max_w, max_h = self.video_tab.video_display_limits()
+        disp_w, disp_h, scale = fit_display_size(src_w, src_h, max_w, max_h)
+        display_frame = frame_bgr
         if scale != 1.0:
-            pil_img = pil_img.resize((disp_w, disp_h), Image.BILINEAR)
+            display_frame = cv2.resize(
+                frame_bgr, (disp_w, disp_h), interpolation=cv2.INTER_AREA
+            )
+        rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
         self.video_tab.show_frame_image(pil_img, scale)
         self.video_tab.redraw_region_overlays(self.regions)
 
     def _update_recognition_row(self, rr: RegionFrameResult) -> None:
-        photo = self._make_thumbnail_photo(rr.crop)
+        if rr.region.kind == "arrow":
+            now = time.perf_counter()
+            display_state = (
+                self.analysis.generation, rr.arrow_state, rr.error, rr.is_unreadable,
+            )
+            previous = self._arrow_display_state.get(rr.region.key())
+            if previous is not None and previous[1] == display_state and now - previous[0] < 0.1:
+                return
+        photo = self._make_thumbnail_photo(
+            rr.crop, self._recognition_photos.get(rr.region.key()),
+        )
+        self._recognition_photos[rr.region.key()] = photo
         if rr.region.kind == "arrow":
             tracker_status: ArrowTrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_arrow_status(rr, tracker_status)
             self.video_tab.update_arrow_recognition_row(
                 rr.region.key(), photo, rr.arrow_state, rr.confidence, status_text
             )
+            self._arrow_display_state[rr.region.key()] = (now, display_state)
         else:
             tracker_status: TrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_numeric_status(rr, tracker_status)
             self.video_tab.update_recognition_row(
-                rr.region.key(), photo, rr.raw_text, rr.candidate_value, rr.accepted_value, status_text
+                rr.region.key(), photo, rr.raw_text, rr.candidate_value, rr.accepted_value, status_text,
+                frame_index=rr.frame_index, video_time_ms=rr.video_time_ms,
             )
 
     @staticmethod
-    def _make_thumbnail_photo(crop) -> Optional[ImageTk.PhotoImage]:
+    def _make_thumbnail_photo(crop, existing=None, *, max_width=240, max_height=96) -> Optional[ImageTk.PhotoImage]:
         if crop is None or crop.size == 0:
             return None
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(crop_rgb)
         w, h = pil_img.size
-        up = max(1, 120 // max(w, 1))
-        if up > 1:
-            pil_img = pil_img.resize((w * up, h * up), Image.NEAREST)
+        scale = min(max(1, 120 // max(w, 1)), max_width / w, max_height / h)
+        if scale != 1:
+            pil_img = pil_img.resize(
+                (max(1, round(w * scale)), max(1, round(h * scale))),
+                Image.Resampling.LANCZOS if scale < 1 else Image.Resampling.NEAREST,
+            )
+        if existing is not None and (existing.width(), existing.height()) == pil_img.size:
+            existing.paste(pil_img)
+            return existing
         return ImageTk.PhotoImage(pil_img)
 
     @staticmethod
     def _format_numeric_status(rr: RegionFrameResult, ts: TrackerStatus) -> str:
         if rr.error:
             return f"OCR error: {rr.error}"
+        if rr.validation_note:
+            return rr.validation_note
         if rr.is_unreadable:
             return "unreadable this frame (previous accepted value kept)"
         if ts.pending_value is not None and ts.pending_value != ts.accepted_value and ts.pending_count > 0:
@@ -279,13 +501,17 @@ class App(tk.Tk):
         label, player, kind, direction = dialog.result
         region = Region(label=label, player=player, kind=kind, x=x, y=y, w=w, h=h, direction=direction)
         self.regions.append(region)
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
+        if region.kind == "score":
+            self._refresh_score_calibration_status()
 
     def delete_region(self, index: int) -> None:
         if 0 <= index < len(self.regions):
             del self.regions[index]
+            self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
             self.video_tab.refresh_region_list(self.regions)
             self.video_tab.redraw_region_overlays(self.regions)
@@ -303,20 +529,23 @@ class App(tk.Tk):
             messagebox.showerror("Out of bounds", "This region falls outside the current frame.")
             return
         crop = self._last_frame_bgr[y0:y1, x0:x1]
-        region.reference_images[state] = image_utils.encode_crop_to_base64_png(crop)
+        references = region.reference_images.setdefault(state, [])
+        references.append(image_utils.encode_crop_to_base64_png(crop))
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)  # reload decoded references, resets tracking
 
-        photo = self._make_thumbnail_photo(crop)
-        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo)
+        photo = self._make_thumbnail_photo(crop, max_width=96, max_height=64)
+        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo, len(references))
         self.video_tab.set_processing_status(
-            f"Captured '{state}' reference for {region.label} at the current frame."
+            f"Captured '{state}' reference {len(references)} for {region.label} at the current frame."
         )
 
     def clear_arrow_reference(self, region: Region, state: str) -> None:
         if state in region.reference_images:
             del region.reference_images[state]
+            self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
-        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None)
+        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None, 0)
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         self.analysis.set_arrow_similarity_threshold(value)
@@ -377,8 +606,9 @@ class App(tk.Tk):
         except ResolutionMismatchError as exc:
             proceed = messagebox.askyesno(
                 "Resolution mismatch",
-                f"{exc}\n\nRescale the saved region coordinates to fit the current video "
-                "and load anyway? Choose 'No' to cancel and keep your current regions.",
+                f"{exc}\n\nFit the saved region coordinates to the current video without "
+                "distortion and load anyway? Regions will be scaled uniformly and centered. "
+                "Choose 'No' to cancel and keep your current regions.",
             )
             if not proceed:
                 return
@@ -387,10 +617,89 @@ class App(tk.Tk):
             )
 
         self.regions = list(profile.regions)
+        self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
         self._refresh_arrow_reference_thumbnails()
+        self._refresh_score_calibration_status()
+
+    def _refresh_score_calibration_status(self) -> None:
+        statuses = []
+        for region in self.regions:
+            if region.kind != "score":
+                continue
+            if (
+                region.digit_templates_reviewed
+                and region.score_template_version != config.SCORE_TEMPLATE_VERSION
+            ):
+                statuses.append(f"{region.label}: OCR active; outdated templates ignored")
+                continue
+            if self.analysis.has_complete_score_templates(region):
+                statuses.append(f"{region.label}: OCR active; digit references ready")
+            else:
+                known = (
+                    set(region.digit_templates) if self.analysis.uses_score_templates(region) else set()
+                )
+                missing = "".join(digit for digit in "0123456789" if digit not in known)
+                mode = "OCR with digit references" if self.analysis.uses_score_templates(region) else "OCR"
+                statuses.append(f"{region.label}: {mode}; untaught digits {missing}")
+        self.video_tab.set_calibration_status(
+            "; ".join(statuses) if statuses else "Score calibration: no score region"
+        )
+
+    def set_combo_yellow_filter(self, region: Region, enabled: bool) -> None:
+        self.analysis.set_combo_yellow_filter(region, enabled)
+        self._analysis_generation += 1
+        self.video_tab.set_processing_status(
+            f"{region.label}: yellow-digit filter {'on' if enabled else 'off'}. "
+            "Save Layout to keep this setting. Accepted values and existing events are unchanged."
+        )
+        if self._last_frame_position is not None:
+            index, timestamp = self._last_frame_position
+            self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
+
+    def set_combo_fast_mode(self, region: Region, enabled: bool) -> None:
+        self.analysis.set_combo_fast_mode(region, enabled)
+        self._analysis_generation += 1
+        self.video_tab.set_processing_status(
+            f"{region.label}: fast live combo {'on' if enabled else 'off'}. "
+            "Save Layout to keep this setting. Acceptance thresholds are unchanged."
+        )
+        if self._last_frame_position is not None:
+            index, timestamp = self._last_frame_position
+            self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
+
+    def teach_score(self, region: Region) -> None:
+        if self._last_frame_bgr is None:
+            messagebox.showerror("No frame", "Open a video and display a clear score first.")
+            return
+        self._stop_playing()
+        frame_h, frame_w = self._last_frame_bgr.shape[:2]
+        x0, y0 = max(0, region.x), max(0, region.y)
+        x1, y1 = min(frame_w, region.x + region.w), min(frame_h, region.y + region.h)
+        if x1 <= x0 or y1 <= y0:
+            messagebox.showerror("Out of bounds", "The score region is outside the frame.")
+            return
+        dialog = ScoreCalibrationDialog(self, region, self._last_frame_bgr[y0:y1, x0:x1])
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        region.digit_templates = dialog.result
+        region.digit_templates_reviewed = True
+        region.score_template_version = config.SCORE_TEMPLATE_VERSION
+        self.analysis.update_score_templates(region)
+        self._analysis_generation += 1
+        self._refresh_score_calibration_status()
+        self.video_tab.set_processing_status(
+            "Score samples learned. Advance/play to verify with OCR. Save Layout to keep them. Existing events and "
+            "accepted values are unchanged; New Session resets incorrect history."
+        )
+        if self.video_source is not None:
+            index = max(0, self.video_source.current_frame_index() - 1)
+            self._submit_numeric_analysis(
+                self._last_frame_bgr, index, self.video_source.video_time_ms_for_frame(index)
+            )
 
     def load_layout(self, name: str) -> None:
         self._apply_loaded_profile(
@@ -410,10 +719,14 @@ class App(tk.Tk):
         for region in self.regions:
             if region.kind != "arrow":
                 continue
-            for state, b64 in region.reference_images.items():
-                img = image_utils.decode_base64_png_to_crop(b64)
-                photo = self._make_thumbnail_photo(img)
-                self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo)
+            for state, encoded_images in region.reference_images.items():
+                if not encoded_images:
+                    continue
+                img = image_utils.decode_base64_png_to_crop(encoded_images[-1])
+                photo = self._make_thumbnail_photo(img, max_width=96, max_height=64)
+                self.video_tab.set_arrow_reference_thumbnail(
+                    region.key(), state, photo, len(encoded_images)
+                )
 
     # ------------------------------------------------------------------
     # Analysis controls
@@ -422,6 +735,7 @@ class App(tk.Tk):
 
     def toggle_analysis(self) -> None:
         if self.analysis.is_running:
+            self._analysis_generation += 1
             self.analysis.stop()
         else:
             if self.video_source is None:
@@ -436,14 +750,127 @@ class App(tk.Tk):
         self.video_tab.set_analysis_status(self.analysis.is_running)
 
     def new_session(self) -> None:
-        self.event_bus.new_session()
-        self.analysis.reset_tracking()
+        self._analysis_generation += 1
+        self.analysis.new_session()
+        self._confirmation_frame = None
+        self._latest_numeric_frame = None
+        self._final_numeric_frame = None
         self.events_tab.clear()
         self.video_tab.set_error_status("")
         self.video_tab.set_processing_status("New session started - recognition state reset.")
 
     # ------------------------------------------------------------------
     # Events tab support
+    def toggle_publishing(self) -> None:
+        if self._publishing_enabled:
+            self.event_bus.set_delivery_sink(None)
+            self._publishing_enabled = False
+            self.publisher.stop()
+            return
+        connection = os.environ.get("DDR_EVENTSTREAM_CONNECTION_STRING", "")
+        entered_locally = False
+        if not connection:
+            try:
+                connection = credential_store.load_connection()
+            except CredentialStorageError as exc:
+                messagebox.showerror("Fabric credential storage", str(exc))
+                return
+        if not connection:
+            connection = simpledialog.askstring(
+                "Connect to Fabric",
+                "Paste the Event Hub SAS connection string (including EntityPath).\n"
+                "It will be saved in Windows Credential Manager for this Windows user.\n"
+                "Use a rotated, unexposed key. Nothing is saved in source files or Git.\n\n"
+                "Connecting sends queued events and future recorded events, including\n"
+                "unconfirmed score observations. No video or reference images are sent.",
+                show="*", parent=self,
+            )
+            entered_locally = True
+        if not connection:
+            return
+        try:
+            self.publisher.start(connection)
+        except ValueError as exc:
+            messagebox.showerror("Fabric configuration", str(exc))
+            return
+        except (sqlite3.Error, OSError):
+            messagebox.showerror(
+                "Fabric queue unavailable",
+                "Cannot open the local delivery queue. Check free disk space and data-folder permissions.",
+            )
+            return
+        self.event_bus.set_delivery_sink(self.publisher.enqueue)
+        self._publishing_enabled = True
+        if entered_locally:
+            try:
+                credential_store.save_connection(connection.strip())
+            except CredentialStorageError as exc:
+                messagebox.showwarning("Fabric credential not saved", str(exc))
+
+    def forget_fabric_connection(self) -> None:
+        if not messagebox.askyesno(
+            "Forget Fabric connection",
+            "Disconnect publishing and remove the saved Windows credential?\n\n"
+            "Pending events remain queued. An in-flight send may still finish.",
+        ):
+            return
+        self.event_bus.set_delivery_sink(None)
+        self._publishing_enabled = False
+        self.publisher.stop()
+        try:
+            credential_store.forget_connection()
+        except CredentialStorageError as exc:
+            messagebox.showerror("Fabric credential storage", str(exc))
+            return
+        if os.environ.get("DDR_EVENTSTREAM_CONNECTION_STRING"):
+            messagebox.showinfo(
+                "Saved credential removed",
+                "DDR_EVENTSTREAM_CONNECTION_STRING is still set in this process's environment. "
+                "Clear it in your launcher and restart the app to use a different connection.",
+            )
+
+    def _poll_publisher_status(self) -> None:
+        status = self.publisher.status()
+        self.events_tab.set_publishing_status(status.text(), self._publishing_enabled)
+        self.events_tab.set_scoreboard_status(self.live_scoreboard.status())
+        self.events_tab.scoreboard_var.set(self.live_scoreboard.active)
+        self._publisher_poll_after_id = self.after(500, self._poll_publisher_status)
+
+    def toggle_scoreboard(self, enabled: bool) -> None:
+        if enabled:
+            if not messagebox.askyesno(
+                "Share live scoreboard",
+                "Publish future recorded scores, combos and arrow-hit insights directly to Rayfin? "
+                "Microsoft sign-in may open once. Authorized scoreboard viewers can see these values.\n\n"
+                "No video, reference images or credentials are shared. "
+                "Fabric publishing is independent. Start sharing before starting a new game.",
+            ):
+                self.events_tab.scoreboard_var.set(False)
+                return
+            try:
+                self.live_scoreboard.start(self.event_bus.session_id)
+            except ValueError as exc:
+                self.events_tab.scoreboard_var.set(False)
+                messagebox.showerror("Scoreboard publisher", str(exc))
+        else:
+            self.live_scoreboard.stop()
+
+    def send_mapping_sample(self) -> None:
+        if not self._publishing_enabled:
+            messagebox.showerror("Fabric disconnected", "Connect to Fabric before sending a sample.")
+            return
+        sample_bus = EventBus(source_mode=config.SOURCE_MODE_SYNTHETIC)
+        sample = sample_bus.make_event(
+            "score_changed",
+            {
+                "field": "score", "region_label": "Mapping sample - not gameplay",
+                "previous_value": 1000, "new_value": 1250, "is_test": True,
+            },
+            60, 1000, player="P1", confidence=0.95,
+        )
+        self.event_bus.record(sample)
+        self.events_tab.append_event(sample)
+
     def set_recording_enabled(self, enabled: bool) -> None:
         self.analysis.recording_enabled = enabled
 
@@ -461,6 +888,17 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
         self._stop_playing()
+        self.analysis.stop()
+        self.event_bus.set_live_sink(None)
+        self.live_scoreboard.stop()
+        self.event_bus.set_delivery_sink(None)
+        if self._publisher_poll_after_id is not None:
+            self.after_cancel(self._publisher_poll_after_id)
+        self.publisher.close()
+        if self._analysis_poll_after_id is not None:
+            self.after_cancel(self._analysis_poll_after_id)
+            self._analysis_poll_after_id = None
+        self._analysis_executor.shutdown(wait=False, cancel_futures=True)
         if self.video_source is not None:
             self.video_source.close()
         self.destroy()

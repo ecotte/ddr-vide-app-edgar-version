@@ -52,6 +52,33 @@ def test_list_layout_names_returns_saved_profiles():
     assert set(names) == {"alpha", "beta"}
 
 
+def test_combo_yellow_filter_round_trip_and_rescale():
+    profile = _sample_profile()
+    profile.regions[1].combo_yellow_filter = True
+    profile.regions[1].combo_fast_mode = True
+    layout_store.save_layout(profile)
+    loaded = layout_store.load_layout(profile.profile_name)
+    assert not loaded.regions[0].combo_yellow_filter
+    assert loaded.regions[1].combo_yellow_filter
+    assert loaded.regions[1].combo_fast_mode
+    scaled = layout_store.rescale_profile(loaded, 1280, 720)
+    assert not scaled.regions[0].combo_yellow_filter
+    assert scaled.regions[1].combo_yellow_filter
+    assert scaled.regions[1].combo_fast_mode
+    layout_store.save_layout(scaled)
+    assert layout_store.load_layout(profile.profile_name).regions[1].combo_yellow_filter
+
+
+def test_legacy_layouts_default_to_unfiltered_combo():
+    data = _sample_profile().to_dict()
+    for region in data["regions"]:
+        region.pop("combo_yellow_filter")
+        region.pop("combo_fast_mode")
+    loaded = LayoutProfile.from_dict(data)
+    assert all(not region.combo_yellow_filter for region in loaded.regions)
+    assert all(not region.combo_fast_mode for region in loaded.regions)
+
+
 def test_load_layout_checked_raises_on_resolution_mismatch():
     layout_store.save_layout(_sample_profile("hd", width=1920, height=1080))
     with pytest.raises(layout_store.ResolutionMismatchError) as exc_info:
@@ -78,6 +105,55 @@ def test_rescale_profile_scales_region_coordinates_proportionally():
     assert scaled.w == original.w // 2
 
 
+def test_rescale_profile_preserves_regions_when_new_video_is_taller():
+    profile = LayoutProfile(
+        profile_name="wide-to-square",
+        source_width=800,
+        source_height=400,
+        regions=[
+            Region(label="P1 Score", player="P1", kind="score", x=100, y=50, w=200, h=100),
+        ],
+    )
+
+    rescaled = layout_store.rescale_profile(profile, new_width=400, new_height=400)
+
+    region = rescaled.regions[0]
+    assert (region.x, region.y, region.w, region.h) == (50, 125, 100, 50)
+
+
+def test_rescale_profile_preserves_regions_when_new_video_is_wider():
+    profile = LayoutProfile(
+        profile_name="tall-to-square",
+        source_width=400,
+        source_height=800,
+        regions=[
+            Region(label="P1 Score", player="P1", kind="score", x=50, y=100, w=100, h=200),
+        ],
+    )
+
+    rescaled = layout_store.rescale_profile(profile, new_width=400, new_height=400)
+
+    region = rescaled.regions[0]
+    assert (region.x, region.y, region.w, region.h) == (125, 50, 50, 100)
+
+
+@pytest.mark.parametrize(
+    ("source_width", "source_height", "new_width", "new_height"),
+    [
+        (0, 1080, 960, 540),
+        (1920, 0, 960, 540),
+        (1920, 1080, 0, 540),
+        (1920, 1080, 960, 0),
+    ],
+)
+def test_rescale_profile_rejects_non_positive_dimensions(
+    source_width, source_height, new_width, new_height
+):
+    profile = _sample_profile(width=source_width, height=source_height)
+    with pytest.raises(ValueError):
+        layout_store.rescale_profile(profile, new_width=new_width, new_height=new_height)
+
+
 def test_rescale_profile_resizes_arrow_reference_images_too():
     from app import image_utils
     import numpy as np
@@ -85,7 +161,10 @@ def test_rescale_profile_resizes_arrow_reference_images_too():
     ref_crop = np.full((40, 40, 3), 200, dtype="uint8")
     arrow_region = Region(
         label="P1 Left", player="P1", kind="arrow", x=0, y=0, w=40, h=40, direction="Left",
-        reference_images={"hit": image_utils.encode_crop_to_base64_png(ref_crop)},
+        reference_images={"hit": [
+            image_utils.encode_crop_to_base64_png(ref_crop),
+            image_utils.encode_crop_to_base64_png(ref_crop),
+        ]},
     )
     profile = LayoutProfile(
         profile_name="arrows", source_width=1920, source_height=1080, regions=[arrow_region]
@@ -95,8 +174,9 @@ def test_rescale_profile_resizes_arrow_reference_images_too():
     rescaled_region = rescaled.regions[0]
     assert rescaled_region.w == 20 and rescaled_region.h == 20
 
-    decoded = image_utils.decode_base64_png_to_crop(rescaled_region.reference_images["hit"])
-    assert decoded.shape[:2] == (20, 20)  # reference image resized along with its region
+    assert len(rescaled_region.reference_images["hit"]) == 2
+    decoded = image_utils.decode_base64_png_to_crop(rescaled_region.reference_images["hit"][0])
+    assert decoded.shape[:2] == (20, 20)  # every reference image is resized with its region
 
 
 # ---------------------------------------------------------------------

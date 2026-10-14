@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import os
 import sys
+import json
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import pytest
 
-from app.analysis import AnalysisSession
+from app import config, image_utils
+from app.analysis import AnalysisSession, _has_complete_score_templates
 from app.event_bus import EventBus
 from app.models import Region
 from app.ocr_engine import OcrEngine, OcrResult
@@ -21,15 +25,22 @@ from app.ocr_engine import OcrEngine, OcrResult
 class FakeOcrEngine(OcrEngine):
     """Returns canned text per call instead of running real OCR."""
 
-    def __init__(self, script):
+    def __init__(self, script, confidence=0.9):
         super().__init__()
         self._script = list(script)  # list of raw text strings to return, in order
         self._i = 0
+        self._confidence = confidence
 
     def recognize_digits(self, crop_bgr):
         text = self._script[min(self._i, len(self._script) - 1)]
         self._i += 1
-        return OcrResult(raw_text=text, confidence=0.9, error=None)
+        return OcrResult(raw_text=text, confidence=self._confidence, error=None)
+
+    def recognize_score_digits(self, crop_bgr):
+        return self.recognize_digits(crop_bgr)
+
+    def recognize_score_from_templates(self, crop_bgr, templates):
+        return OcrResult(self._script[max(0, self._i - 1)], self._confidence)
 
 
 def _frame(w=100, h=50):
@@ -40,6 +51,14 @@ def _score_region():
     return Region(label="Score", player="P1", kind="score", x=0, y=0, w=50, h=20)
 
 
+def _combo_region():
+    return Region(label="Combo", player="P1", kind="combo", x=0, y=0, w=50, h=20)
+
+
+def _confirmed_events(bus):
+    return [event for event in bus.events if event.event_type != "score_observed"]
+
+
 def test_no_events_while_analysis_not_started():
     bus = EventBus()
     ocr = FakeOcrEngine(["100"])
@@ -48,6 +67,297 @@ def test_no_events_while_analysis_not_started():
     result = session.process_frame(_frame(), 0, 0)
     assert result is None
     assert bus.events == []
+
+
+@pytest.mark.parametrize("confidence", [0.70, 0.80, 0.90, 0.995])
+def test_high_confidence_score_advances_without_repeated_values(confidence):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100", "110", "120"], confidence))
+    session.set_regions([_score_region()])
+    session.start()
+
+    for i, expected in enumerate((100, 110, 120)):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == expected
+        assert result.region_results[0].validation_note is None
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [100, 110, 120]
+
+
+def test_score_just_below_direct_threshold_still_requires_confirmation():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100"], confidence=0.699999))
+    session.set_regions([_score_region()])
+    session.start()
+    first = session.process_numeric_frame(_frame(), 0, 0)
+    assert first.region_results[0].accepted_value is None
+    assert _confirmed_events(bus) == []
+    session.process_numeric_frame(_frame(), 1, 33)
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [100]
+
+
+@pytest.mark.parametrize("confidence", [0.90, 0.995])
+def test_high_confidence_combo_advances_without_repeated_values(confidence):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["4", "5"], confidence))
+    session.set_regions([_combo_region()])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+    assert [event.payload["new_value"] for event in bus.events] == [4]
+    session.process_numeric_frame(_frame(), 1, 33)
+    assert [event.payload["new_value"] for event in bus.events] == [4, 5]
+    session.process_numeric_frame(_frame(), 2, 66)
+
+    assert [event.payload["new_value"] for event in bus.events] == [4, 5]
+
+
+def test_low_confidence_initial_combo_does_not_poison_baseline(monkeypatch):
+    bus = EventBus()
+    engine = FakeOcrEngine([])
+    readings = iter([
+        OcrResult("900", 0.60), OcrResult("10", 0.95),
+        OcrResult("11", 0.99), OcrResult("11", 0.99),
+    ])
+    monkeypatch.setattr(engine, "recognize_digits", lambda _: next(readings))
+    session = AnalysisSession(bus, engine)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    session.process_numeric_frame(_frame(), 2, 66)
+    session.process_numeric_frame(_frame(), 3, 99)
+
+    assert session.tracker_for(region).accepted_value == 11
+    assert [event.payload["new_value"] for event in bus.events] == [10, 11]
+
+
+def test_fast_score_templates_require_three_examples_of_every_digit():
+    complete = {
+        digit: [np.zeros((2, 2), dtype=np.uint8) for _ in range(3)]
+        for digit in "0123456789"
+    }
+    incomplete = {digit: list(examples) for digit, examples in complete.items()}
+    incomplete["6"] = incomplete["6"][:2]
+
+    assert _has_complete_score_templates(complete) is True
+    assert _has_complete_score_templates(incomplete) is False
+
+
+def test_template_score_changes_require_independent_background_ocr():
+    encoded = image_utils.encode_crop_to_base64_png(
+        np.zeros((32, 24), dtype=np.uint8)
+    )
+    region = _score_region()
+    region.digit_templates = {
+        digit: [encoded, encoded, encoded] for digit in "0123456789"
+    }
+    region.digit_templates_reviewed = True
+    region.score_template_version = config.SCORE_TEMPLATE_VERSION
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100", "200"]))
+    session.set_regions([region])
+    session.start()
+
+    session.process_fast_score_frame(_frame(), 0, 0)
+    session.process_fast_score_frame(_frame(), 1, 33)
+    assert bus.events == []
+    assert session.ocr_engine._i == 0
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    session.process_background_numeric_frame(_frame(), 1, 33)
+
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [100, 200]
+
+
+def test_ambiguous_high_template_score_does_not_poison_later_valid_readings(monkeypatch):
+    encoded = image_utils.encode_crop_to_base64_png(
+        np.zeros((32, 24), dtype=np.uint8)
+    )
+    region = _score_region()
+    region.digit_templates = {
+        digit: [encoded] * 3 for digit in "0123456789"
+    }
+    region.digit_templates_reviewed = True
+    region.score_template_version = config.SCORE_TEMPLATE_VERSION
+    engine = FakeOcrEngine(["391650", "391650"])
+    results = iter([
+        OcrResult("18866400", 0.98, error="Ambiguous score templates"),
+        OcrResult("391650", 0.98),
+    ])
+    monkeypatch.setattr(
+        engine, "recognize_score_from_templates", lambda *_: next(results)
+    )
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_regions([region])
+    session.start()
+
+    result = session.process_background_numeric_frame(_frame(), 0, 0)
+    assert result.region_results[0].accepted_value == 391650
+    session.process_background_numeric_frame(_frame(), 1, 33)
+
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [391650]
+
+
+@pytest.mark.parametrize("confidence", [0.70, 0.90, 0.995])
+def test_score_correction_updates_display_and_delivers_one_change(confidence, tmp_path):
+    from app.ui.app_window import App
+    from app.ui.events_tab import EventsTab
+
+    bus = EventBus()
+    delivered = []
+    bus.set_delivery_sink(delivered.append)
+    session = AnalysisSession(
+        bus, FakeOcrEngine(["479820", "454279", "454279", "454279", "454300"], confidence),
+    )
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    pending = session.process_background_numeric_frame(_frame(), 1, 33).region_results[0]
+    assert pending.accepted_value == 479820
+    assert pending.candidate_value == 454279
+    assert "lower score from 479820 to 454279 (1/2)" in pending.validation_note
+    assert len(_confirmed_events(bus)) == 1
+    corrected = session.process_background_numeric_frame(_frame(), 2, 66)
+    rr = corrected.region_results[0]
+    assert rr.accepted_value == 454279
+    assert "Score corrected from 479820 to 454279" in App._format_numeric_status(
+        rr, session.tracker_for(region).status(),
+    )
+    event, = corrected.new_events
+    assert event.event_type == "score_changed"
+    assert event.payload == {
+        "field": "score", "region_label": "Score", "previous_value": 479820, "new_value": 454279,
+    }
+    assert (event.frame_index, event.video_time_ms, event.confidence) == (2, 66, confidence)
+    assert EventsTab._format_detail(event) == "479820 -> 454279"
+    assert session.process_background_numeric_frame(_frame(), 3, 99).new_events == []
+    session.process_background_numeric_frame(_frame(), 4, 132)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [479820, 454279, 454300]
+    observations = [e for e in bus.events if e.event_type == "score_observed"]
+    assert [e.payload["observed_value"] for e in observations] == [479820, 454279, 454300]
+    assert all(e.payload["confirmed"] is False for e in observations)
+    assert delivered == bus.events
+    path = tmp_path / "correction.jsonl"
+    assert bus.export_jsonl(str(path)) == 6
+    assert event.to_dict() in [json.loads(line) for line in path.read_text().splitlines()]
+
+
+@pytest.mark.parametrize("confidence", [None, 0.29, 0.699999])
+def test_low_confidence_score_cannot_correct_even_with_templates(monkeypatch, confidence):
+    engine = FakeOcrEngine(["479820", "454279", "454279"])
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+    session.process_numeric_frame(_frame(), 0, 0)
+    monkeypatch.setattr(session, "uses_score_templates", lambda _: True)
+    monkeypatch.setattr(engine, "recognize_score_from_templates", lambda *_: OcrResult("454279", 0.99))
+    engine._confidence = confidence
+    for i in (1, 2):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == 479820
+        assert "low-confidence" in result.region_results[0].validation_note
+    assert len(_confirmed_events(bus)) == 1
+
+
+@pytest.mark.parametrize("interruption", [
+    OcrResult("454279", 0.699999), OcrResult("454279", None),
+    OcrResult("", 0.99), OcrResult("454279", 0.99, "OCR failed"),
+    OcrResult("454278", 0.99), OcrResult("479820", 0.99),
+])
+def test_score_correction_restarts_after_inconsistent_evidence(monkeypatch, interruption):
+    readings = iter([
+        OcrResult("479820", 0.99), OcrResult("454279", 0.70), interruption,
+        OcrResult("454279", 0.70), OcrResult("454279", 0.70),
+    ])
+    engine = FakeOcrEngine([])
+    monkeypatch.setattr(engine, "recognize_score_digits", lambda _: next(readings))
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_regions([_score_region()])
+    session.start()
+    for i in range(4):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == 479820
+    session.process_numeric_frame(_frame(), 4, 132)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [479820, 454279]
+
+
+@pytest.mark.parametrize("region_factory", [_score_region, _combo_region])
+def test_correction_reset_discards_pending_evidence(region_factory):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["186", "161", "186", "161", "161"]))
+    session.set_regions([region_factory()])
+    session.start()
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    session.reset_tracking()
+    session.process_numeric_frame(_frame(), 0, 0)
+    result = session.process_numeric_frame(_frame(), 1, 33)
+    assert result.region_results[0].accepted_value == 186
+    assert "(1/2)" in result.region_results[0].validation_note
+    result = session.process_numeric_frame(_frame(), 2, 66)
+    assert result.region_results[0].accepted_value == 161
+
+
+def test_score_rejects_a_single_decreasing_reading():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100", "100", "90", "110", "110"]))
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    rejected = session.process_numeric_frame(_frame(), 2, 66)
+    session.process_numeric_frame(_frame(), 3, 99)
+    session.process_numeric_frame(_frame(), 4, 132)
+
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [100, 110]
+    assert rejected.region_results[0].accepted_value == 100
+    assert rejected.region_results[0].is_unreadable is False
+    assert rejected.region_results[0].candidate_value == 90
+    assert rejected.region_results[0].error is None
+    assert "Waiting for repeated evidence to lower score" in rejected.region_results[0].validation_note
+
+
+def test_lower_confidence_score_requires_repeated_evidence():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["999650", "999650"], confidence=0.54))
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    first = session.process_numeric_frame(_frame(), 0, 1000)
+    session.process_numeric_frame(_frame(), 1, 1200)
+
+    assert first.region_results[0].accepted_value is None
+    assert first.region_results[0].candidate_value == 999650
+    assert not first.region_results[0].is_unreadable
+    assert first.region_results[0].error is None
+    assert "Waiting for repeated evidence" in first.region_results[0].validation_note
+    assert session.tracker_for(region).accepted_value == 999650
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [999650]
+
+
+def test_single_lower_confidence_transition_error_is_not_accepted():
+    bus = EventBus()
+    session = AnalysisSession(
+        bus, FakeOcrEngine(["997580", "999622", "999650", "999650"], confidence=0.54)
+    )
+    region = _score_region()
+    session.set_regions([region])
+    session.start()
+
+    for frame_index, time_ms in enumerate((1000, 1200, 1400, 1600)):
+        session.process_numeric_frame(_frame(), frame_index, time_ms)
+
+    assert session.tracker_for(region).accepted_value == 999650
+    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [999650]
 
 
 def test_genuine_change_emits_exactly_one_event():
@@ -63,7 +373,7 @@ def test_genuine_change_emits_exactly_one_event():
     session.process_frame(_frame(), 2, 66)
     session.process_frame(_frame(), 3, 99)  # "200" accepted here
 
-    events = bus.events
+    events = _confirmed_events(bus)
     assert len(events) == 2
     assert events[0].event_type == "score_changed"
     assert events[0].payload == {
@@ -87,7 +397,7 @@ def test_unreadable_ocr_text_does_not_emit_event_or_change_accepted_value():
     session.process_frame(_frame(), 3, 99)  # unreadable
     session.process_frame(_frame(), 4, 132)  # unreadable
 
-    assert len(bus.events) == 1  # only the initial acceptance
+    assert len(_confirmed_events(bus)) == 1  # only the initial acceptance
     assert r.region_results[0].is_unreadable is True
     assert r.region_results[0].accepted_value == 100  # previous value retained, not zeroed
 
@@ -102,7 +412,7 @@ def test_seek_reset_causes_next_value_to_report_as_change_from_unknown():
 
     session.process_frame(_frame(), 0, 0)
     session.process_frame(_frame(), 1, 33)  # accepted 100 -> 1 event so far
-    assert len(bus.events) == 1
+    assert len(_confirmed_events(bus)) == 1
 
     # Simulate what the controller does on a detected seek.
     session.reset_tracking()
@@ -110,9 +420,9 @@ def test_seek_reset_causes_next_value_to_report_as_change_from_unknown():
     session.process_frame(_frame(), 50, 1650)
     session.process_frame(_frame(), 51, 1683)  # accepted again, from unknown
 
-    assert len(bus.events) == 2
-    assert bus.events[1].payload["previous_value"] is None
-    assert bus.events[1].payload["new_value"] == 100
+    assert len(_confirmed_events(bus)) == 2
+    assert _confirmed_events(bus)[1].payload["previous_value"] is None
+    assert _confirmed_events(bus)[1].payload["new_value"] == 100
 
 
 def test_recording_disabled_suppresses_events_but_keeps_tracking_state():
@@ -145,3 +455,384 @@ def test_new_regions_resets_tracking():
 
     session.set_regions([region])  # re-applying regions should reset trackers
     assert session.tracker_for(region).accepted_value is None
+
+
+def test_combo_rejects_large_overlay_jump_and_keeps_accepted_value():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100", "100", "7100", "7100"])
+    session = AnalysisSession(bus, ocr)
+    session.set_required_consecutive_frames(2)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    session.process_frame(_frame(), 0, 0)
+    session.process_frame(_frame(), 1, 33)
+    result = session.process_frame(_frame(), 2, 66)
+    session.process_frame(_frame(), 3, 99)
+
+    assert session.tracker_for(region).accepted_value == 100
+    assert len(bus.events) == 1
+    assert result.region_results[0].is_unreadable is False
+    assert result.region_results[0].candidate_value == 7100
+    assert result.region_results[0].error is None
+    assert "Ignored implausible combo reading" in result.region_results[0].validation_note
+
+
+def test_combo_accepts_repeated_high_confidence_decrease():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100", "100", "4", "4"])
+    session = AnalysisSession(bus, ocr)
+    session.set_required_consecutive_frames(2)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+
+    for frame_index in range(4):
+        session.process_frame(_frame(), frame_index, frame_index * 33)
+
+    assert session.tracker_for(region).accepted_value == 4
+    assert [event.payload["new_value"] for event in bus.events] == [100, 4]
+
+
+def test_split_frame_processing_keeps_arrow_and_numeric_regions_separate():
+    bus = EventBus()
+    ocr = FakeOcrEngine(["100"])
+    session = AnalysisSession(bus, ocr)
+    score = _score_region()
+    arrow = Region(
+        label="P1 Up", player="P1", kind="arrow",
+        x=50, y=0, w=20, h=20, direction="Up",
+    )
+    session.set_regions([score, arrow])
+    session.start()
+
+    arrow_result = session.process_arrow_frame(_frame(), 0, 0)
+    numeric_result = session.process_numeric_frame(_frame(), 0, 0)
+
+    assert [result.region.kind for result in arrow_result.region_results] == ["arrow"]
+    assert [result.region.kind for result in numeric_result.region_results] == ["score"]
+
+
+def test_wrong_template_does_not_override_correct_score_ocr(monkeypatch):
+    region = _score_region()
+    region.digit_templates = {
+        "0": [image_utils.encode_crop_to_base64_png(np.zeros((32, 24), dtype=np.uint8))]
+    }
+    region.digit_templates_reviewed = True
+    region.score_template_version = config.SCORE_TEMPLATE_VERSION
+    engine = FakeOcrEngine(["0237052"], confidence=0.995)
+    monkeypatch.setattr(
+        engine, "recognize_score_from_templates", lambda *_: OcrResult("0333059", 0.99)
+    )
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_regions([region])
+    session.start()
+    first = session.process_background_numeric_frame(_frame(), 100, 1000)
+    assert first.region_results[0].candidate_value == 237052
+    assert first.region_results[0].accepted_value == 237052
+    session.process_background_numeric_frame(_frame(), 101, 1033)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [237052]
+
+
+def test_duplicate_or_out_of_order_frame_cannot_confirm_score():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["237052"], confidence=0.5))
+    session.set_regions([_score_region()])
+    session.start()
+    for index, timestamp in ((10, 1000), (10, 1000), (9, 900), (11, 1000)):
+        session.process_numeric_frame(_frame(), index, timestamp)
+    assert _confirmed_events(bus) == []
+    session.process_numeric_frame(_frame(), 12, 1033)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [237052]
+
+
+def test_combo_low_confidence_and_occlusion_break_confirmation(monkeypatch):
+    engine = FakeOcrEngine([])
+    readings = iter([
+        OcrResult("601", 0.99),
+        OcrResult("104", 0.627),
+        OcrResult("601", 0.99),
+        OcrResult("", None),
+        OcrResult("101", 0.99),
+        OcrResult("101", 0.99),
+    ])
+    monkeypatch.setattr(engine, "recognize_digits", lambda _: next(readings))
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_required_consecutive_frames(2)
+    session.set_regions([_combo_region()])
+    session.start()
+    for i in range(5):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.new_events == []
+    result = session.process_numeric_frame(_frame(), 5, 165)
+    assert result.region_results[0].accepted_value == 101
+    assert [e.payload["new_value"] for e in bus.events] == [101]
+
+
+def test_immediate_combo_acceptance_still_rejects_jumps_and_single_decreases():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["65", "654", "64", "66"], confidence=0.99))
+    session.set_regions([_combo_region()])
+    session.start()
+    for i in range(4):
+        session.process_numeric_frame(_frame(), i, i * 33)
+    assert [e.payload["new_value"] for e in bus.events] == [65, 66]
+
+
+@pytest.mark.parametrize("confidence", [0.90, 0.995])
+def test_combo_correction_reaches_ui_export_and_delivery_sink(confidence, tmp_path):
+    from app.ui.app_window import App
+    from app.ui.events_tab import EventsTab
+
+    bus = EventBus()
+    delivered = []
+    bus.set_delivery_sink(delivered.append)
+    session = AnalysisSession(bus, FakeOcrEngine(["186", "161", "161", "161", "162"], confidence))
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    pending = session.process_background_numeric_frame(_frame(), 1, 33)
+    assert pending.region_results[0].accepted_value == 186
+    assert pending.region_results[0].candidate_value == 161
+    assert "lower combo from 186 to 161 (1/2)" in pending.region_results[0].validation_note
+    assert pending.new_events == []
+
+    corrected = session.process_background_numeric_frame(_frame(), 2, 66)
+    rr = corrected.region_results[0]
+    assert rr.accepted_value == 161
+    assert "Combo corrected from 186 to 161" in App._format_numeric_status(
+        rr, session.tracker_for(region).status()
+    )
+    event, = corrected.new_events
+    assert event.event_type == "combo_changed"
+    assert event.payload == {
+        "field": "combo", "region_label": "Combo", "previous_value": 186, "new_value": 161,
+    }
+    assert (event.frame_index, event.video_time_ms, event.confidence) == (2, 66, confidence)
+    assert EventsTab._format_detail(event) == "186 -> 161"
+    assert session.process_background_numeric_frame(_frame(), 3, 99).new_events == []
+    session.process_background_numeric_frame(_frame(), 4, 132)
+    assert [e.payload["new_value"] for e in bus.events] == [186, 161, 162]
+    assert delivered == bus.events
+    path = tmp_path / "events.jsonl"
+    assert bus.export_jsonl(str(path)) == 3
+    exported = [json.loads(line) for line in path.read_text().splitlines()]
+    assert exported[1] == event.to_dict()
+
+
+@pytest.mark.parametrize("interruption", [
+    OcrResult("162", 0.899999), OcrResult("161", None),
+    OcrResult("", 0.99), OcrResult("161", 0.99, "OCR failed"),
+    OcrResult("160", 0.99), OcrResult("186", 0.99),
+    OcrResult("9999", 0.99),
+])
+def test_combo_correction_requires_uninterrupted_matching_evidence(monkeypatch, interruption):
+    readings = iter([
+        OcrResult("186", 0.99), OcrResult("161", 0.99), interruption,
+        OcrResult("161", 0.99), OcrResult("161", 0.99),
+    ])
+    engine = FakeOcrEngine([])
+    monkeypatch.setattr(engine, "recognize_digits", lambda _: next(readings))
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_regions([_combo_region()])
+    session.start()
+    for i in range(4):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == 186
+    assert len(bus.events) == 1
+    session.process_numeric_frame(_frame(), 4, 132)
+    assert [e.payload["new_value"] for e in bus.events] == [186, 161]
+
+
+@pytest.mark.parametrize("frame_index,timestamp", [(1, 33), (1, 50), (2, 33), (0, 0)])
+@pytest.mark.parametrize("region_factory", [_score_region, _combo_region])
+def test_correction_does_not_count_repeated_or_old_frames(frame_index, timestamp, region_factory):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["186", "161", "161"]))
+    session.set_regions([region_factory()])
+    session.start()
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    rejected = session.process_numeric_frame(_frame(), frame_index, timestamp)
+    assert rejected.region_results[0].accepted_value == 186
+    assert len(_confirmed_events(bus)) == 1
+    session.process_numeric_frame(_frame(), 3, 66)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [186, 161]
+
+
+@pytest.mark.parametrize("elapsed,accepted", [(2000, 161), (2001, 186)])
+@pytest.mark.parametrize("region_factory", [_score_region, _combo_region])
+def test_correction_confirmation_window_boundary(elapsed, accepted, region_factory):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["186", "161", "161"]))
+    session.set_regions([region_factory()])
+    session.start()
+    session.process_numeric_frame(_frame(), 0, 0)
+    session.process_numeric_frame(_frame(), 1, 33)
+    result = session.process_numeric_frame(_frame(), 2, 33 + elapsed)
+    assert result.region_results[0].accepted_value == accepted
+
+
+@pytest.mark.parametrize("region_factory", [_score_region, _combo_region])
+def test_correction_respects_higher_consistency_and_recording_disabled(region_factory):
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["186", "186", "186", "161", "161", "161"]))
+    session.set_regions([region_factory()])
+    session.set_required_consecutive_frames(3)
+    session.start()
+    for i in range(3):
+        session.process_numeric_frame(_frame(), i, i * 33)
+    session.recording_enabled = False
+    for i in (3, 4):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == 186
+    result = session.process_numeric_frame(_frame(), 5, 165)
+    assert result.region_results[0].accepted_value == 161
+    assert result.new_events == []
+    assert len(_confirmed_events(bus)) == 1
+
+
+def test_combo_just_below_confidence_floor_is_not_accepted():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["65"], confidence=0.899999))
+    session.set_regions([_combo_region()])
+    session.start()
+    for i in range(2):
+        result = session.process_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value is None
+        assert "low-confidence combo" in result.region_results[0].validation_note
+    assert bus.events == []
+
+
+def test_fast_live_combo_retains_accepted_value_for_uncertain_candidates(monkeypatch):
+    engine = FakeOcrEngine([])
+    readings = iter([OcrResult("77", 0.99), OcrResult("100", 0.6), OcrResult("106", 0.99)])
+    recognize = Mock(side_effect=lambda *args, **kwargs: next(readings))
+    monkeypatch.setattr(engine, "recognize_digits", recognize)
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    region = _combo_region()
+    session.set_regions([region])
+    session.start()
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    generation = session.generation
+    session.set_combo_fast_mode(region, True)
+    assert session.generation > generation
+    result = session.process_background_numeric_frame(_frame(), 60, 1000).region_results[0]
+    assert result.candidate_value == 100
+    assert result.accepted_value == 77
+    assert result.confidence == 0.6
+    assert "low-confidence" in result.validation_note
+    assert len(bus.events) == 1
+    assert recognize.call_args.kwargs == {"yellow_filter": False, "fast_mode": True}
+    result = session.process_background_numeric_frame(_frame(), 120, 2000).region_results[0]
+    assert result.accepted_value == 106
+    assert [event.payload["new_value"] for event in bus.events] == [77, 106]
+    session.set_combo_fast_mode(region, False)
+    assert not region.combo_fast_mode
+    assert session.tracker_for(region).accepted_value == 106
+
+
+def test_combo_filter_routes_only_enabled_region_and_keeps_confidence_floor(monkeypatch):
+    engine = FakeOcrEngine(["100"])
+    seen_modes = []
+
+    def recognize(crop, *, yellow_filter=False):
+        seen_modes.append(yellow_filter)
+        return OcrResult("323" if yellow_filter else "82", 0.7365 if yellow_filter else 0.99)
+
+    monkeypatch.setattr(engine, "recognize_digits", recognize)
+    monkeypatch.setattr(engine, "recognize_score_digits", lambda _: OcrResult("100", 0.99))
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    score = _score_region()
+    score.combo_yellow_filter = True
+    filtered = _combo_region()
+    filtered.combo_yellow_filter = True
+    unfiltered = Region("Combo P2", "P2", "combo", 0, 0, 50, 20)
+    session.set_regions([score, filtered, unfiltered])
+    session.start()
+    for i in range(2):
+        result = session.process_background_numeric_frame(_frame(), i, i * 33)
+        assert result.region_results[0].accepted_value == 100
+        rr = result.region_results[1]
+        assert rr.raw_text == "323"
+        assert rr.accepted_value is None
+        assert "low-confidence" in rr.validation_note
+        assert result.region_results[2].accepted_value == 82
+    assert seen_modes == [True, False, True, False]
+    assert not any(e.player == "P1" and e.event_type == "combo_changed" for e in bus.events)
+
+
+def test_changing_combo_filter_clears_evidence_and_invalidates_queued_work(monkeypatch):
+    engine = FakeOcrEngine(["186", "161", "161"])
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    combo = _combo_region()
+    session.set_regions([combo])
+    session.start()
+    session.process_background_numeric_frame(_frame(), 0, 0)
+    session.process_background_numeric_frame(_frame(), 1, 33)
+    generation = session.generation
+    session.set_combo_yellow_filter(combo, True)
+    assert combo.combo_yellow_filter
+    assert session.generation > generation
+    assert session.tracker_for(combo).accepted_value == 186
+    assert combo.key() not in session._numeric_evidence
+    recognize = Mock(return_value=OcrResult("161", 0.99))
+    monkeypatch.setattr(engine, "recognize_digits", recognize)
+    assert session.process_background_numeric_frame(
+        _frame(), 2, 66, expected_generation=generation,
+    ) is None
+    recognize.assert_not_called()
+    assert session.process_background_numeric_frame(
+        _frame(), 1, 33,
+    ).region_results[0].accepted_value == 186
+    recognize.assert_called_once()
+    assert session.process_background_numeric_frame(
+        _frame(), 2, 66,
+    ).region_results[0].accepted_value == 161
+    session.set_combo_yellow_filter(combo, False)
+    assert not combo.combo_yellow_filter
+    assert session.tracker_for(combo).accepted_value == 161
+
+
+def test_confirmation_expires_and_respects_consistency_setting():
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["100"]))
+    session.set_required_consecutive_frames(3)
+    session.set_regions([_score_region()])
+    session.start()
+    for i, timestamp in enumerate((0, 33, 2100, 2133)):
+        session.process_numeric_frame(_frame(), i, timestamp)
+    assert _confirmed_events(bus) == []
+    session.process_numeric_frame(_frame(), 4, 2166)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [100]
+
+
+def test_weak_score_ocr_requires_both_template_agreement_and_repeated_frames(monkeypatch):
+    region = _score_region()
+    region.digit_templates = {
+        "6": [image_utils.encode_crop_to_base64_png(np.zeros((32, 24), dtype=np.uint8))]
+    }
+    region.digit_templates_reviewed = True
+    region.score_template_version = config.SCORE_TEMPLATE_VERSION
+    engine = FakeOcrEngine(["999050", "999650", "999650"], confidence=0.284)
+    monkeypatch.setattr(
+        engine, "recognize_score_from_templates", lambda *_: OcrResult("999650", 0.99)
+    )
+    bus = EventBus()
+    session = AnalysisSession(bus, engine)
+    session.set_regions([region])
+    session.start()
+    for i in range(2):
+        session.process_background_numeric_frame(_frame(), i, i * 33)
+        assert _confirmed_events(bus) == []
+    session.process_background_numeric_frame(_frame(), 2, 66)
+    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [999650]
+    assert _confirmed_events(bus)[0].confidence == 0.284
