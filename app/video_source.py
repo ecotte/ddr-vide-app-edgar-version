@@ -11,12 +11,17 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from app import config
+
 
 class VideoSource:
+    source_mode = config.SOURCE_MODE_REPLAY
+
     def __init__(self, path: str):
         self.path = path
         self._cap = cv2.VideoCapture(path)
         if not self._cap.isOpened():
+            self._cap.release()
             raise IOError(f"Could not open video file: {path}")
 
         self.width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))

@@ -11,8 +11,8 @@ in Eventhouse. This diagram focuses on components and data flow.
 ```mermaid
 flowchart TB
   subgraph PC["Workshop PC - DDR desktop app"]
-    VIDEO["Recorded video + layout<br/>P1/P2 regions, references, teaching"]
-    FRAMES["OpenCV playback<br/>frame index + video timestamp"]
+    VIDEO["Recorded video or HDMI capture + layout<br/>P1/P2 regions, references, teaching"]
+    FRAMES["OpenCV file playback or background HDMI capture<br/>latest live frame only<br/>frame index + source timestamp"]
     ANALYSIS["Arrow reference matching<br/>background score/combo OCR<br/>latest-frame and confirmation scheduler"]
     RULES["Validation + desktop display<br/>raw / candidate / accepted<br/>source frame retained"]
     BUS["EventBus<br/>event_id + session_id + sequence<br/>Record events gate"]
@@ -73,9 +73,32 @@ It is not in the live workshop data path.
 | On failure | Visible desktop error; retain latest state for retry | Durable retry/backoff; duplicate deliveries possible |
 | What remains running | DDR desktop app | DDR desktop app |
 
-Both feeds use recorded events. Turning off **Record events** stops new events
-from reaching either feed. Their connect/share controls remain independent.
+Both feeds use recorded event envelopes from the selected source. Turning off
+**Record events** stops new gameplay events; lifecycle announcements continue.
+Their connect/share controls remain independent.
 Neither feed sends video footage or teaching/reference images.
+
+## Desktop video sources
+
+**Video file** preserves sequential playback, frame stepping, and explicit
+seek detection. **HDMI input** enumerates named Windows DirectShow devices
+without opening them, then opens only the user-selected card. Opening and
+reading occur on a dedicated capture thread with a single latest-frame slot.
+Tk polls for new frames without blocking on the driver.
+
+HDMI preview can freeze for calibration, but capture continues and resuming
+returns to the newest frame. Live events use `source_mode: live`, capture frame
+indices, and monotonic milliseconds since the connection opened. They flow
+through the same analysis, game-end GUID rotation, scoreboard, and durable
+publishing paths as replay events. Connecting emits `new_session` with reason
+`hdmi_connected`. Switching sources stops analysis, invalidates queued OCR, and
+starts a fresh session only after the new source delivers a valid frame.
+Calibration is explicitly fitted or removed when the source resolution changes.
+
+No audio or video-file recording is added. Connection failures, signal loss,
+five-second frame stalls, and resolution changes are visible errors rather
+than EOF or successful blank frames. A blocked driver shutdown is reported;
+the app does not silently keep capturing or open another copy of the device.
 
 ## Events and calculations
 
@@ -87,7 +110,7 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
 - `new_session`: sequence 0, announcing the in-memory game GUID shared by both
   players. Payload includes the new and previous IDs, `is_new_session: true`,
-  and the reason (`initial`, `video_loaded`, `manual`, or `game_end`).
+  and the reason (`initial`, `video_loaded`, `hdmi_connected`, `manual`, or `game_end`).
   Lifecycle events are recorded even with gameplay recording disabled.
 
 A shared `game_end` region matches user-captured end-indicator references at
@@ -98,8 +121,13 @@ under the old GUID and invalidates queued jobs from that session.
 Reference images travel with layouts; footage and references are not published.
 Backward seeks do not regenerate boundaries or reconstruct historical GUIDs.
 
-The live display includes Left/Down/Up/Right hit counts and total hits, but not
-miss counts. Misses still remain in Fabric history.
+The live display includes Up-Right/Up-Left/Down-Right/Down-Left/Center hit counts
+and total hits, but not miss counts. Misses still remain in Fabric history.
+The desktop direction selector, region keys, arrow events, and scoreboard use
+these same five names. Loading a legacy layout warns and removes unsupported
+arrow regions from the active setup while keeping numeric, game-end, and
+supported arrow regions; the saved file is unchanged until explicitly saved.
+The viewer rejects old four-direction snapshots instead of inventing a mapping.
 
 **Arrow balance** is each direction's share of detected hits, not accuracy.
 **Hit pace** is detected hits in the last five seconds of video divided by five.
@@ -151,6 +179,7 @@ Use monotonic elapsed time or synchronized clocks when measuring transport delay
 
 - [Desktop controller](../app/ui/app_window.py): playback, OCR jobs, display and sharing controls.
 - [Video source](../app/video_source.py): decoding, skips, seeks and source time.
+- [Live video source](../app/live_video_source.py): named device discovery, bounded HDMI capture and elapsed source time.
 - [Analysis](../app/analysis.py) / [OCR engine](../app/ocr_engine.py): recognition and acceptance.
 - [EventBus](../app/event_bus.py): session bookkeeping, exports and fan-out.
 - [Live scoreboard](../app/live_scoreboard.py): current state, insights and publisher lifecycle.

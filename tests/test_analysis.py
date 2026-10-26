@@ -504,8 +504,8 @@ def test_split_frame_processing_keeps_arrow_and_numeric_regions_separate():
     session = AnalysisSession(bus, ocr)
     score = _score_region()
     arrow = Region(
-        label="P1 Up", player="P1", kind="arrow",
-        x=50, y=0, w=20, h=20, direction="Up",
+        label="P1 Up-Right", player="P1", kind="arrow",
+        x=50, y=0, w=20, h=20, direction="Up-Right",
     )
     session.set_regions([score, arrow])
     session.start()

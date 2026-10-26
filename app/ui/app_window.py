@@ -18,6 +18,7 @@ from app.credential_store import CredentialStorageError
 from app.analysis import AnalysisSession, RegionFrameResult
 from app.event_bus import EventBus
 from app.live_scoreboard import LiveScoreboard
+from app.live_video_source import CaptureDevice, LiveVideoSource, list_capture_devices
 from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
@@ -34,7 +35,7 @@ from app.video_source import VideoSource
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("DDR Video Event Extractor - Milestone 1 (recorded video)")
+        self.title("DDR Video Event Extractor")
         self.geometry("1500x900")
         apply_dark_theme(self)
 
@@ -47,7 +48,12 @@ class App(tk.Tk):
         self._publisher_poll_after_id = None
         self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
 
-        self.video_source: Optional[VideoSource] = None
+        self.video_source: Optional[VideoSource | LiveVideoSource] = None
+        self._pending_live_source: Optional[LiveVideoSource] = None
+        self._capture_poll_after_id: Optional[str] = None
+        self._capture_started_at = 0.0
+        self._capture_devices: list[CaptureDevice] = []
+        self._calibration_resolution: Optional[tuple[int, int]] = None
         self.regions = []  # list[Region]
         self.is_playing = False
         self._play_after_id: Optional[str] = None
@@ -73,7 +79,7 @@ class App(tk.Tk):
         header.pack(fill="x")
         ttk.Label(header, text="DDR Video Event Extractor", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
-            header, text="RECORDED VIDEO  /  Calibrate regions. Review recognition. Capture events.",
+            header, text="VIDEO + HDMI  /  Calibrate regions. Review recognition. Capture events.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(4, 0))
         notebook = ttk.Notebook(self)
@@ -109,7 +115,112 @@ class App(tk.Tk):
         self.after(300, self._poll_ocr_status)
 
     # ------------------------------------------------------------------
-    # Video loading / playback
+    # Source selection / playback
+    def select_source(self, selection: str) -> None:
+        if not self._cancel_hdmi_connection() or not self._disconnect_source():
+            active = "HDMI input" if isinstance(self.video_source, LiveVideoSource) else "Video file"
+            self.video_tab.set_source_selection(active)
+            return
+        self.video_tab.set_source_selection(selection)
+        self.video_tab.set_live_mode(selection == "HDMI input")
+        if selection == "HDMI input":
+            self.refresh_capture_devices()
+
+    def refresh_capture_devices(self) -> None:
+        try:
+            self._capture_devices = list_capture_devices()
+        except (OSError, RuntimeError) as exc:
+            self._capture_devices = []
+            self.video_tab.set_capture_devices([])
+            self.video_tab.set_error_status(f"Could not enumerate capture devices: {exc}")
+            return
+        self.video_tab.set_capture_devices([device.label for device in self._capture_devices])
+        self.video_tab.set_error_status("")
+        self.video_tab.set_video_info(
+            "Select the HDMI capture device and click Connect HDMI."
+            if self._capture_devices else
+            "No capture devices found. Connect your HDMI-to-USB capture card, then Refresh devices."
+        )
+
+    def toggle_hdmi(self) -> None:
+        if self._pending_live_source is not None:
+            self._cancel_hdmi_connection()
+            return
+        if isinstance(self.video_source, LiveVideoSource):
+            self._disconnect_source()
+            return
+        selected = self.video_tab.capture_device_var.get()
+        device = next((item for item in self._capture_devices if item.label == selected), None)
+        if device is None:
+            self.video_tab.set_error_status("Select your HDMI capture device first.")
+            return
+        if not self._disconnect_source():
+            return
+        self._pending_live_source = LiveVideoSource(device)
+        self._capture_started_at = time.monotonic()
+        self.video_tab.set_capture_pending(True)
+        self.video_tab.set_video_info(f"Connecting to {device.name}...")
+        self._capture_poll_after_id = self.after(30, self._poll_live_connection)
+
+    def _cancel_hdmi_connection(self) -> bool:
+        if self._capture_poll_after_id is not None:
+            self.after_cancel(self._capture_poll_after_id)
+            self._capture_poll_after_id = None
+        if self._pending_live_source is not None:
+            try:
+                self._pending_live_source.close()
+            except OSError as exc:
+                self.video_tab.set_error_status(str(exc))
+                return False
+            self._pending_live_source = None
+            self.video_tab.set_video_info("HDMI disconnected.")
+        self.video_tab.set_capture_pending(False)
+        return True
+
+    def _poll_live_connection(self) -> None:
+        self._capture_poll_after_id = None
+        source = self._pending_live_source
+        if source is None:
+            return
+        try:
+            frame, index, _ = source.read_next()
+            if frame is None:
+                if time.monotonic() - self._capture_started_at >= 15:
+                    raise OSError("No HDMI frame received within 15 seconds. Check the device and HDMI signal.")
+                self._capture_poll_after_id = self.after(30, self._poll_live_connection)
+                return
+        except OSError as exc:
+            if self._cancel_hdmi_connection():
+                self.video_tab.set_error_status(str(exc))
+            return
+        self._pending_live_source = None
+        self.video_tab.set_capture_pending(False)
+        assert index is not None
+        self._activate_source(source, frame, index, reason="hdmi_connected")
+        self._start_playing()
+
+    def _disconnect_source(self) -> bool:
+        self._stop_playing()
+        self.analysis.stop()
+        self._analysis_generation += 1
+        self._confirmation_frame = None
+        self._latest_numeric_frame = None
+        self._final_numeric_frame = None
+        self.video_tab.set_analysis_status(False)
+        if self.video_source is not None:
+            try:
+                self.video_source.close()
+            except OSError as exc:
+                self.video_tab.set_error_status(str(exc))
+                return False
+        self.video_source = None
+        self._last_frame_position = None
+        self._last_frame_bgr = None
+        self.video_tab.set_hdmi_connected(False)
+        self.video_tab.clear_source_frame()
+        self.video_tab.set_video_info("No source connected.")
+        return True
+
     def open_video_dialog(self) -> None:
         path = filedialog.askopenfilename(
             title="Open DDR gameplay video",
@@ -127,14 +238,48 @@ class App(tk.Tk):
             messagebox.showerror("Could not open video", str(exc))
             return
 
-        if self.video_source is not None:
-            self.video_source.close()
-        self.video_source = new_source
+        frame, idx, _ = new_source.read_next()
+        if frame is None:
+            new_source.close()
+            messagebox.showerror("Empty video", "Could not read any frames from this video.")
+            return
+        if not self._cancel_hdmi_connection() or not self._disconnect_source():
+            new_source.close()
+            return
+        assert idx is not None
+        self._activate_source(new_source, frame, idx, reason="video_loaded")
 
-        # A new video is a new session: reset everything recognition-related.
+    def _activate_source(
+        self, source: VideoSource | LiveVideoSource, frame, frame_index: int, *, reason: str,
+    ) -> None:
+        self.video_source = source
+        is_live = isinstance(source, LiveVideoSource)
+        resolution = (source.width, source.height)
+        old_resolution = self._calibration_resolution
+        if self.regions and old_resolution is not None and old_resolution != resolution:
+            old_width, old_height = old_resolution
+            fit = messagebox.askyesno(
+                "Source resolution changed",
+                f"Existing regions were calibrated at {old_width}x{old_height}; "
+                f"the new source is {source.width}x{source.height}.\n\n"
+                "Fit the current regions and reference images to this source?\n"
+                "No removes them from this view; saved layouts are unchanged.",
+            )
+            self.regions = (
+                layout_store.rescale_profile(
+                    LayoutProfile("Current regions", old_width, old_height, self.regions),
+                    source.width, source.height,
+                ).regions if fit else []
+            )
+            self.analysis.set_regions(self.regions)
+            self.video_tab.refresh_region_list(self.regions)
+            self._refresh_arrow_reference_thumbnails()
+        self._calibration_resolution = resolution
         self._analysis_generation += 1
         self.analysis.stop()
-        session_event = self.analysis.new_session(0, 0, reason="video_loaded")
+        self.event_bus.source_mode = source.source_mode
+        timestamp = source.video_time_ms_for_frame(frame_index)
+        session_event = self.analysis.new_session(frame_index, timestamp, reason=reason)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
@@ -144,20 +289,25 @@ class App(tk.Tk):
         self.events_tab.append_event(session_event)
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
-
-        self.video_tab.set_video_info(
-            f"{os.path.basename(path)}  |  {new_source.width}x{new_source.height}  |  "
-            f"{new_source.fps:.2f} fps  |  {new_source.frame_count} frames"
-        )
-
-        frame, idx, _ = new_source.read_next()
-        if frame is None:
-            messagebox.showerror("Empty video", "Could not read any frames from this video.")
-            return
-        self._process_and_update(frame, idx, new_source.video_time_ms_for_frame(idx), is_seek=False)
+        self.video_tab.set_source_selection("HDMI input" if is_live else "Video file")
+        self.video_tab.set_live_mode(is_live)
+        self.video_tab.set_hdmi_connected(is_live)
+        if isinstance(source, LiveVideoSource):
+            fps = f"{source.fps:.2f} fps reported" if source.fps else "FPS not reported by device"
+            info = f"LIVE: {source.device.name} | {source.width}x{source.height} | {fps}"
+        else:
+            info = (
+                f"{os.path.basename(source.path)} | {source.width}x{source.height} | "
+                f"{source.fps:.2f} fps | {source.frame_count} frames"
+            )
+        self.video_tab.set_video_info(info)
+        self._process_and_update(frame, frame_index, timestamp, is_seek=False)
         self._refresh_score_calibration_status()
 
     def step_forward(self) -> None:
+        if isinstance(self.video_source, LiveVideoSource):
+            self.video_tab.set_error_status("Live input cannot step. Freeze or resume the live preview instead.")
+            return
         if self.video_source is None or self.is_playing:
             return
         frame, idx, is_seek = self.video_source.read_next()
@@ -168,6 +318,9 @@ class App(tk.Tk):
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
 
     def step_backward(self) -> None:
+        if isinstance(self.video_source, LiveVideoSource):
+            self.video_tab.set_error_status("Live input cannot rewind.")
+            return
         if self.video_source is None or self.is_playing:
             return
         current_next = self.video_source.current_frame_index()
@@ -179,6 +332,9 @@ class App(tk.Tk):
         self._process_and_update(frame, idx, self.video_source.video_time_ms_for_frame(idx), is_seek)
 
     def seek_to(self, frame_index: int) -> None:
+        if isinstance(self.video_source, LiveVideoSource):
+            self.video_tab.set_error_status("Live input cannot seek.")
+            return
         if self.video_source is None:
             return
         self._stop_playing()
@@ -190,7 +346,7 @@ class App(tk.Tk):
 
     def toggle_play(self) -> None:
         if self.video_source is None:
-            messagebox.showerror("No video", "Open a video first.")
+            messagebox.showerror("No source", "Open a video or connect an HDMI capture device first.")
             return
         if self.is_playing:
             self._stop_playing()
@@ -221,6 +377,9 @@ class App(tk.Tk):
 
     def _play_tick(self) -> None:
         if not self.is_playing or self.video_source is None:
+            return
+        if isinstance(self.video_source, LiveVideoSource):
+            self._play_live_tick()
             return
         fps = self.video_source.fps
         if fps > 0:
@@ -260,6 +419,29 @@ class App(tk.Tk):
         else:
             delay = next_playback_delay_ms(0, 0)
         self._schedule_play_tick(delay)
+
+    def _play_live_tick(self) -> None:
+        source = self.video_source
+        if not isinstance(source, LiveVideoSource):
+            return
+        try:
+            frame, index, _ = source.read_next()
+        except OSError as exc:
+            self._stop_playing()
+            self.analysis.stop()
+            self._analysis_generation += 1
+            self._confirmation_frame = None
+            self._latest_numeric_frame = None
+            self._final_numeric_frame = None
+            self.video_tab.set_analysis_status(False)
+            self.video_tab.set_error_status(str(exc))
+            return
+        if frame is not None:
+            assert index is not None
+            self._process_and_update(
+                frame, index, source.video_time_ms_for_frame(index), is_seek=False,
+            )
+        self._schedule_play_tick(15)
 
     # ------------------------------------------------------------------
     # Frame processing + display
@@ -649,7 +831,24 @@ class App(tk.Tk):
                 exc.profile, self.video_source.width, self.video_source.height
             )
 
-        self.regions = list(profile.regions)
+        unsupported_arrows = [
+            region for region in profile.regions
+            if region.kind == "arrow" and region.direction not in config.ARROW_DIRECTIONS
+        ]
+        if unsupported_arrows:
+            messagebox.showwarning(
+                "Arrow recalibration required",
+                f"Removed {len(unsupported_arrows)} unsupported arrow region(s) from the loaded layout. "
+                "Old directions cannot be mapped reliably to the five-direction setup.\n\n"
+                "Score, combo, game-end, and supported arrow regions are kept. "
+                "Draw and teach new arrow regions for Up-Right, Up-Left, Down-Right, Down-Left, "
+                "and Center for each player.\n\n"
+                "The saved layout file is unchanged until you save it.",
+            )
+        self.regions = [
+            region for region in profile.regions
+            if region.kind != "arrow" or region.direction in config.ARROW_DIRECTIONS
+        ]
         self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
@@ -772,7 +971,7 @@ class App(tk.Tk):
             self.analysis.stop()
         else:
             if self.video_source is None:
-                messagebox.showerror("No video", "Open a video first.")
+                messagebox.showerror("No source", "Open a video or connect an HDMI capture device first.")
                 return
             if not self.regions:
                 messagebox.showwarning(
@@ -922,6 +1121,8 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
+        if not self._cancel_hdmi_connection() or not self._disconnect_source():
+            return
         self._stop_playing()
         self.analysis.stop()
         self.event_bus.set_live_sink(None)
@@ -934,8 +1135,6 @@ class App(tk.Tk):
             self.after_cancel(self._analysis_poll_after_id)
             self._analysis_poll_after_id = None
         self._analysis_executor.shutdown(wait=False, cancel_futures=True)
-        if self.video_source is not None:
-            self.video_source.close()
         self.destroy()
 
 

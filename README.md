@@ -1,4 +1,4 @@
-# DDR Video Event Extractor - Milestone 1 (recorded video)
+# DDR Video Event Extractor - Recorded video and HDMI capture
 
 See the [architecture diagram and data-flow guide](docs/architecture.md) for the
 desktop pipeline, both publishers, Rayfin hosting, Fabric items, authentication,
@@ -31,20 +31,19 @@ digit-box width/height ratio is at least 1.3. This targets skins whose flattened
 previews, and confidence thresholds are unchanged. Low-confidence results still
 require confirmation and can remain unaccepted. - Milestone 1 (recorded video)
 
-A local Windows desktop application that watches a **recorded** Dance
-Dance Revolution gameplay video, lets you calibrate on-screen regions
+A local Windows desktop application that watches a **recorded video or live
+HDMI capture device** for Dance Dance Revolution gameplay, lets you calibrate on-screen regions
 (score, combo, and per-lane arrow receptors), reads the score/combo
 regions with OCR and the arrow regions by comparing them to snapshots you
 capture yourself, and turns *confirmed* changes into structured,
 timestamped events you can review in a table and export as JSON Lines.
-Everything runs locally - no video, screenshot, or recognized text ever
-leaves your machine.
+Video, screenshots, and reference images stay local. Event JSON leaves the
+machine only when you explicitly enable one of the publishing options.
 
-This is **milestone 1** only: recorded-video playback, region calibration,
-OCR-based score/combo recognition, calibration-based arrow hit/miss
-detection, and event export. Live HDMI capture, judgment-text recognition,
-and streaming to Microsoft Fabric are **not** implemented yet - see
-"Later milestones" at the end of this document.
+Both sources share region calibration, OCR-based score/combo recognition,
+reference-based arrow and game-end detection, GUID game sessions, event export,
+and optional Fabric/live-scoreboard publishing. Judgment-text recognition
+remains future work - see "Later milestones" at the end of this document.
 
 ---
 
@@ -52,7 +51,8 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 
 **Does:**
 - Open a local `.mp4`/`.avi`/`.mov`/`.mkv` file, play/pause/step through it frame by frame, and seek with a slider.
-- Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per arrow direction - Up/Down/Left/Right - per player), plus a shared `game_end` indicator.
+- Select **HDMI input**, choose a named HDMI-to-USB capture device such as **Hagibis**, and analyze its live frames without recording a video file.
+- Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per direction - Up-Right/Up-Left/Down-Right/Down-Left/Center - per player), plus a shared `game_end` indicator.
 - Save/load named layout profiles (JSON files under `layouts/`), tied to a specific source resolution, with an explicit warning (never a silent guess) if you load a layout onto a differently-sized video. If you continue, regions are fitted with one uniform scale and centered so different aspect ratios do not distort them. Arrow-lane reference snapshots (see below) travel with the layout and are resized by the same scale.
 - Run OCR (EasyOCR, CPU) on each `score`/`combo` region once you click **Start Analysis**. Recognition runs on a single-threaded background worker without blocking source-rate playback. After each job it immediately processes the newest available frame, using a retained neighboring frame only when a result actually needs confirmation. It never builds an unbounded backlog.
 - Teach score-digit references with one input: pause on a clear score, click **Teach score...**, and enter all visible digits. References support background OCR verification; they never emit score events on their own. Advance/play to analyze new frames after teaching. Save the layout to retain the samples.
@@ -65,7 +65,7 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
 **Does not do (by design, for this milestone):**
-- No live/HDMI capture.
+- No live rewind, seeking, or audio capture. An HDMI output port on a laptop is not a capture input; use a Windows-compatible HDMI-to-USB capture device.
 - No judgment-tier text recognition (e.g. "Marvelous"/"Great"/"Miss" as printed text), life gauge, or "final results" recognition. Arrow hit/miss is detected from the arrow receptor's appearance, not from reading judgment text.
 - No tracking of individual falling notes as they travel down the track - only the fixed receptor region per lane.
 - No automatic network publishing: you must explicitly connect in the Events tab. Player registration and stable player UIDs are not implemented yet.
@@ -76,6 +76,7 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 ## 2. Requirements
 
 - Windows 10/11.
+- For HDMI: a connected video source and HDMI-to-USB capture card exposed to Windows as a camera. Allow camera access for apps and desktop apps in Windows privacy settings (including Python if listed), and close other apps using the card.
 - Python 3.10+ available as `python` on your PATH (this project was built and tested against Python 3.12).
 - About 1 GB of free disk space for the virtual environment and OCR model files.
 - Internet access **the first time you run the app** (to download the EasyOCR model files, roughly 100 MB) and **the first time you run setup** (to download PyTorch and other packages). After that, everything runs fully offline.
@@ -102,6 +103,13 @@ releases anyway, so this fallback is safe.
 
 Setup takes a few minutes depending on your connection. You only need to
 run it again if `requirements.txt` changes.
+
+For an existing environment, the new named-device picker requires
+`cv2-enumerate-cameras==1.4.0`. Re-run setup or install the added package:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install cv2-enumerate-cameras==1.4.0
+```
 
 ---
 
@@ -134,10 +142,69 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 
 ## 5. Walkthrough: calibrating and running on your own video
 
+### Choosing Video file or HDMI input
+
+The **Video source > Source** selector offers **Video file** (the default) and
+**HDMI input**. No camera is opened automatically at startup or during device
+discovery.
+
+- **Video file:** click **Open Video...** and use the existing play, pause,
+  frame-step, and seek controls.
+- **HDMI input:** connect the console/video source to the capture card's HDMI
+  input and connect the card to this PC over USB. Select **HDMI input**, choose
+  **Hagibis (device 1)** (or your card's current name/index), then
+  **Connect HDMI**. Device indices can change; use the name, not a remembered
+  numeric index. **Refresh devices** updates the list after plugging in a card.
+  When multiple devices are present, explicitly choose one so the built-in
+  camera is not opened accidentally.
+
+The first live frame starts the preview. Analysis remains off until you click
+**Start Analysis**. Use **Freeze preview** to hold a frame for drawing regions,
+teaching digits, or capturing arrow/game-end references; **Resume live** jumps
+to the current feed, not buffered footage. Previously submitted OCR may still
+complete while the preview is frozen. Live input has no frame stepping, rewind,
+or seek, and does not capture audio or save a video recording.
+
+Live capture runs in a dedicated thread and retains only the latest frame,
+avoiding an unbounded queue or blocking Tk on camera reads. Dimensions come
+from the actual first frame; FPS is reported when supplied by the driver.
+`frame_index` counts captured frames (gaps are expected if preview frames are
+dropped), and `video_time_ms` is monotonic elapsed time since capture opened,
+including time spent with the preview frozen. Live events use
+`source_mode: "live"`; video files continue to use `"replay"`.
+
+Connecting starts a fresh GUID session with a `new_session` event whose reason
+is `hdmi_connected`. Calibrated game-end detection, both players, JSONL export,
+Fabric publishing, and the live scoreboard work through the same pipeline.
+Changing sources stops analysis and clears pending old-source OCR work; a
+different source resolution prompts before fitting or removing current regions.
+Saved layouts are not modified by that choice.
+
+Use **Disconnect HDMI** before unplugging the card, or choose **Video file**
+to switch back. **Cancel HDMI** cancels a pending connection. Connection failure,
+lost frames, five-second frame stalls, and capture-resolution changes are
+displayed explicitly; analysis stops rather than inventing events or treating
+the live source as a completed recording. Reconnect to retry.
+
+If Hagibis is listed but cannot open, close Camera/OBS/Teams or other capture
+apps, verify the HDMI source is sending a supported signal, check the USB cable
+and driver, and enable **Windows Settings > Privacy & security > Camera >
+Let apps access your camera** and **Let desktop apps access your camera**.
+Enable Python's camera permission too if it is listed, especially when using
+Microsoft Store Python: its packaged-app camera access can differ from
+Camera/OBS. A native Windows activation error of `0x80070005` means access was
+denied; check these permissions even if another app can show the HDMI video.
+Retry **Connect HDMI** after granting access. If settings are managed, ask your
+administrator rather than bypassing the restriction.
+
+An enumerated device does not prove a working HDMI signal or successful capture.
+A driver that blocks during shutdown shows an error rather than silently opening
+a second connection; wait and retry.
+
 ### 5a. Score / combo (OCR)
 
-1. **Open Video...** and pick your `.mp4` file. The video's resolution, fps, and frame count appear next to the button. The first frame is displayed.
-2. Use **Step >|** / **|< Step** to move frame by frame, or drag the slider, to find a moment where the score and combo are clearly on screen (not a menu/loading screen - the app never assumes every screen is gameplay, so pick a frame where they're actually visible).
+1. Choose a source as described above. For **Video file**, **Open Video...** and pick your `.mp4` file. Resolution, FPS, and frame count appear below the selector. For HDMI, connect the selected device to display the first live frame.
+2. For files, use **Step >|** / **|< Step** or the slider to find a clear score/combo frame. For HDMI, wait for that frame and click **Freeze preview**. Avoid menus/loading screens; analysis must be started explicitly.
 3. Click **Draw Region: OFF** to turn it **ON**. Click-drag a rectangle around the score digits on the canvas. When you release the mouse, a dialog asks for a label, player (P1/P2/Unknown), and field kind (`score`/`combo`/`arrow`/`game_end`). Repeat for combo. Turn Draw Region back **OFF** when done so you don't accidentally start new rectangles while browsing the video.
 4. Adjust **Consistency frames** if needed (default 1). Numeric OCR runs in the background and may sample changing values, so one readable sample is accepted by default. Raise this only when repeated OCR noise is more important than capturing fast score/combo changes - see section 6.
 
@@ -151,10 +218,22 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
 
 ### 5b. Arrow lanes (hit/miss, per direction per player)
 
-1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up/Down/Left/Right). Repeat for each of the 4 directions, and again for the other player if needed (up to 8 boxes total for 2 players).
+1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up-Right/Up-Left/Down-Right/Down-Left/Center). Repeat for each of the 5 directions, and again for the other player if needed (up to 10 arrow boxes total for 2 players).
 2. In the recognition panel on the right, each arrow region gets its own row with **Add Hit ref** / **Add Miss ref** buttons. Step or seek the video to frames that clearly show that lane in each state and add as many examples as needed. Classification uses the best match across all captured examples. **Clear Hit refs** and **Clear Miss refs** remove all examples for that state. You do not need both states - if your skin doesn't visibly distinguish misses at the receptor, only add hit references and misses simply won't be reported for that lane (never guessed).
 3. Adjust **Arrow similarity threshold** (default 0.90; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
+
+**Existing four-direction layouts:** loading a layout with Up/Down/Left/Right
+arrow regions shows a warning and removes those unsupported arrow regions from
+the loaded setup. Score, combo, game-end, and already-supported arrow regions
+are preserved. Draw and teach the five new arrow regions per player; there is
+no automatic mapping of old reference images. The saved file is not changed
+until you explicitly save the updated layout.
+
+The live scoreboard uses the same five direction names for hit counts and arrow
+balance. Restart the updated desktop publisher and start a new session after
+updating the scoreboard; old four-direction snapshots are rejected explicitly
+rather than relabeled or used to invent new counts.
 
 ### 5c. Running analysis and reviewing events
 
@@ -297,7 +376,8 @@ eye, compare to the app's raw OCR panel) before trusting any P2 readings.
 reference snapshots (that step is deliberately yours to do, since only
 you can identify a true hit/miss moment in your footage). To sanity-check
 the *mechanism* rather than fabricate a full result, I cropped an
-approximate bounding box around the "Up" arrow receptor in `p1.mp4` and,
+approximate bounding box around the "Up" arrow receptor in `p1.mp4`
+(a historical four-direction check, before the five-direction change) and,
 using `app.image_utils.similarity` (the same function the app uses),
 compared 90 consecutive real frames against one frame known to be at a
 hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
@@ -415,8 +495,8 @@ holding the similarity score to the matched reference:
   "player": "P1",
   "payload": {
     "field": "arrow",
-    "region_label": "P1 Up",
-    "direction": "Up",
+    "region_label": "P1 Up-Right",
+    "direction": "Up-Right",
     "state": "hit"
   },
   "confidence": 0.97
@@ -428,7 +508,7 @@ holding the similarity score to the matched reference:
 running the app - these are deliberately different clocks and are never
 conflated. Recorded-video recognition uses `source_mode: "replay"`.
 Explicit mapping samples use `"synthetic"` and `payload.is_test: true`;
-`"live"` is reserved for future capture support.
+HDMI capture uses `"live"` with capture-relative monotonic timestamps.
 
 ---
 
@@ -455,7 +535,6 @@ code yet:
 - Recognizing displayed judgment **text** (e.g. "Marvelous!!!" as printed on screen, as opposed to the receptor-flash hit/miss detection this milestone adds) and visible bonuses.
 - Tracking individual falling notes as they travel down the track (not just the fixed receptor), including observed color, without assuming what a color means musically.
 - Treating consecutive identical judgments as potentially separate events, and leaving uncertain note-to-judgment associations unresolved rather than guessing.
-- Live HDMI capture as a second `source_mode` alongside recorded-video replay.
 - Player registration events and stable player UIDs linking sessions across plays.
 
 ---

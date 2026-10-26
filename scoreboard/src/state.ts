@@ -1,5 +1,5 @@
 export const BOARD_ID = 'd00d0001-0000-4000-8000-000000000001';
-export const DIRECTIONS = ['Left', 'Down', 'Up', 'Right'] as const;
+export const DIRECTIONS = ['Up-Right', 'Up-Left', 'Down-Right', 'Down-Left', 'Center'] as const;
 export type Direction = typeof DIRECTIONS[number];
 
 export interface PlayerState {
@@ -63,8 +63,9 @@ function cleanPlayer(player: PlayerState): PlayerState {
     hitPace: player.hitPace ?? null,
     observedScore: player.observedScore, lastVideoTimeMs: player.lastVideoTimeMs,
     hitsByDirection: player.hitsByDirection ? {
-      Left: player.hitsByDirection.Left, Down: player.hitsByDirection.Down,
-      Up: player.hitsByDirection.Up, Right: player.hitsByDirection.Right,
+      'Up-Right': player.hitsByDirection['Up-Right'], 'Up-Left': player.hitsByDirection['Up-Left'],
+      'Down-Right': player.hitsByDirection['Down-Right'], 'Down-Left': player.hitsByDirection['Down-Left'],
+      Center: player.hitsByDirection.Center,
     } : null,
   };
 }
@@ -75,8 +76,9 @@ export function arrowBalance(player?: PlayerState): Record<Direction, number> | 
   const total = DIRECTIONS.reduce((sum, direction) => sum + hits[direction], 0);
   if (total === 0) return null;
   return {
-    Left: hits.Left / total * 100, Down: hits.Down / total * 100,
-    Up: hits.Up / total * 100, Right: hits.Right / total * 100,
+    'Up-Right': hits['Up-Right'] / total * 100, 'Up-Left': hits['Up-Left'] / total * 100,
+    'Down-Right': hits['Down-Right'] / total * 100, 'Down-Left': hits['Down-Left'] / total * 100,
+    Center: hits.Center / total * 100,
   };
 }
 

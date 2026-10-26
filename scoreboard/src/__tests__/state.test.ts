@@ -2,7 +2,8 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { arrowBalance, parseSnapshot, poll } from '../state';
 
 const player = { score: null, combo: 3, hits: 0,
-  hitsByDirection: { Left: 0, Down: 0, Up: 0, Right: 0 }, hitPace: 0, observedScore: 4, lastVideoTimeMs: 10 };
+  hitsByDirection: { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 },
+  hitPace: 0, observedScore: 4, lastVideoTimeMs: 10 };
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: { P1: player, P2: player } };
 
 describe('scoreboard state', () => {
@@ -17,17 +18,28 @@ describe('scoreboard state', () => {
     expect(result.players.P1).not.toHaveProperty('misses');
   });
   it('rejects invalid directional counts', () => {
-    const invalid = { ...player, hitsByDirection: { Left: -1, Down: 0, Up: 0, Right: 0 } };
+    const invalid = { ...player, hitsByDirection: { ...player.hitsByDirection, Center: -1 } };
     expect(() => parseSnapshot({ ...snapshot, players: { P1: invalid, P2: player } })).toThrow();
+  });
+  it('rejects four-direction snapshots instead of inventing a five-direction mapping', () => {
+    const legacy = { ...player, hitsByDirection: { Left: 1, Down: 2, Up: 3, Right: 4 } };
+    expect(() => parseSnapshot({ ...snapshot, players: { P1: legacy, P2: player } })).toThrow();
+  });
+  it('requires the center count in five-direction snapshots', () => {
+    const incomplete = { ...player, hitsByDirection: {
+      'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0,
+    } };
+    expect(() => parseSnapshot({ ...snapshot, players: { P1: incomplete, P2: player } })).toThrow();
   });
   it('calculates balance from actual directional counts and handles no hits', () => {
     expect(arrowBalance(player)).toBeNull();
     expect(arrowBalance()).toBeNull();
     expect(arrowBalance({ ...player, hitsByDirection: null })).toBeNull();
     const shares = arrowBalance({
-      ...player, hits: 10, hitsByDirection: { Left: 1, Down: 2, Up: 3, Right: 4 },
+      ...player, hits: 20,
+      hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
     });
-    expect(shares).toEqual({ Left: 10, Down: 20, Up: 30, Right: 40 });
+    expect(shares).toEqual({ 'Up-Right': 5, 'Up-Left': 10, 'Down-Right': 15, 'Down-Left': 20, Center: 50 });
   });
   it('keeps a missing pace unavailable for old snapshots', () => {
     const legacy = { ...player, hitPace: undefined };

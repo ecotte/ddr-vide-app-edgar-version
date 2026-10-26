@@ -135,8 +135,9 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
         Region("Combo", player, "combo", 0, 0, 392, 180)
         for player in ("P1", "P2")
     ] + [
-        Region("Up", player, "arrow", 0, 0, 100, 100, direction="Up")
+        Region(direction, player, "arrow", 0, 0, 100, 100, direction=direction)
         for player in ("P1", "P2")
+        for direction in ("Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center")
     ] + [Region("Unassigned score", "Unknown", "score", 0, 0, 100, 30)]
     try:
         tab.refresh_region_list(regions)

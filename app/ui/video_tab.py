@@ -104,6 +104,9 @@ class VideoTab(ttk.Frame):
         self._overlay_signature = None
         self._region_rows = {}  # region key -> dict of widgets
         self._suppress_slider_event = False
+        self._is_live = False
+        self._capture_pending = False
+        self._capture_connected = False
 
         self._build_layout()
 
@@ -122,14 +125,53 @@ class VideoTab(ttk.Frame):
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
-        # --- top: open video + resolution/time info -----------------
-        top = ttk.Frame(left)
+        # --- source selection -----------------------------------------
+        top = ttk.LabelFrame(left, text="Video source", padding=8)
         top.pack(fill="x")
-        ttk.Button(top, text="Open Video...", style="Accent.TButton", command=self.controller.open_video_dialog).pack(
-            side="left"
+        selector = ttk.Frame(top)
+        selector.pack(fill="x")
+        ttk.Label(selector, text="Source:").pack(side="left", padx=(0, 8))
+        self.source_var = tk.StringVar(value="Video file")
+        self.source_combo = ttk.Combobox(
+            selector, textvariable=self.source_var, values=("Video file", "HDMI input"),
+            state="readonly", width=16,
         )
+        self.source_combo.pack(side="left")
+        self.source_combo.bind(
+            "<<ComboboxSelected>>", lambda e: self.controller.select_source(self.source_var.get()),
+        )
+        self.file_controls = ttk.Frame(top)
+        self.file_controls.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            self.file_controls, text="Open Video...", style="Accent.TButton",
+            command=self.controller.open_video_dialog,
+        ).pack(side="left")
+        self.hdmi_controls = ttk.Frame(top)
+        self.capture_device_var = tk.StringVar()
+        self.capture_combo = ttk.Combobox(
+            self.hdmi_controls, textvariable=self.capture_device_var, state="readonly", width=30,
+        )
+        self.capture_combo.grid(row=0, column=0, sticky="ew")
+        self.capture_combo.bind("<<ComboboxSelected>>", lambda e: self._update_capture_controls())
+        self.hdmi_controls.columnconfigure(0, weight=1)
+        self.refresh_devices_button = ttk.Button(
+            self.hdmi_controls, text="Refresh devices", command=self.controller.refresh_capture_devices,
+        )
+        self.refresh_devices_button.grid(row=0, column=1, padx=(6, 0))
+        self.connect_hdmi_button = ttk.Button(
+            self.hdmi_controls, text="Connect HDMI", command=self.controller.toggle_hdmi,
+            style="Accent.TButton", state="disabled",
+        )
+        self.connect_hdmi_button.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(
+            self.hdmi_controls, text="Select your HDMI capture card, not the built-in camera.",
+            style="Muted.TLabel", wraplength=420,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.video_info_var = tk.StringVar(value="No video loaded.")
-        ttk.Label(top, textvariable=self.video_info_var, style="Muted.TLabel", wraplength=420).pack(side="left", padx=10)
+        self.video_info_label = ttk.Label(
+            top, textvariable=self.video_info_var, style="Muted.TLabel", wraplength=520,
+        )
+        self.video_info_label.pack(fill="x", pady=(8, 0))
 
         # --- canvas ---------------------------------------------------
         self.canvas = tk.Canvas(
@@ -141,7 +183,7 @@ class VideoTab(ttk.Frame):
             fill=MUTED, font=("Segoe UI", 18, "bold"), tags="empty_state",
         )
         self.canvas.create_text(
-            24, 72, anchor="nw", text="Open a gameplay recording to start calibrating regions.",
+            24, 72, anchor="nw", text="Open a recording or connect an HDMI capture device.",
             fill=MUTED, tags="empty_state",
         )
         self.canvas.pack(pady=6)
@@ -152,10 +194,12 @@ class VideoTab(ttk.Frame):
         # --- playback controls -----------------------------------------
         playback = ttk.Frame(left)
         playback.pack(fill="x", pady=(0, 6))
-        ttk.Button(playback, text="|< Step", command=self.controller.step_backward).pack(side="left")
+        self.step_back_button = ttk.Button(playback, text="|< Step", command=self.controller.step_backward)
+        self.step_back_button.pack(side="left")
         self.play_button = ttk.Button(playback, text="Play", command=self.controller.toggle_play)
         self.play_button.pack(side="left", padx=4)
-        ttk.Button(playback, text="Step >|", command=self.controller.step_forward).pack(side="left")
+        self.step_forward_button = ttk.Button(playback, text="Step >|", command=self.controller.step_forward)
+        self.step_forward_button.pack(side="left")
 
         self.frame_pos_var = tk.StringVar(value="Frame -/- | 0 ms")
         ttk.Label(playback, textvariable=self.frame_pos_var).pack(side="left", padx=10)
@@ -332,7 +376,67 @@ class VideoTab(ttk.Frame):
     def set_video_info(self, text: str) -> None:
         self.video_info_var.set(text)
 
+    def set_source_selection(self, selection: str) -> None:
+        self.source_var.set(selection)
+        self.file_controls.pack_forget()
+        self.hdmi_controls.pack_forget()
+        controls = self.hdmi_controls if selection == "HDMI input" else self.file_controls
+        controls.pack(fill="x", pady=(8, 0), before=self.video_info_label)
+
+    def set_live_mode(self, is_live: bool) -> None:
+        self._is_live = is_live
+        state = "disabled" if is_live else "normal"
+        self.step_back_button.configure(state=state)
+        self.step_forward_button.configure(state=state)
+        self.seek_scale.configure(state=state)
+        self.set_play_button_label(False)
+
+    def set_capture_devices(self, labels: list[str]) -> None:
+        previous = self.capture_device_var.get()
+        self.capture_combo.configure(values=labels)
+        self.capture_device_var.set(
+            previous if previous in labels else labels[0] if len(labels) == 1 else ""
+        )
+        self._update_capture_controls()
+
+    def set_capture_pending(self, pending: bool) -> None:
+        self._capture_pending = pending
+        self._update_capture_controls()
+
+    def set_hdmi_connected(self, connected: bool) -> None:
+        self._capture_connected = connected
+        self._update_capture_controls()
+
+    def _update_capture_controls(self) -> None:
+        busy = self._capture_pending or self._capture_connected
+        self.source_combo.configure(state="disabled" if self._capture_pending else "readonly")
+        self.capture_combo.configure(state="disabled" if busy else "readonly")
+        self.refresh_devices_button.configure(state="disabled" if busy else "normal")
+        text = (
+            "Cancel HDMI" if self._capture_pending
+            else "Disconnect HDMI" if self._capture_connected else "Connect HDMI"
+        )
+        self.connect_hdmi_button.configure(
+            text=text, state="normal" if busy or self.capture_device_var.get() else "disabled",
+        )
+
+    def clear_source_frame(self) -> None:
+        self.canvas.delete("all")
+        self._photo_image = None
+        self._frame_image_id = None
+        self._frame_image_size = None
+        self._overlay_ids = []
+        self._overlay_signature = None
+        self.canvas.create_text(
+            24, 32, anchor="nw", text="Choose a video source above to begin.",
+            fill=MUTED, tags="empty_state",
+        )
+        self.frame_pos_var.set("No source connected")
+
     def set_frame_position(self, frame_index: int, frame_count: int, video_time_ms: int) -> None:
+        if self._is_live:
+            self.frame_pos_var.set(f"LIVE | Frame {frame_index} | {video_time_ms} ms")
+            return
         self.frame_pos_var.set(f"Frame {frame_index}/{max(frame_count - 1, 0)} | {video_time_ms} ms")
         self._suppress_slider_event = True
         try:
@@ -342,7 +446,11 @@ class VideoTab(ttk.Frame):
             self._suppress_slider_event = False
 
     def set_play_button_label(self, is_playing: bool) -> None:
-        self.play_button.config(text="Pause" if is_playing else "Play")
+        if self._is_live:
+            text = "Freeze preview" if is_playing else "Resume live"
+        else:
+            text = "Pause" if is_playing else "Play"
+        self.play_button.config(text=text)
 
     def set_analysis_status(self, is_running: bool) -> None:
         self.analysis_status_var.set(f"Analysis: {'running' if is_running else 'stopped'}")

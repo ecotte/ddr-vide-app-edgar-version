@@ -74,7 +74,7 @@ def _display_controller():
 def test_unchanged_arrow_previews_are_limited_to_ten_updates_per_second(monkeypatch):
     controller = _display_controller()
     rr = RegionFrameResult(
-        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"),
+        Region("Up-Right", "P1", "arrow", 0, 0, 20, 20, direction="Up-Right"),
         arrow_state="idle", crop=np.zeros((20, 20, 3), dtype=np.uint8),
     )
     clock = [0.0]
@@ -90,7 +90,7 @@ def test_unchanged_arrow_previews_are_limited_to_ten_updates_per_second(monkeypa
 def test_arrow_state_errors_and_tracking_resets_update_without_waiting(monkeypatch, change):
     controller = _display_controller()
     rr = RegionFrameResult(
-        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"), arrow_state="idle",
+        Region("Up-Right", "P1", "arrow", 0, 0, 20, 20, direction="Up-Right"), arrow_state="idle",
     )
     monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: 0.0)
     controller._update_recognition_row(rr)
@@ -103,7 +103,7 @@ def test_arrow_state_errors_and_tracking_resets_update_without_waiting(monkeypat
     elif change == "generation":
         controller.analysis.generation += 1
     else:
-        rr.region = Region("Up", "P2", "arrow", 0, 0, 20, 20, direction="Up")
+        rr.region = Region("Up-Right", "P2", "arrow", 0, 0, 20, 20, direction="Up-Right")
     controller._update_recognition_row(rr)
     assert controller.video_tab.update_arrow_recognition_row.call_count == 2
 
@@ -112,7 +112,7 @@ def test_preview_pacing_never_drops_events_or_delays_numeric_results(monkeypatch
     controller = _display_controller()
     monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: 0.0)
     arrow = RegionFrameResult(
-        Region("Up", "P1", "arrow", 0, 0, 20, 20, direction="Up"), arrow_state="idle",
+        Region("Up-Right", "P1", "arrow", 0, 0, 20, 20, direction="Up-Right"), arrow_state="idle",
     )
     events = [object(), object()]
     for event in events:

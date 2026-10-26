@@ -155,3 +155,87 @@ def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
         assert "already exists" in dialog.error_var.get()
     finally:
         dialog.destroy()
+
+
+@pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_arrow_dialog_offers_and_accepts_all_five_directions(root, direction, player):
+    from app.ui.region_dialog import RegionDialog
+
+    root.deiconify()
+    root.update()
+    dialog = RegionDialog(root)
+    try:
+        dialog.kind_var.set("arrow")
+        dialog.player_var.set(player)
+        dialog.label_var.set(f"{player} {direction}")
+        dialog._on_kind_changed()
+        assert tuple(dialog.direction_combo["values"]) == (
+            "Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center",
+        )
+        assert dialog.direction_combo.instate(["readonly"])
+        dialog.direction_var.set(direction)
+        dialog._on_confirm()
+        assert dialog.result == (f"{player} {direction}", player, "arrow", direction)
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_center_arrow_is_unique_per_player(root):
+    from app.ui.region_dialog import RegionDialog
+
+    root.deiconify()
+    root.update()
+    dialog = RegionDialog(root, existing_keys={"P1:arrow:Center"})
+    try:
+        dialog.kind_var.set("arrow")
+        dialog.direction_var.set("Center")
+        dialog._on_kind_changed()
+        dialog._on_confirm()
+        assert dialog.result is None
+        assert "already exists" in dialog.error_var.get()
+        dialog.player_var.set("P2")
+        dialog._on_confirm()
+        assert dialog.result == ("Score", "P2", "arrow", "Center")
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_source_picker_names_devices_and_disables_replay_controls_for_hdmi(root):
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    tab.set_source_selection("HDMI input")
+    tab.set_live_mode(True)
+    tab.set_capture_devices(["Built-in camera (device 0)", "Hagibis (device 1)"])
+    assert tab.capture_device_var.get() == ""
+    assert tab.connect_hdmi_button.instate(["disabled"])
+    tab.capture_device_var.set("Hagibis (device 1)")
+    tab._update_capture_controls()
+    tab.connect_hdmi_button.invoke()
+    controller.toggle_hdmi.assert_called_once_with()
+    assert tab.hdmi_controls.winfo_manager() == "pack"
+    assert tab.file_controls.winfo_manager() == ""
+    assert tab.step_back_button.instate(["disabled"])
+    assert tab.step_forward_button.instate(["disabled"])
+    assert tab.seek_scale.instate(["disabled"])
+    tab.set_frame_position(100, 0, 3100)
+    assert tab.frame_pos_var.get() == "LIVE | Frame 100 | 3100 ms"
+    tab.set_play_button_label(True)
+    assert tab.play_button.cget("text") == "Freeze preview"
+    tab.set_play_button_label(False)
+    assert tab.play_button.cget("text") == "Resume live"
+    tab.set_capture_pending(True)
+    assert tab.source_combo.instate(["disabled"])
+    assert tab.connect_hdmi_button.cget("text") == "Cancel HDMI"
+    tab.set_capture_pending(False)
+    tab.set_hdmi_connected(True)
+    assert tab.connect_hdmi_button.cget("text") == "Disconnect HDMI"
+    tab.set_hdmi_connected(False)
+    tab.set_source_selection("Video file")
+    tab.set_live_mode(False)
+    assert tab.step_back_button.instate(["!disabled"])
+    assert tab.seek_scale.instate(["!disabled"])
+    assert tab.file_controls.winfo_manager() == "pack"
+    assert tab.hdmi_controls.winfo_manager() == ""

@@ -11,8 +11,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
+import pytest
 
-from app import image_utils
+from app import config, image_utils
 from app.analysis import AnalysisSession
 from app.event_bus import EventBus
 from app.models import Region
@@ -168,9 +169,10 @@ def test_reset_clears_active_and_pending_state():
 # AnalysisSession integration: a real arrow region end to end
 # ---------------------------------------------------------------------
 
-def _arrow_region_with_refs():
+def _arrow_region_with_refs(direction="Down-Left", player="P1"):
     region = Region(
-        label="P1 Left", player="P1", kind="arrow", x=0, y=0, w=20, h=20, direction="Left"
+        label=f"{player} {direction}", player=player, kind="arrow",
+        x=0, y=0, w=20, h=20, direction=direction,
     )
     region.reference_images["hit"] = [image_utils.encode_crop_to_base64_png(WHITE)]
     region.reference_images["miss"] = [image_utils.encode_crop_to_base64_png(BLACK)]
@@ -184,25 +186,28 @@ def _frame_with_patch(patch, frame_w=40, frame_h=40):
     return frame
 
 
-def test_arrow_region_emits_hit_event_through_full_pipeline():
+@pytest.mark.parametrize("direction", config.ARROW_DIRECTIONS)
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_arrow_region_emits_hit_event_through_full_pipeline(direction, player):
     bus = EventBus()
     session = AnalysisSession(bus, OcrEngine())
-    region = _arrow_region_with_refs()
+    region = _arrow_region_with_refs(direction, player)
     session.set_regions([region])
     session.set_arrow_min_confirm_frames(1)
     session.start()
 
     result = session.process_frame(_frame_with_patch(WHITE), 0, 0)
     assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
-    assert bus.events[1].payload["direction"] == "Left"
-    assert bus.events[1].player == "P1"
+    assert bus.events[1].payload["direction"] == direction
+    assert bus.events[1].player == player
     assert result.region_results[0].arrow_state == "hit"
 
 
-def test_arrow_region_emits_miss_event_and_does_not_repeat():
+@pytest.mark.parametrize("direction", config.ARROW_DIRECTIONS)
+def test_arrow_region_emits_miss_event_and_does_not_repeat(direction):
     bus = EventBus()
     session = AnalysisSession(bus, OcrEngine())
-    region = _arrow_region_with_refs()
+    region = _arrow_region_with_refs(direction)
     session.set_regions([region])
     session.start()
 
@@ -212,12 +217,15 @@ def test_arrow_region_emits_miss_event_and_does_not_repeat():
 
     miss_events = [e for e in bus.events if e.event_type == "arrow_miss"]
     assert len(miss_events) == 1  # not one per frame
+    assert miss_events[0].payload["direction"] == direction
 
 
 def test_arrow_region_with_no_captured_references_never_emits_events():
     bus = EventBus()
     session = AnalysisSession(bus, OcrEngine())
-    region = Region(label="P1 Up", player="P1", kind="arrow", x=0, y=0, w=20, h=20, direction="Up")
+    region = Region(
+        label="P1 Up-Right", player="P1", kind="arrow", x=0, y=0, w=20, h=20, direction="Up-Right",
+    )
     session.set_regions([region])
     session.start()
 
@@ -237,3 +245,23 @@ def test_new_regions_resets_arrow_tracking():
 
     session.set_regions([region])
     assert session.tracker_for(region).status().active_state is None
+
+
+def test_all_ten_arrow_regions_track_independently_with_one_game_guid():
+    bus = EventBus()
+    session = AnalysisSession(bus, OcrEngine())
+    regions = [
+        _arrow_region_with_refs(direction, player)
+        for player in ("P1", "P2") for direction in config.ARROW_DIRECTIONS
+    ]
+    session.set_regions(regions)
+    session.start()
+    for index, patch in enumerate((WHITE, WHITE, BLACK, BLACK)):
+        session.process_frame(_frame_with_patch(patch), index, index * 33)
+    gameplay = [event for event in bus.events if event.event_type != "new_session"]
+    expected = {(region.player, region.direction) for region in regions}
+    for event_type in ("arrow_hit", "arrow_miss"):
+        matching = [event for event in gameplay if event.event_type == event_type]
+        assert len(matching) == 10
+        assert {(event.player, event.payload["direction"]) for event in matching} == expected
+    assert {event.session_id for event in bus.events} == {bus.session_id}

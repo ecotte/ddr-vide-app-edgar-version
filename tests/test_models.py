@@ -6,6 +6,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pytest
+
+from app import config
 from app.models import Region
 
 
@@ -15,20 +18,24 @@ def test_numeric_region_key_ignores_direction():
 
 
 def test_arrow_region_key_includes_direction():
-    left = Region(label="Left", player="P1", kind="arrow", x=0, y=0, w=10, h=10, direction="Left")
-    right = Region(label="Right", player="P1", kind="arrow", x=0, y=0, w=10, h=10, direction="Right")
-    assert left.key() == "P1:arrow:Left"
-    assert right.key() == "P1:arrow:Right"
-    assert left.key() != right.key()
+    assert config.ARROW_DIRECTIONS == ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
+    keys = [
+        Region(direction, player, "arrow", 0, 0, 10, 10, direction=direction).key()
+        for player in ("P1", "P2") for direction in config.ARROW_DIRECTIONS
+    ]
+    assert len(set(keys)) == 10
+    assert "P1:arrow:Center" in keys
+    assert "P2:arrow:Up-Right" in keys
 
 
-def test_arrow_region_round_trips_through_dict():
+@pytest.mark.parametrize("direction", config.ARROW_DIRECTIONS)
+def test_arrow_region_round_trips_through_dict(direction):
     r = Region(
-        label="P1 Left", player="P1", kind="arrow", x=1, y=2, w=3, h=4, direction="Left",
+        label=f"P1 {direction}", player="P1", kind="arrow", x=1, y=2, w=3, h=4, direction=direction,
         reference_images={"hit": "deadbeef"},
     )
     restored = Region.from_dict(r.to_dict())
-    assert restored.direction == "Left"
+    assert restored.direction == direction
     assert restored.reference_images == {"hit": ["deadbeef"]}
     assert restored.key() == r.key()
 

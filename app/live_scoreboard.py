@@ -3,6 +3,7 @@ import copy
 import threading
 from bisect import bisect_right, insort
 
+from app import config
 from app.models import Event
 from app.rayfin_sender import RayfinSender, ScoreboardConnectionError, ScoreboardPublishError
 
@@ -10,7 +11,7 @@ from app.rayfin_sender import RayfinSender, ScoreboardConnectionError, Scoreboar
 def _player():
     return {
         "score": None, "combo": None, "hits": 0,
-        "hitsByDirection": {"Left": 0, "Down": 0, "Up": 0, "Right": 0},
+        "hitsByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
         "hitPace": 0.0,
         "observedScore": None, "lastVideoTimeMs": None,
     }

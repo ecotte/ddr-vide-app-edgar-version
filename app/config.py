@@ -16,7 +16,7 @@ DATA_DIR = os.path.join(APP_ROOT, "data")
 SCHEMA_VERSION = "1.0"
 
 SOURCE_MODE_REPLAY = "replay"
-SOURCE_MODE_LIVE = "live"           # reserved for a later milestone (HDMI capture)
+SOURCE_MODE_LIVE = "live"           # HDMI/USB video capture
 SOURCE_MODE_SYNTHETIC = "synthetic"  # used only by tests/demos, never real gameplay
 
 # --- Recognition tuning ---------------------------------------------------
@@ -69,7 +69,7 @@ PLAYER_CHOICES = ["P1", "P2", "Unknown"]
 # reference snapshots ("hit", "miss") rather than any built-in template -
 # this app has no built-in idea of what a hit/miss looks like for a given
 # note skin.
-ARROW_DIRECTIONS = ["Up", "Down", "Left", "Right"]
+ARROW_DIRECTIONS = ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
 ARROW_STATES = ["hit", "miss"]
 ARROW_EVENT_TYPES = {
     "hit": "arrow_hit",

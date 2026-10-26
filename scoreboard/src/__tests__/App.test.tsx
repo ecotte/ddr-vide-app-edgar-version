@@ -10,8 +10,9 @@ vi.mock('../client', () => ({
   signIn: vi.fn(),
 }));
 
-const player = { score: 1200, combo: 65, hits: 10,
-  hitsByDirection: { Left: 1, Down: 2, Up: 3, Right: 4 }, hitPace: 2.4, observedScore: 1300, lastVideoTimeMs: 1000 };
+const player = { score: 1200, combo: 65, hits: 20,
+  hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
+  hitPace: 2.4, observedScore: 1300, lastVideoTimeMs: 1000 };
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: {
   P1: player, P2: { ...player, score: null, combo: null, observedScore: null },
 } };
@@ -55,13 +56,16 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   expect(screen.getByText('Unconfirmed OCR: 1,300')).toBeInTheDocument();
   expect(screen.getByText('Waiting for players')).toBeInTheDocument();
   expect(screen.queryByText('MISSES')).not.toBeInTheDocument();
-  expect(screen.getAllByLabelText('Left hits')[0]).toHaveTextContent('1');
-  expect(screen.getAllByLabelText('Down hits')[0]).toHaveTextContent('2');
-  expect(screen.getAllByLabelText('Up hits')[0]).toHaveTextContent('3');
-  expect(screen.getAllByLabelText('Right hits')[0]).toHaveTextContent('4');
+  expect(screen.getAllByLabelText('Up-Right hits')[0]).toHaveTextContent('1');
+  expect(screen.getAllByLabelText('Up-Left hits')[0]).toHaveTextContent('2');
+  expect(screen.getAllByLabelText('Down-Right hits')[0]).toHaveTextContent('3');
+  expect(screen.getAllByLabelText('Down-Left hits')[0]).toHaveTextContent('4');
+  expect(screen.getAllByLabelText('Center hits')[0]).toHaveTextContent('10');
+  expect(screen.queryByLabelText('Up hits')).not.toBeInTheDocument();
+  expect(screen.getAllByRole('meter')).toHaveLength(10);
   expect(screen.getByLabelText('Player 1 hit pace')).toHaveTextContent('2.4');
-  expect(screen.getByRole('meter', { name: 'Player 1 Left share' })).toHaveAttribute('aria-valuenow', '10');
-  expect(screen.getByRole('meter', { name: 'Player 1 Right share' })).toHaveAttribute('aria-valuenow', '40');
+  expect(screen.getByRole('meter', { name: 'Player 1 Up-Right share' })).toHaveAttribute('aria-valuenow', '5');
+  expect(screen.getByRole('meter', { name: 'Player 1 Center share' })).toHaveAttribute('aria-valuenow', '50');
   expect(screen.getByLabelText('Player 1 arrow balance')).toHaveTextContent('not accuracy');
 });
 

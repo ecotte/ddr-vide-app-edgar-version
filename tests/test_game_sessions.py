@@ -40,7 +40,7 @@ def test_missing_id_is_created_announced_once_and_precedes_gameplay():
     bus.session_id = ""
     delivered = []
     bus.set_delivery_sink(delivered.append)
-    event = bus.make_event("arrow_hit", {"direction": "Up"}, 5, 100, "P1")
+    event = bus.make_event("arrow_hit", {"direction": "Up-Right"}, 5, 100, "P1")
     bus.record(event)
     initial, hit = bus.events
     assert UUID(initial.session_id).version == 4

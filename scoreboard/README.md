@@ -41,7 +41,10 @@ Connection/publish errors appear in the desktop Events tab.
 - Numeric fields use sequence order, not arrival time or maximum numeric value.
   Newer accepted downward corrections remain valid.
 - Older score observations cannot replace newer accepted score information.
-- Left, Down, Up and Right hit counts are independent for each player.
+- Up-Right, Up-Left, Down-Right, Down-Left and Center hit counts are independent
+  for each player. Both the desktop publisher and viewer must be updated;
+  restart the publisher and start a new session to publish the five-direction
+  state. Old four-direction snapshots are rejected explicitly, not remapped.
 - Arrow balance is each direction's percentage of directional hits, not accuracy.
 - Hit pace counts detected hits in `(current video time - 5000 ms, current video time] / 5`.
   Delivery time never produces a rate spike. Playback ages the window, pause holds

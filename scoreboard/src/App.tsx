@@ -17,7 +17,8 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
     <div className="counts" aria-label={`${name} hits by arrow`}>
       {DIRECTIONS.map(direction => <div key={direction}>
         <span className="arrow-icon" aria-hidden="true">{{
-          Left: '\u2190', Down: '\u2193', Up: '\u2191', Right: '\u2192',
+          'Up-Right': '\u2197', 'Up-Left': '\u2196', 'Down-Right': '\u2198', 'Down-Left': '\u2199',
+          Center: '\u25cf',
         }[direction]}</span>
         <span>{direction.toUpperCase()}</span>
         <strong aria-label={`${direction} hits`}>

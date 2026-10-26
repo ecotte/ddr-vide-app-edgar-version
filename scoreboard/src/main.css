@@ -19,17 +19,17 @@ h2 { margin: 0 0 30px; font-size: 28px; }
 .total-hits { display: flex; justify-content: space-between; align-items: center; padding-top: 24px; }
 .total-hits span { color: #aebbd4; font-size: 13px; letter-spacing: 2px; }
 .total-hits strong { font-size: 32px; }
-.counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding-top: 20px; text-align: center; }
+.counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); gap: 12px; padding-top: 20px; text-align: center; }
 .counts .arrow-icon { display: block; font-size: 36px; color: #7cebe1; margin-bottom: 8px; }
 .pink .counts .arrow-icon { color: #f3a1ed; }
-.counts span { letter-spacing: 1px; font-size: 12px; }
-.counts strong { display: block; font-size: 32px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.counts span { letter-spacing: 1px; font-size: 12px; overflow-wrap: anywhere; }
+.counts strong { display: block; font-size: 32px; margin-top: 8px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .observation { color: #ffdb92; font-size: 14px; }
 .hit-pace, .arrow-balance { border-top: 1px solid #33465e; margin-top: 24px; padding-top: 18px; }
 .hit-pace h3, .arrow-balance h3 { font-size: 13px; letter-spacing: 2px; color: #aebbd4; margin: 0 0 14px; }
 .hit-pace strong { font-size: 36px; font-variant-numeric: tabular-nums; }
 .hit-pace span, .hit-pace p, .arrow-balance p { color: #aebbd4; font-size: 13px; }
-.balance-row { display: grid; grid-template-columns: 45px minmax(0, 1fr) 58px; align-items: center; gap: 12px; margin: 12px 0; font-size: 13px; }
+.balance-row { display: grid; grid-template-columns: 85px minmax(0, 1fr) 58px; align-items: center; gap: 12px; margin: 12px 0; font-size: 13px; }
 .balance-row strong { text-align: right; font-variant-numeric: tabular-nums; }
 .balance-row [role="meter"] { background: #28374d; border-radius: 6px; height: 10px; overflow: hidden; }
 .balance-row [role="meter"] > div { height: 100%; background: #7cebe1; }

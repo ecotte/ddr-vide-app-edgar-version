@@ -20,7 +20,7 @@ class FakeSender:
         self.closed = True
 
 
-def event(bus, kind="combo_changed", value=10, player="P1", direction="Up"):
+def event(bus, kind="combo_changed", value=10, player="P1", direction="Up-Right"):
     return bus.make_event(kind, {
         "new_value": value, "observed_value": value, "direction": direction,
     }, 1, 17, player, 0.99)
@@ -34,21 +34,28 @@ def test_hit_directions_are_separate_and_misses_still_go_to_fabric(tmp_path):
     bus.set_delivery_sink(fabric.append)
     board.start(bus.session_id)
     try:
-        for direction in ("Left", "Left", "Down", "Up", "Right"):
+        for direction in ("Down-Left", "Down-Left", "Down-Right", "Up-Left", "Up-Right", "Center"):
             bus.record(event(bus, "arrow_hit", direction=direction))
-        bus.record(event(bus, "arrow_hit", player="P2", direction="Right"))
+        bus.record(event(bus, "arrow_hit", player="P2", direction="Center"))
         before = board.snapshot()
         bus.record(event(bus, "arrow_miss"))
         assert board.snapshot() == before
         assert fabric[-1].event_type == "arrow_miss"
         p1, p2 = before["players"]["P1"], before["players"]["P2"]
-        assert p1["hitsByDirection"] == {"Left": 2, "Down": 1, "Up": 1, "Right": 1}
-        assert p1["hits"] == 5
-        assert p2["hitsByDirection"]["Right"] == 1
+        assert p1["hitsByDirection"] == {
+            "Up-Right": 1, "Up-Left": 1, "Down-Right": 1, "Down-Left": 2, "Center": 1,
+        }
+        assert p1["hits"] == 6
+        assert p2["hitsByDirection"] == {
+            "Up-Right": 0, "Up-Left": 0, "Down-Right": 0, "Down-Left": 0, "Center": 1,
+        }
         assert "misses" not in p1
         bus.new_session()
         assert all(v == 0 for v in board.snapshot()["players"]["P1"]["hitsByDirection"].values())
         bus.record(event(bus, "arrow_hit", direction="invalid"))
+        assert "invalid arrow direction" in board.status()
+        assert board.snapshot()["players"]["P1"]["hits"] == 0
+        bus.record(event(bus, "arrow_hit", direction="Up"))
         assert "invalid arrow direction" in board.status()
         assert board.snapshot()["players"]["P1"]["hits"] == 0
     finally:

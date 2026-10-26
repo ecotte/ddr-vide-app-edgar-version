@@ -19,7 +19,7 @@ class Region:
     for on-screen display.
 
     ``direction`` is only used when ``kind == "arrow"`` and is one of config.ARROW_DIRECTIONS
-    ("Up"/"Down"/"Left"/"Right"), and ``reference_images`` holds
+    ("Up-Right"/"Up-Left"/"Down-Right"/"Down-Left"/"Center"), and ``reference_images`` holds
     user-captured example crops (base64 PNG) grouped by state name ("hit",
     "miss") that the arrow classifier compares live frames against. These
     are never pre-supplied by the app - only what the user captures from

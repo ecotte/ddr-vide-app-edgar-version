@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import sys
+from types import MethodType, SimpleNamespace
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -160,7 +162,7 @@ def test_rescale_profile_resizes_arrow_reference_images_too():
 
     ref_crop = np.full((40, 40, 3), 200, dtype="uint8")
     arrow_region = Region(
-        label="P1 Left", player="P1", kind="arrow", x=0, y=0, w=40, h=40, direction="Left",
+        label="P1 Down-Left", player="P1", kind="arrow", x=0, y=0, w=40, h=40, direction="Down-Left",
         reference_images={"hit": [
             image_utils.encode_crop_to_base64_png(ref_crop),
             image_utils.encode_crop_to_base64_png(ref_crop),
@@ -217,3 +219,71 @@ def test_load_layout_from_path_checked_succeeds_on_matching_resolution(tmp_path)
 def test_load_layout_from_path_missing_file_raises_file_not_found(tmp_path):
     with pytest.raises(FileNotFoundError):
         layout_store.load_layout_from_path(str(tmp_path / "does_not_exist.json"))
+
+
+@pytest.mark.parametrize("by_path", [False, True])
+@pytest.mark.parametrize("rescale", [False, True])
+@pytest.mark.parametrize("legacy_arrows", [False, True])
+def test_ui_load_preserves_supported_regions_and_warns_before_recalibration(
+    tmp_path, monkeypatch, by_path, rescale, legacy_arrows,
+):
+    import numpy as np
+
+    from app import image_utils
+    from app.ui.app_window import App
+
+    profile = _sample_profile("five_arrows")
+    profile.regions[0].digit_templates = {"9": ["score-template"]}
+    profile.regions[0].digit_templates_reviewed = True
+    profile.regions[1].combo_yellow_filter = True
+    profile.regions.append(Region("Results", "Unknown", "game_end", 0, 0, 40, 40))
+    reference = image_utils.encode_crop_to_base64_png(np.full((40, 40, 3), 200, dtype=np.uint8))
+    profile.regions.extend(
+        Region(direction, "P1", "arrow", 0, 0, 40, 40, direction=direction,
+               reference_images={"hit": [reference]})
+        for direction in config.ARROW_DIRECTIONS
+    )
+    if legacy_arrows:
+        profile.regions.extend(
+            Region(direction, "P1", "arrow", 0, 0, 40, 40, direction=direction)
+            for direction in ("Up", "Down", "Left", "Right")
+        )
+    path = layout_store.save_layout(profile)
+    original_file = (tmp_path / "five_arrows.json").read_bytes()
+    warning = Mock()
+    monkeypatch.setattr("app.ui.app_window.messagebox.showwarning", warning)
+    monkeypatch.setattr("app.ui.app_window.messagebox.askyesno", Mock(return_value=True))
+    controller = SimpleNamespace(
+        video_source=SimpleNamespace(width=960 if rescale else 1920, height=540 if rescale else 1080),
+        regions=[], _analysis_generation=0, analysis=Mock(), video_tab=Mock(),
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    controller._apply_loaded_profile = MethodType(App._apply_loaded_profile, controller)
+    if by_path:
+        App.load_layout_from_path(controller, path)
+    else:
+        App.load_layout(controller, "five_arrows")
+
+    assert len(controller.regions) == 8
+    assert {region.direction for region in controller.regions if region.kind == "arrow"} == set(
+        config.ARROW_DIRECTIONS
+    )
+    assert controller.regions[0].digit_templates == {"9": ["score-template"]}
+    assert controller.regions[0].digit_templates_reviewed
+    assert controller.regions[1].combo_yellow_filter
+    assert controller.regions[2].kind == "game_end"
+    assert controller.regions[0].w == (50 if rescale else 100)
+    for region in controller.regions[3:]:
+        crop = image_utils.decode_base64_png_to_crop(region.reference_images["hit"][0])
+        assert crop.shape[:2] == ((20, 20) if rescale else (40, 40))
+    assert controller._analysis_generation == 1
+    controller.analysis.set_regions.assert_called_once_with(controller.regions)
+    controller.video_tab.refresh_region_list.assert_called_once_with(controller.regions)
+    controller.video_tab.redraw_region_overlays.assert_called_once_with(controller.regions)
+    assert (tmp_path / "five_arrows.json").read_bytes() == original_file
+    if legacy_arrows:
+        warning.assert_called_once()
+        assert "Removed 4" in warning.call_args.args[1]
+        assert "saved layout file is unchanged" in warning.call_args.args[1]
+    else:
+        warning.assert_not_called()
