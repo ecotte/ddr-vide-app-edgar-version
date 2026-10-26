@@ -18,8 +18,9 @@ def test_sequence_increments_and_session_id_stable_within_session():
     e2 = bus.make_event("combo_changed", {"previous_value": None, "new_value": 1}, 1, 33)
     assert e1.session_id == session_id
     assert e2.session_id == session_id
-    assert e1.sequence == 0
-    assert e2.sequence == 1
+    assert bus.events[0].event_type == "new_session"
+    assert e1.sequence == 1
+    assert e2.sequence == 2
 
 
 def test_new_session_resets_sequence_and_session_id_and_clears_events():
@@ -28,12 +29,13 @@ def test_new_session_resets_sequence_and_session_id_and_clears_events():
     bus.record(event)
     old_session_id = bus.session_id
 
-    bus.new_session()
+    session_event = bus.new_session()
 
     assert bus.session_id != old_session_id
-    assert bus.events == []
+    assert bus.events == [session_event]
     new_event = bus.make_event("score_changed", {"previous_value": None, "new_value": 5}, 0, 0)
-    assert new_event.sequence == 0
+    assert session_event.sequence == 0
+    assert new_event.sequence == 1
 
 
 def test_clear_events_does_not_reset_session_or_sequence():
@@ -47,7 +49,7 @@ def test_clear_events_does_not_reset_session_or_sequence():
     assert bus.events == []
     assert bus.session_id == session_id_before
     e2 = bus.make_event("score_changed", {"previous_value": 5, "new_value": 10}, 1, 33)
-    assert e2.sequence == 1  # continues, does not restart at 0
+    assert e2.sequence == 2  # continues after the lifecycle event and first score
 
 
 def test_event_envelope_has_required_fields():
@@ -82,10 +84,10 @@ def test_export_jsonl_writes_one_json_object_per_line(tmp_path):
 
     out_path = tmp_path / "events.jsonl"
     count = bus.export_jsonl(str(out_path))
-    assert count == 3
+    assert count == 4
 
     lines = out_path.read_text(encoding="utf-8").strip().split("\n")
-    assert len(lines) == 3
+    assert len(lines) == 4
     for i, line in enumerate(lines):
         obj = json.loads(line)  # must be valid standalone JSON per line
         assert obj["sequence"] == i

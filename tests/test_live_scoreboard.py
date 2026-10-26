@@ -68,11 +68,11 @@ def test_sharing_is_opt_in_and_does_not_replace_fabric_sink(tmp_path):
     try:
         bus.record(event(bus, value=20))
         assert board.snapshot()["players"]["P1"]["combo"] == 20
-        assert len(fabric) == 2
+        assert [event.event_type for event in fabric] == ["new_session", "combo_changed", "combo_changed"]
         bus.set_delivery_sink(None)
         bus.record(event(bus, value=21))
         assert board.snapshot()["players"]["P1"]["combo"] == 21
-        assert len(fabric) == 2
+        assert len(fabric) == 3
     finally:
         board.stop()
     saved = sender.published[-1]
@@ -80,6 +80,41 @@ def test_sharing_is_opt_in_and_does_not_replace_fabric_sink(tmp_path):
     assert saved["players"]["P1"]["combo"] is None
     assert sender.closed
     assert not list(tmp_path.iterdir())
+
+
+def test_calibrated_game_end_resets_scoreboard_to_the_next_guid():
+    import numpy as np
+
+    from app import image_utils
+    from app.analysis import AnalysisSession
+    from app.models import Region
+
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    bus.set_live_sink(board.record)
+    frame = np.full((20, 20, 3), 255, dtype=np.uint8)
+    region = Region(
+        "Results", "Unknown", "game_end", 0, 0, 20, 20,
+        reference_images={"ended": [image_utils.encode_crop_to_base64_png(frame)]},
+    )
+    session = AnalysisSession(bus)
+    session.set_regions([region])
+    session.start()
+    board.start(bus.session_id)
+    try:
+        bus.record(event(bus, "score_changed", 100))
+        bus.record(event(bus, "arrow_hit"))
+        previous = bus.session_id
+        assert board.snapshot()["players"]["P1"]["hits"] == 1
+        session.process_game_end_frame(frame, 10, 330)
+        session.process_game_end_frame(frame, 11, 363)
+        snapshot = board.snapshot()
+        assert snapshot["sessionId"] == bus.session_id != previous
+        assert snapshot["players"]["P1"]["hits"] == 0
+        assert snapshot["players"]["P1"]["score"] is None
+        assert bus.events[-1].payload["previous_session_id"] == previous
+    finally:
+        board.stop()
 
 
 def test_dedup_out_of_order_events_corrections_and_players(tmp_path):

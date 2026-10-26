@@ -8,6 +8,7 @@ from typing import List, Optional
 from PIL import Image, ImageTk
 
 from app import config
+from app.ui.theme import FIELD, MUTED
 
 MAX_DISPLAY_W = 960
 MAX_DISPLAY_H = 540
@@ -89,7 +90,7 @@ class _ScrollableFrame(ttk.Frame):
 
 class VideoTab(ttk.Frame):
     def __init__(self, parent: tk.Widget, controller):
-        super().__init__(parent, padding=6)
+        super().__init__(parent, padding=12)
         self.controller = controller
         self.display_scale = 1.0
         self._draw_mode = False
@@ -124,14 +125,25 @@ class VideoTab(ttk.Frame):
         # --- top: open video + resolution/time info -----------------
         top = ttk.Frame(left)
         top.pack(fill="x")
-        ttk.Button(top, text="Open Video...", command=self.controller.open_video_dialog).pack(
+        ttk.Button(top, text="Open Video...", style="Accent.TButton", command=self.controller.open_video_dialog).pack(
             side="left"
         )
         self.video_info_var = tk.StringVar(value="No video loaded.")
-        ttk.Label(top, textvariable=self.video_info_var).pack(side="left", padx=10)
+        ttk.Label(top, textvariable=self.video_info_var, style="Muted.TLabel", wraplength=420).pack(side="left", padx=10)
 
         # --- canvas ---------------------------------------------------
-        self.canvas = tk.Canvas(left, width=MAX_DISPLAY_W, height=MAX_DISPLAY_H, bg="#222222")
+        self.canvas = tk.Canvas(
+            left, width=MAX_DISPLAY_W, height=MAX_DISPLAY_H, bg=FIELD,
+            highlightthickness=0, borderwidth=0,
+        )
+        self.canvas.create_text(
+            24, 32, anchor="nw", text="Your video workspace",
+            fill=MUTED, font=("Segoe UI", 18, "bold"), tags="empty_state",
+        )
+        self.canvas.create_text(
+            24, 72, anchor="nw", text="Open a gameplay recording to start calibrating regions.",
+            fill=MUTED, tags="empty_state",
+        )
         self.canvas.pack(pady=6)
         self.canvas.bind("<ButtonPress-1>", self._on_canvas_press)
         self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
@@ -230,7 +242,7 @@ class VideoTab(ttk.Frame):
         arrow_confirm_spin.bind("<Return>", lambda e: self._on_arrow_confirm_changed())
 
         self.start_stop_button = ttk.Button(
-            analysis_box, text="Start Analysis", command=self.controller.toggle_analysis
+            analysis_box, text="Start Analysis", style="Accent.TButton", command=self.controller.toggle_analysis
         )
         self.start_stop_button.grid(row=0, column=2, padx=10)
         ttk.Button(analysis_box, text="New Session", command=self.controller.new_session).grid(
@@ -241,6 +253,26 @@ class VideoTab(ttk.Frame):
         ttk.Label(analysis_box, textvariable=self.analysis_status_var).grid(
             row=2, column=0, columnspan=4, sticky="w", pady=(4, 0)
         )
+        ttk.Label(analysis_box, text="Game-end similarity threshold:").grid(
+            row=3, column=0, sticky="w", pady=(8, 0),
+        )
+        self.game_end_threshold_var = tk.DoubleVar(value=config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD)
+        self.game_end_confirm_var = tk.IntVar(value=config.DEFAULT_GAME_END_CONFIRM_FRAMES)
+        threshold_spin = ttk.Spinbox(
+            analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
+            textvariable=self.game_end_threshold_var, command=self._on_game_end_settings_changed,
+        )
+        threshold_spin.grid(row=3, column=1, sticky="w", pady=(8, 0))
+        threshold_spin.bind("<Return>", lambda e: self._on_game_end_settings_changed())
+        ttk.Label(analysis_box, text="Game-end confirm frames:").grid(
+            row=3, column=2, sticky="w", pady=(8, 0),
+        )
+        confirm_spin = ttk.Spinbox(
+            analysis_box, from_=1, to=30, width=4, textvariable=self.game_end_confirm_var,
+            command=self._on_game_end_settings_changed,
+        )
+        confirm_spin.grid(row=3, column=3, sticky="w", pady=(8, 0))
+        confirm_spin.bind("<Return>", lambda e: self._on_game_end_settings_changed())
 
         # --- status bar ----------------------------------------------------
         status_box = ttk.Frame(left)
@@ -252,14 +284,24 @@ class VideoTab(ttk.Frame):
         self.processing_status_var = tk.StringVar(value="")
         ttk.Label(status_box, textvariable=self.processing_status_var).pack(anchor="w")
         self.error_status_var = tk.StringVar(value="")
-        ttk.Label(status_box, textvariable=self.error_status_var, foreground="red").pack(anchor="w")
+        ttk.Label(status_box, textvariable=self.error_status_var, style="Error.TLabel").pack(anchor="w")
 
         # --- right: recognition panel --------------------------------------
-        ttk.Label(right, text="Recognition (crop / raw OCR / accepted value)", font=("", 10, "bold")).pack(
+        ttk.Label(right, text="Live recognition", style="Section.TLabel").pack(
             anchor="w"
         )
+        ttk.Label(
+            right, text="Region crops, raw readings, and accepted values by player.",
+            style="Muted.TLabel", wraplength=420,
+        ).pack(anchor="w", pady=(4, 8))
         self.recognition_container = ttk.Frame(right)
         self.recognition_container.pack(fill="both", expand=True, pady=6)
+        ttk.Label(
+            self.recognition_container,
+            text="No regions yet\n\nOpen a video, pause on a clear frame, then use Draw Region.\n"
+                 "Your player recognition cards will appear here.",
+            style="Muted.TLabel", wraplength=380, justify="left",
+        ).pack(anchor="w", padx=12, pady=20)
 
     # ------------------------------------------------------------------
     # Canvas / video frame display
@@ -273,6 +315,7 @@ class VideoTab(ttk.Frame):
         self.display_scale = display_scale
         w, h = pil_image.size
         if self._frame_image_size != pil_image.size:
+            self.canvas.delete("empty_state")
             self.canvas.config(width=w, height=h)
             self._photo_image = ImageTk.PhotoImage(pil_image)
             self._frame_image_size = pil_image.size
@@ -359,13 +402,17 @@ class VideoTab(ttk.Frame):
             column = ttk.LabelFrame(self.recognition_container, text=f"Player {index + 1}", padding=4)
             column.grid(row=0, column=index, sticky="new", padx=(0, 4) if index == 0 else (4, 0))
             columns[player] = column
-        if any(r.player == "Unknown" for r in regions):
+        if any(r.player == "Unknown" and r.kind != "game_end" for r in regions):
             columns["Unknown"] = ttk.LabelFrame(
                 self.recognition_container, text="Unknown player", padding=4,
             )
             columns["Unknown"].grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for r in regions:
-            if r.kind == "arrow":
+            if r.kind == "game_end":
+                shared = ttk.LabelFrame(self.recognition_container, text="Game session", padding=8)
+                shared.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+                self._build_game_end_row(r, shared)
+            elif r.kind == "arrow":
                 self._build_arrow_row(r, columns[r.player])
             else:
                 self._build_numeric_row(r, columns[r.player])
@@ -484,6 +531,36 @@ class VideoTab(ttk.Frame):
             "miss_ref_label": miss_ref_label,
         }
 
+    def _build_game_end_row(self, region, parent) -> None:
+        row = ttk.Frame(parent, padding=4)
+        row.pack(fill="x")
+        ttk.Label(row, text=region.label, style="Section.TLabel").pack(anchor="w")
+        ttk.Label(
+            row, text="Capture a distinctive end-of-game indicator. A confirmed match starts the next GUID.",
+            wraplength=420, style="Muted.TLabel",
+        ).pack(anchor="w", pady=4)
+        thumb = ttk.Label(row)
+        thumb.pack(anchor="w")
+        state = tk.StringVar(value="state: -")
+        confidence = tk.StringVar(value="similarity: -")
+        status = tk.StringVar(value="status: Capture a game-end reference.")
+        for variable in (state, confidence, status):
+            ttk.Label(row, textvariable=variable, wraplength=420).pack(anchor="w")
+        reference = ttk.Label(row, text="(none)")
+        reference.pack(anchor="w", pady=4)
+        ttk.Button(
+            row, text="Add game-end ref",
+            command=lambda: self.controller.capture_arrow_reference(region, "ended"),
+        ).pack(anchor="w", pady=4)
+        ttk.Button(
+            row, text="Clear game-end refs",
+            command=lambda: self.controller.clear_arrow_reference(region, "ended"),
+        ).pack(anchor="w")
+        self._region_rows[region.key()] = {
+            "kind": "game_end", "thumb_label": thumb, "state_var": state,
+            "confidence_var": confidence, "status_var": status, "ended_ref_label": reference,
+        }
+
     def update_recognition_row(
         self, region_key: str, crop_photo, raw_text, candidate, accepted, status_text,
         *, frame_index=None, video_time_ms=None,
@@ -510,7 +587,7 @@ class VideoTab(ttk.Frame):
         self, region_key: str, crop_photo, observed_state, confidence, status_text
     ) -> None:
         row = self._region_rows.get(region_key)
-        if row is None or row.get("kind") != "arrow":
+        if row is None or row.get("kind") not in ("arrow", "game_end"):
             return
         if crop_photo is not None:
             self._region_thumb_refs[region_key] = crop_photo
@@ -523,9 +600,9 @@ class VideoTab(ttk.Frame):
 
     def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
-        if row is None or row.get("kind") != "arrow":
+        if row is None or row.get("kind") not in ("arrow", "game_end"):
             return
-        label_key = "hit_ref_label" if state == "hit" else "miss_ref_label"
+        label_key = f"{state}_ref_label"
         label = row[label_key]
         if photo is None:
             label.configure(image="", text="(none)")
@@ -645,3 +722,11 @@ class VideoTab(ttk.Frame):
         except (tk.TclError, ValueError):
             return
         self.controller.set_arrow_min_confirm_frames(n)
+
+    def _on_game_end_settings_changed(self) -> None:
+        try:
+            threshold = self.game_end_threshold_var.get()
+            confirm_frames = self.game_end_confirm_var.get()
+            self.controller.set_game_end_settings(threshold, confirm_frames)
+        except (tk.TclError, ValueError) as exc:
+            self.set_error_status(f"Invalid game-end settings: {exc}")

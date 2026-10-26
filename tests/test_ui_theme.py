@@ -1,0 +1,157 @@
+"""Exercise the real Tk theme, widget states, and event table."""
+from __future__ import annotations
+
+import os
+import sys
+import tkinter as tk
+from tkinter import ttk
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.ui.events_tab import COLUMNS, EventsTab
+from app.ui.theme import ACCENT, BACKGROUND, ERROR, FIELD, MUTED, SURFACE, TEXT, apply_dark_theme
+from app.ui.video_tab import VideoTab
+
+
+@pytest.fixture(scope="module")
+def root():
+    window = tk.Tk()
+    window.withdraw()
+    apply_dark_theme(window)
+    yield window
+    window.destroy()
+
+
+def test_theme_covers_classic_widgets_popups_and_ttk_states(root):
+    style = ttk.Style(root)
+    assert style.theme_use() == "clam"
+    assert root.cget("background") == BACKGROUND
+    assert tk.Toplevel(root).cget("background") == BACKGROUND
+    assert tk.Canvas(root).cget("background") == SURFACE
+    choices = tk.Listbox(root)
+    assert choices.cget("background") == FIELD
+    assert choices.cget("foreground") == TEXT
+    assert choices.cget("selectforeground") == TEXT
+    combo = ttk.Combobox(root, values=["P1", "P2"], state="readonly")
+    popup = root.tk.call("ttk::combobox::PopdownWindow", combo)
+    assert root.tk.call(f"{popup}.f.l", "cget", "-background") == FIELD
+    for widget in ("TEntry", "TCombobox", "TSpinbox"):
+        assert style.lookup(widget, "fieldbackground", ("readonly",)) == FIELD
+        assert style.lookup(widget, "foreground", ("readonly",)) == TEXT
+        assert style.lookup(widget, "bordercolor", ("focus",)) == ACCENT
+    assert style.lookup("Accent.TButton", "background", ("disabled",)) != ACCENT
+    assert style.lookup("Error.TLabel", "foreground") == ERROR
+    assert style.lookup("Treeview", "foreground", ("selected",)) == TEXT
+
+
+def _contrast(foreground: str, background: str) -> float:
+    def luminance(color: str) -> float:
+        channels = [int(color[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+                  for value in channels]
+        return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
+
+    light, dark = sorted((luminance(foreground), luminance(background)), reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+@pytest.mark.parametrize("foreground,background", [
+    (TEXT, SURFACE), (TEXT, FIELD), (MUTED, SURFACE), (MUTED, BACKGROUND),
+    (ACCENT, SURFACE), (FIELD, ACCENT), (ERROR, SURFACE), (TEXT, "#284c7d"),
+])
+def test_text_colors_meet_normal_text_contrast(foreground, background):
+    assert _contrast(foreground, background) >= 4.5
+
+
+def test_video_empty_state_and_primary_actions(root):
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    assert len(tab.canvas.find_withtag("empty_state")) == 2
+    tab.start_stop_button.invoke()
+    controller.toggle_analysis.assert_called_once_with()
+    tab.set_analysis_status(True)
+    assert tab.start_stop_button.cget("text") == "Stop Analysis"
+    assert tab.start_stop_button.cget("style") == "Accent.TButton"
+    tab.set_play_button_label(True)
+    assert tab.play_button.cget("text") == "Pause"
+
+
+def test_events_table_scrolling_and_publishing_states(root):
+    root.deiconify()
+    root.geometry("760x600")
+    controller = Mock()
+    tab = EventsTab(root, controller)
+    tab.pack(fill="both", expand=True)
+    for index in range(50):
+        tab.append_event(SimpleNamespace(
+            session_id="00000000-0000-4000-8000-000000000001",
+            sequence=index, event_type="score_changed", player="P1",
+            payload={"field": "score", "previous_value": index, "new_value": index + 1},
+            video_time_ms=index * 100, observed_at_utc="2026-10-26T12:00:00Z",
+        ))
+    root.update()
+    assert len(tab.tree.get_children()) == 50
+    assert tab.count_var.get() == "50 events recorded"
+    assert tuple(tab.tree["columns"]) == COLUMNS
+    bars = [child for child in tab.tree.master.winfo_children() if isinstance(child, ttk.Scrollbar)]
+    assert len(bars) == 2
+    assert all(bar.winfo_ismapped() for bar in bars)
+    assert tab.tree.yview()[0] > 0
+    assert tab.tree.xview()[1] < 1
+    tab.set_publishing_status("Connected", True)
+    assert tab.test_button.instate(["!disabled"])
+    tab.test_button.invoke()
+    controller.send_mapping_sample.assert_called_once_with()
+    tab.set_publishing_status("Off", False)
+    assert tab.test_button.instate(["disabled"])
+    tab.clear()
+    assert not tab.tree.get_children()
+    assert tab.count_var.get() == "0 events recorded"
+
+
+def test_game_end_card_is_shared_and_capture_controls_are_wired(root):
+    from app.models import Region
+
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    region = Region("Results", "Unknown", "game_end", 0, 0, 40, 30)
+    tab.refresh_region_list([region])
+    row = tab._region_rows["game_end"]
+    assert row["kind"] == "game_end"
+    parent = row["thumb_label"].master
+    buttons = [child for child in parent.winfo_children() if isinstance(child, ttk.Button)]
+    buttons[0].invoke()
+    controller.capture_arrow_reference.assert_called_once_with(region, "ended")
+    buttons[1].invoke()
+    controller.clear_arrow_reference.assert_called_once_with(region, "ended")
+    tab.update_arrow_recognition_row("game_end", None, "ended", 1.0, "active: ended")
+    assert row["state_var"].get() == "state: ended"
+    tab.set_arrow_reference_thumbnail("game_end", "ended", None, 0)
+    assert row["ended_ref_label"].cget("text") == "(none)"
+    tab.game_end_threshold_var.set(0.96)
+    tab.game_end_confirm_var.set(3)
+    tab._on_game_end_settings_changed()
+    controller.set_game_end_settings.assert_called_once_with(0.96, 3)
+
+
+def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
+    from app.ui.region_dialog import RegionDialog
+
+    root.deiconify()
+    root.update()
+    dialog = RegionDialog(root, existing_keys={"game_end"})
+    try:
+        dialog.kind_var.set("game_end")
+        dialog._on_kind_changed()
+        assert dialog.player_var.get() == "Unknown"
+        assert dialog.player_combo.instate(["disabled"])
+        assert dialog.direction_combo.instate(["disabled"])
+        dialog._on_confirm()
+        assert dialog.result is None
+        assert "already exists" in dialog.error_var.get()
+    finally:
+        dialog.destroy()

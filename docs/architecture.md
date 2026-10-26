@@ -85,6 +85,18 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
+- `new_session`: sequence 0, announcing the in-memory game GUID shared by both
+  players. Payload includes the new and previous IDs, `is_new_session: true`,
+  and the reason (`initial`, `video_loaded`, `manual`, or `game_end`).
+  Lifecycle events are recorded even with gameplay recording disabled.
+
+A shared `game_end` region matches user-captured end-indicator references at
+video rate. Confirmed matches rotate the GUID once, retain historical events,
+reset numeric/arrow trackers and scoreboard totals, and suppress gameplay
+readings until confirmed disappearance. Session rotation drains active OCR
+under the old GUID and invalidates queued jobs from that session.
+Reference images travel with layouts; footage and references are not published.
+Backward seeks do not regenerate boundaries or reconstruct historical GUIDs.
 
 The live display includes Left/Down/Up/Right hit counts and total hits, but not
 miss counts. Misses still remain in Fabric history.
@@ -95,8 +107,8 @@ Pause holds the source-time rate; seeks clear recent pace; New Session clears
 session totals. Network arrival time does not determine hit pace.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
-active sharing session, and changes sessions only through explicit session
-resets. Later accepted downward corrections are still valid. The SDK worker
+active sharing session, and changes sessions through manual/video-load resets
+or calibrated game-end detections. Later accepted downward corrections are still valid. The SDK worker
 rejects revisions older than its last acknowledged revision.
 
 These rules describe the single desktop publisher. They are not a distributed

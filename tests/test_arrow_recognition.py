@@ -193,10 +193,9 @@ def test_arrow_region_emits_hit_event_through_full_pipeline():
     session.start()
 
     result = session.process_frame(_frame_with_patch(WHITE), 0, 0)
-    assert len(bus.events) == 1
-    assert bus.events[0].event_type == "arrow_hit"
-    assert bus.events[0].payload["direction"] == "Left"
-    assert bus.events[0].player == "P1"
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
+    assert bus.events[1].payload["direction"] == "Left"
+    assert bus.events[1].player == "P1"
     assert result.region_results[0].arrow_state == "hit"
 
 
@@ -223,7 +222,7 @@ def test_arrow_region_with_no_captured_references_never_emits_events():
     session.start()
 
     result = session.process_frame(_frame_with_patch(WHITE), 0, 0)
-    assert bus.events == []
+    assert [event.event_type for event in bus.events] == ["new_session"]
     assert result.region_results[0].error is not None  # explains why, doesn't fail silently
 
 

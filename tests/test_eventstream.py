@@ -115,12 +115,40 @@ def test_event_bus_forwards_only_future_recorded_events():
     bus.record(event)
     sink.assert_called_once_with(event)
     bus.clear_events()
-    bus.new_session()
-    sink.assert_called_once_with(event)
+    lifecycle = bus.new_session()
+    assert sink.call_count == 2
+    assert sink.call_args.args == (lifecycle,)
+    assert lifecycle.event_type == "new_session"
     bus.set_delivery_sink(None)
     bus.record(sample(bus))
-    sink.assert_called_once()
+    assert sink.call_count == 2
 
+
+def test_session_announcements_and_gameplay_remain_ordered_in_durable_outbox(tmp_path):
+    queue = Outbox(str(tmp_path / "sessions.sqlite3"), TARGET)
+    bus = EventBus()
+    bus.set_delivery_sink(queue.enqueue)
+    try:
+        bus.record(sample(bus))
+        first_id = bus.session_id
+        bus.new_session(100, 3300, reason="game_end", clear_events=False)
+        bus.record(sample(bus))
+        rows = queue.next_events(100)
+        assert len(rows) == 2
+        queue.acknowledge_many([row[0] for row in rows])
+        next_rows = queue.next_events(100)
+        assert len(next_rows) == 2
+        rows += next_rows
+        assert [json.loads(row[2]) for row in rows] == [
+            event.to_dict() for event in bus.events
+        ]
+        assert [row[1] for row in rows] == [first_id, first_id, bus.session_id, bus.session_id]
+        assert [json.loads(row[2])["event_type"] for row in rows] == [
+            "new_session", "score_observed", "new_session", "score_observed",
+        ]
+    finally:
+        bus.set_delivery_sink(None)
+        queue.close()
 
 def test_success_removes_only_acknowledged_events_and_preserves_envelope(tmp_path):
     sender = FakeSender()
@@ -194,10 +222,11 @@ def test_queue_failure_is_visible_and_local_event_remains_exportable(tmp_path, m
         event = sample(bus)
         bus.record(event)
         status = publisher.status()
-        assert status.not_queued == 1
-        assert "NOT QUEUED: 1" in status.text()
+        assert status.not_queued == 2
+        assert "NOT QUEUED: 2" in status.text()
         assert "export" in status.text()
-        assert bus.events == [event]
+        assert bus.events[-1] == event
+        assert [item.event_type for item in bus.events] == ["new_session", "score_observed"]
         assert sender.calls == []
     finally:
         bus.set_delivery_sink(None)
@@ -410,12 +439,12 @@ def test_network_wait_does_not_block_recording_or_delete_queued_events(tmp_path)
         worker.start()
         assert recorded.wait(2)
         worker.join(2)
-        assert publisher.status().pending == 2
+        assert publisher.status().pending == 3
         assert publisher.status().sent == 0
         bus.clear_events()
         bus.new_session()
-        assert publisher.status().pending == 2
-        assert bus.events == []
+        assert publisher.status().pending == 4
+        assert [event.event_type for event in bus.events] == ["new_session"]
     finally:
         release.set()
         bus.set_delivery_sink(None)

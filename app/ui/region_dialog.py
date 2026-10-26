@@ -29,10 +29,11 @@ class RegionDialog(tk.Toplevel):
 
         ttk.Label(frm, text="Player:").grid(row=1, column=0, sticky="w", pady=4)
         self.player_var = tk.StringVar(value=config.PLAYER_CHOICES[0])
-        ttk.Combobox(
+        self.player_combo = ttk.Combobox(
             frm, textvariable=self.player_var, values=config.PLAYER_CHOICES,
             state="readonly", width=21,
-        ).grid(row=1, column=1, pady=4)
+        )
+        self.player_combo.grid(row=1, column=1, pady=4)
 
         ttk.Label(frm, text="Field kind:").grid(row=2, column=0, sticky="w", pady=4)
         self.kind_var = tk.StringVar(value=config.REGION_KINDS[0])
@@ -52,14 +53,14 @@ class RegionDialog(tk.Toplevel):
         self.direction_combo.grid(row=3, column=1, pady=4)
 
         self.error_var = tk.StringVar(value="")
-        ttk.Label(frm, textvariable=self.error_var, foreground="red", wraplength=320).grid(
+        ttk.Label(frm, textvariable=self.error_var, style="Error.TLabel", wraplength=320).grid(
             row=4, column=0, columnspan=2, sticky="w"
         )
 
         btns = ttk.Frame(frm)
         btns.grid(row=5, column=0, columnspan=2, pady=(8, 0), sticky="e")
         ttk.Button(btns, text="Cancel", command=self._on_cancel).grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text="Add region", command=self._on_confirm).grid(row=0, column=1, padx=4)
+        ttk.Button(btns, text="Add region", style="Accent.TButton", command=self._on_confirm).grid(row=0, column=1, padx=4)
 
         self._on_kind_changed()
 
@@ -71,6 +72,10 @@ class RegionDialog(tk.Toplevel):
 
     def _on_kind_changed(self) -> None:
         is_arrow = self.kind_var.get() == "arrow"
+        is_game_end = self.kind_var.get() == "game_end"
+        if is_game_end:
+            self.player_var.set("Unknown")
+        self.player_combo.configure(state="disabled" if is_game_end else "readonly")
         state = "readonly" if is_arrow else "disabled"
         self.direction_combo.configure(state=state)
 
@@ -83,6 +88,9 @@ class RegionDialog(tk.Toplevel):
             self.error_var.set("Label cannot be empty.")
             return
         key = f"{player}:{kind}:{direction}" if kind == "arrow" else f"{player}:{kind}"
+        if kind == "game_end":
+            key = "game_end"
+            player = "Unknown"
         if key in self._existing_keys:
             detail = f"{kind} ({direction})" if kind == "arrow" else kind
             self.error_var.set(

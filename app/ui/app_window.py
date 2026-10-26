@@ -26,6 +26,7 @@ from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
 from app.ui.score_calibration_dialog import ScoreCalibrationDialog
+from app.ui.theme import apply_dark_theme
 from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
 from app.video_source import VideoSource
 
@@ -35,6 +36,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("DDR Video Event Extractor - Milestone 1 (recorded video)")
         self.geometry("1500x900")
+        apply_dark_theme(self)
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
@@ -67,8 +69,15 @@ class App(tk.Tk):
         self._recognition_photos = {}
         self._arrow_display_state = {}
 
+        header = ttk.Frame(self, style="Header.TFrame", padding=(20, 16))
+        header.pack(fill="x")
+        ttk.Label(header, text="DDR Video Event Extractor", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header, text="RECORDED VIDEO  /  Calibrate regions. Review recognition. Capture events.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
         notebook = ttk.Notebook(self)
-        notebook.pack(fill="both", expand=True)
+        notebook.pack(fill="both", expand=True, padx=16, pady=(0, 16))
         self.video_tab = VideoTab(notebook, self)
         self.events_tab = EventsTab(notebook, self)
         notebook.add(self.video_tab, text="Video & Regions")
@@ -125,13 +134,14 @@ class App(tk.Tk):
         # A new video is a new session: reset everything recognition-related.
         self._analysis_generation += 1
         self.analysis.stop()
-        self.analysis.new_session()
+        session_event = self.analysis.new_session(0, 0, reason="video_loaded")
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self._last_frame_position = None
         self._last_frame_bgr = None
         self.events_tab.clear()
+        self.events_tab.append_event(session_event)
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
 
@@ -264,6 +274,24 @@ class App(tk.Tk):
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
 
+        if any(region.kind == "game_end" for region in self.regions):
+            boundary = self.analysis.process_game_end_frame(frame_bgr, frame_index, video_time_ms)
+            if boundary is not None and any(
+                event.payload.get("reason") == "game_end" for event in boundary.new_events
+            ):
+                # Rotation drains the OCR locks; its completed old-game result must remain visible.
+                self._confirmation_frame = None
+                self._latest_numeric_frame = None
+                self._final_numeric_frame = None
+                future = self._analysis_future
+                if future is not None and future.done():
+                    self._poll_analysis_result()
+                self._analysis_generation += 1
+                self._confirmation_frame = None
+                self._latest_numeric_frame = None
+                self._final_numeric_frame = None
+                self.video_tab.set_processing_status("Game ended - a new session GUID is ready.")
+            self._apply_analysis_result(boundary, skipped_frames=0)
         arrow_result = self.analysis.process_arrow_frame(frame_bgr, frame_index, video_time_ms)
         self._apply_analysis_result(arrow_result, skipped_frames=0)
         self._submit_numeric_analysis(frame_bgr, frame_index, video_time_ms)
@@ -389,7 +417,7 @@ class App(tk.Tk):
             return
 
         is_numeric_result = (
-            bool(result.region_results) and result.region_results[0].region.kind != "arrow"
+            bool(result.region_results) and result.region_results[0].region.kind in ("score", "combo")
         )
         if is_numeric_result:
             self.video_tab.set_processing_status(
@@ -423,7 +451,7 @@ class App(tk.Tk):
         self.video_tab.redraw_region_overlays(self.regions)
 
     def _update_recognition_row(self, rr: RegionFrameResult) -> None:
-        if rr.region.kind == "arrow":
+        if rr.region.kind in ("arrow", "game_end"):
             now = time.perf_counter()
             display_state = (
                 self.analysis.generation, rr.arrow_state, rr.error, rr.is_unreadable,
@@ -435,7 +463,7 @@ class App(tk.Tk):
             rr.crop, self._recognition_photos.get(rr.region.key()),
         )
         self._recognition_photos[rr.region.key()] = photo
-        if rr.region.kind == "arrow":
+        if rr.region.kind in ("arrow", "game_end"):
             tracker_status: ArrowTrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_arrow_status(rr, tracker_status)
             self.video_tab.update_arrow_recognition_row(
@@ -505,6 +533,7 @@ class App(tk.Tk):
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
+        self._refresh_arrow_reference_thumbnails()
         if region.kind == "score":
             self._refresh_score_calibration_status()
 
@@ -515,9 +544,10 @@ class App(tk.Tk):
             self.analysis.set_regions(self.regions)
             self.video_tab.refresh_region_list(self.regions)
             self.video_tab.redraw_region_overlays(self.regions)
+            self._refresh_arrow_reference_thumbnails()
 
     # ------------------------------------------------------------------
-    # Arrow lane calibration (capture hit/miss reference snapshots)
+    # Image calibration (arrow states and the shared game-end indicator)
     def capture_arrow_reference(self, region: Region, state: str) -> None:
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", "Open a video and display a frame first.")
@@ -552,6 +582,9 @@ class App(tk.Tk):
 
     def set_arrow_min_confirm_frames(self, n: int) -> None:
         self.analysis.set_arrow_min_confirm_frames(n)
+
+    def set_game_end_settings(self, threshold: float, confirm_frames: int) -> None:
+        self.analysis.set_game_end_settings(threshold, confirm_frames)
 
     # ------------------------------------------------------------------
     # Layout profiles
@@ -713,11 +746,11 @@ class App(tk.Tk):
         )
 
     def _refresh_arrow_reference_thumbnails(self) -> None:
-        """Show any previously-captured hit/miss reference images for arrow
-        regions right after a layout is loaded, without waiting for a new
+        """Show captured arrow/game-end reference images after layout changes,
+        without waiting for a new
         frame to be processed."""
         for region in self.regions:
-            if region.kind != "arrow":
+            if region.kind not in ("arrow", "game_end"):
                 continue
             for state, encoded_images in region.reference_images.items():
                 if not encoded_images:
@@ -743,7 +776,7 @@ class App(tk.Tk):
                 return
             if not self.regions:
                 messagebox.showwarning(
-                    "No regions", "Add at least one region (score, combo, or arrow) before starting analysis."
+                    "No regions", "Add at least one region (score, combo, arrow, or game_end) before starting analysis."
                 )
                 return
             self.analysis.start()
@@ -751,11 +784,13 @@ class App(tk.Tk):
 
     def new_session(self) -> None:
         self._analysis_generation += 1
-        self.analysis.new_session()
+        position = self._last_frame_position or (None, None)
+        event = self.analysis.new_session(*position)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self.events_tab.clear()
+        self.events_tab.append_event(event)
         self.video_tab.set_error_status("")
         self.video_tab.set_processing_status("New session started - recognition state reset.")
 

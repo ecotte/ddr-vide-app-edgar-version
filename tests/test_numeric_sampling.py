@@ -44,7 +44,7 @@ def _controller():
         after=Mock(return_value="poll"),
         _apply_analysis_result=Mock(),
         video_tab=SimpleNamespace(set_error_status=Mock(), set_processing_status=Mock()),
-        events_tab=SimpleNamespace(clear=Mock()),
+        events_tab=SimpleNamespace(clear=Mock(), append_event=Mock()),
     )
     controller._submit_numeric_analysis = MethodType(App._submit_numeric_analysis, controller)
     controller._poll_analysis_result = MethodType(App._poll_analysis_result, controller)
@@ -473,16 +473,16 @@ def test_new_session_drains_whole_numeric_frame_before_reset(monkeypatch, tmp_pa
             release_ocr.set()
         old_result = work.result(timeout=5)
         resetting.result(timeout=5)
-    assert len(old_result.new_events) == 3
+    assert len(old_result.new_events) == 4
     assert all(event.session_id == old_session for event in old_result.new_events)
     assert app.event_bus.session_id != old_session
-    assert app.event_bus.events == []
+    assert [event.event_type for event in app.event_bus.events] == ["new_session"]
     assert all(analysis.tracker_for(region).accepted_value is None for region in analysis.regions)
     assert analysis.is_running
     app.events_tab.clear.assert_called_once()
+    app.events_tab.append_event.assert_called_once_with(app.event_bus.events[0])
     export_path = tmp_path / "new-session.jsonl"
-    assert app.event_bus.export_jsonl(str(export_path)) == 0
-    assert export_path.read_text() == ""
+    assert app.event_bus.export_jsonl(str(export_path)) == 1
 
 
 def test_queued_job_from_previous_session_is_ignored(monkeypatch):
@@ -501,7 +501,53 @@ def test_queued_job_from_previous_session_is_ignored(monkeypatch):
     )
     assert result is None
     recognize.assert_not_called()
-    assert bus.events == []
+    assert [event.event_type for event in bus.events] == ["new_session"]
+
+
+def test_automatic_boundary_displays_completed_old_work_without_resubmitting_old_frames():
+    from app import image_utils
+
+    app, jobs = _controller()
+    engine = Mock(spec=OcrEngine)
+    engine.recognize_digits.return_value = OcrResult("10", 0.99)
+    frame = np.zeros((30, 80, 3), dtype=np.uint8)
+    end_frame = frame.copy()
+    end_frame[:, 40:] = 255
+    end_region = Region(
+        "Results", "Unknown", "game_end", 40, 0, 40, 30,
+        reference_images={"ended": [image_utils.encode_crop_to_base64_png(end_frame[:, 40:])]},
+    )
+    app.regions = [Region("Combo", "P1", "combo", 0, 0, 40, 30), end_region]
+    app.analysis = AnalysisSession(app.event_bus, engine)
+    app.analysis.set_regions(app.regions)
+    app.analysis.start()
+    old_result = app.analysis.process_background_numeric_frame(frame, 0, 0)
+    old_id = app.event_bus.session_id
+    completed = Future()
+    completed.set_result(old_result)
+    app._analysis_future = completed
+    app._analysis_frame_index = 0
+    app._confirmation_frame = (frame, 1, 33, 0)
+    app._latest_numeric_frame = (frame, 1, 33, 0)
+    app._final_numeric_frame = (frame, 1, 33, 0)
+    app.live_scoreboard = Mock()
+    app.video_tab = Mock()
+    app.video_source = SimpleNamespace(frame_count=100)
+    app._display_current_frame = Mock()
+    app.analysis.process_game_end_frame(end_frame, 1, 33)
+
+    App._process_and_update(app, end_frame, 2, 66, False)
+
+    app._apply_analysis_result.assert_any_call(old_result, 0)
+    assert app.event_bus.session_id != old_id
+    assert app._analysis_generation == 1
+    assert app._analysis_future_generation == 1
+    assert len(jobs) == 1
+    assert jobs[0][1][1:] == (2, 66)
+    assert app._confirmation_frame is None
+    assert app._latest_numeric_frame is None
+    assert app._final_numeric_frame is None
+    assert app.event_bus.events[-1].payload["previous_session_id"] == old_id
 
 
 def test_queued_job_from_before_seek_is_ignored_without_changing_session(monkeypatch):

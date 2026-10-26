@@ -18,13 +18,14 @@ from app.models import Event
 class EventBus:
     """Owns session_id + sequence numbering and builds Event envelopes.
 
-    Call ``new_session()`` whenever a new video is loaded or the user
-    explicitly starts a new session, per the reset rules in the spec.
+    Call ``new_session()`` on video load, manual reset, or a detected game end.
+    Automatic game boundaries retain history with ``clear_events=False``.
     """
 
     def __init__(self, source_mode: str = config.SOURCE_MODE_REPLAY):
         self.source_mode = source_mode
         self.session_id: str = str(uuid.uuid4())
+        self._session_announced = False
         self._sequence: int = 0
         self._events: List[Event] = []
         self._lock = threading.RLock()
@@ -40,13 +41,49 @@ class EventBus:
         with self._lock:
             self._delivery_sink = sink
 
-    def new_session(self) -> None:
+    def ensure_session(
+        self, frame_index: Optional[int] = None, video_time_ms: Optional[int] = None,
+    ) -> Optional[Event]:
+        """Announce the initial in-memory GUID before any gameplay events."""
         with self._lock:
+            if self.session_id and self._session_announced:
+                return None
+            if not self.session_id:
+                self.session_id = str(uuid.uuid4())
+            self._sequence = 0
+            return self._announce_session(frame_index, video_time_ms, None, "initial")
+
+    def new_session(
+        self, frame_index: Optional[int] = None, video_time_ms: Optional[int] = None,
+        *, reason: str = "manual", clear_events: bool = True,
+    ) -> Event:
+        with self._lock:
+            previous_session_id = self.session_id if self._session_announced and self.session_id else None
             self.session_id = str(uuid.uuid4())
             self._sequence = 0
-            self._events = []
-            if self._live_sink is not None:
-                self._live_sink(None, self.session_id)
+            if clear_events:
+                self._events = []
+            return self._announce_session(frame_index, video_time_ms, previous_session_id, reason)
+
+    def _announce_session(
+        self, frame_index: Optional[int], video_time_ms: Optional[int],
+        previous_session_id: Optional[str], reason: str,
+    ) -> Event:
+        self._session_announced = True
+        if self._live_sink is not None:
+            self._live_sink(None, self.session_id)
+        event = self.make_event(
+            config.NEW_SESSION_EVENT_TYPE,
+            {
+                "session_id": self.session_id,
+                "previous_session_id": previous_session_id,
+                "is_new_session": True,
+                "reason": reason,
+            },
+            frame_index, video_time_ms,
+        )
+        self.record(event)
+        return event
 
     def clear_events(self) -> None:
         """Clear the recorded/displayed events list without starting a new
@@ -69,6 +106,7 @@ class EventBus:
         confidence: Optional[float] = None,
     ) -> Event:
         with self._lock:
+            self.ensure_session(frame_index, video_time_ms)
             event = Event(
                 schema_version=config.SCHEMA_VERSION,
                 event_id=str(uuid.uuid4()),

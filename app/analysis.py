@@ -4,12 +4,14 @@ This is the one place that knows the full per-frame pipeline. The UI layer
 calls into this; it does not talk to OCR, image-similarity, or recognition
 modules directly.
 
-Two region kinds are supported:
+Region kinds:
   * "score" / "combo" - OCR + TemporalValueTracker (a value must hold
     steady for N frames before being accepted).
   * "arrow" - image-similarity classification against user-captured
     reference snapshots + ArrowStateTracker (an edge-triggered detector,
     since hit/miss flashes are often brief rather than steady).
+  * "game_end" - a shared reference-matched end indicator that rotates
+    game GUIDs once per confirmed appearance.
 """
 from __future__ import annotations
 
@@ -39,7 +41,7 @@ class RegionFrameResult:
     validation_note: Optional[str] = None  # numeric reading pending or rejected by acceptance rules
     candidate_value: Optional[int] = None  # score/combo only
     accepted_value: Optional[int] = None   # score/combo only
-    arrow_state: Optional[str] = None      # arrow only: "hit" / "miss" / "idle"
+    arrow_state: Optional[str] = None      # image match: "hit" / "miss" / "ended" / "idle"
     is_unreadable: bool = False
     crop: Optional[np.ndarray] = None  # kept only for UI preview, not required for logic
     needs_confirmation: bool = False
@@ -77,6 +79,10 @@ class AnalysisSession:
         self.required_consecutive_frames = config.DEFAULT_REQUIRED_CONSECUTIVE_FRAMES
         self.arrow_similarity_threshold = config.DEFAULT_ARROW_SIMILARITY_THRESHOLD
         self.arrow_min_confirm_frames = config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES
+        self.game_end_similarity_threshold = config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD
+        self.game_end_confirm_frames = config.DEFAULT_GAME_END_CONFIRM_FRAMES
+        self._last_game_end_frame = -1
+        self._game_end_active = False
         self.is_running = False
         self.recording_enabled = True
 
@@ -103,8 +109,12 @@ class AnalysisSession:
             self._last_numeric_frame = {}
             self._last_observed_score = {}
             for r in self.regions:
-                if r.kind == "arrow":
-                    self._trackers[r.key()] = ArrowStateTracker(self.arrow_min_confirm_frames)
+                if r.kind in ("arrow", "game_end"):
+                    confirm_frames = (
+                        self.game_end_confirm_frames if r.kind == "game_end"
+                        else self.arrow_min_confirm_frames
+                    )
+                    self._trackers[r.key()] = ArrowStateTracker(confirm_frames)
                     decoded = {}
                     for state, encoded_images in r.reference_images.items():
                         images = []
@@ -132,26 +142,51 @@ class AnalysisSession:
     def set_arrow_min_confirm_frames(self, n: int) -> None:
         with self._arrow_lock:
             self.arrow_min_confirm_frames = n
-            for tracker in self._trackers.values():
-                if isinstance(tracker, ArrowStateTracker):
+            for region in self.regions:
+                tracker = self._trackers[region.key()]
+                if region.kind == "arrow" and isinstance(tracker, ArrowStateTracker):
                     tracker.min_confirm_frames = n
+
+    def set_game_end_settings(self, threshold: float, confirm_frames: int) -> None:
+        if not 0.5 <= threshold <= 1 or confirm_frames < 1:
+            raise ValueError("Game-end threshold must be 0.5..1 and confirmation frames must be positive.")
+        with self._arrow_lock:
+            self.game_end_similarity_threshold = threshold
+            self.game_end_confirm_frames = confirm_frames
+            for region in self.regions:
+                tracker = self._trackers[region.key()]
+                if region.kind == "game_end" and isinstance(tracker, ArrowStateTracker):
+                    tracker.min_confirm_frames = confirm_frames
 
     def reset_tracking(self) -> None:
         """Call on seek / new video load / new session."""
         with self._score_lock, self._combo_lock, self._arrow_lock:
             self._generation += 1
-            for tracker in self._trackers.values():
-                tracker.reset()
+            for region in self.regions:
+                if region.kind != "game_end":
+                    self._trackers[region.key()].reset()
             self._last_numeric_accept_time_ms = {}
             self._numeric_evidence = {}
             self._last_numeric_frame = {}
             self._last_observed_score = {}
 
-    def new_session(self) -> None:
+    def new_session(
+        self, frame_index: Optional[int] = None, video_time_ms: Optional[int] = None,
+        *, reason: str = "manual", clear_events: bool = True,
+    ) -> Event:
         """Drain active analysis before resetting its session and tracking."""
         with self._score_lock, self._combo_lock, self._arrow_lock:
-            self.event_bus.new_session()
+            event = self.event_bus.new_session(
+                frame_index, video_time_ms, reason=reason, clear_events=clear_events,
+            )
             self.reset_tracking()
+            if clear_events:
+                self._last_game_end_frame = -1
+                self._game_end_active = False
+                for region in self.regions:
+                    if region.kind == "game_end":
+                        self._trackers[region.key()].reset()
+            return event
 
     def start(self) -> None:
         with self._score_lock, self._combo_lock, self._arrow_lock:
@@ -163,7 +198,7 @@ class AnalysisSession:
             self.is_running = False
 
     def tracker_for(self, region: Region) -> Tracker:
-        if region.kind == "arrow":
+        if region.kind in ("arrow", "game_end"):
             lock = self._arrow_lock
         elif region.kind == "score":
             lock = self._score_lock
@@ -234,13 +269,18 @@ class AnalysisSession:
         is gameplay, so we never assume recognition should run continuously.
         """
         with self._score_lock, self._combo_lock, self._arrow_lock:
-            return self._process_frame(frame, frame_index, video_time_ms, self.regions)
+            boundary = self.process_game_end_frame(frame, frame_index, video_time_ms)
+            gameplay = self._process_frame(
+                frame, frame_index, video_time_ms,
+                [region for region in self.regions if region.kind != "game_end"],
+            )
+            return _merge_frame_results([result for result in (boundary, gameplay) if result is not None])
 
     def process_numeric_frame(
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
     ) -> Optional[FrameAnalysisResult]:
         with self._score_lock, self._combo_lock:
-            regions = [region for region in self.regions if region.kind != "arrow"]
+            regions = [region for region in self.regions if region.kind in ("score", "combo")]
             return self._process_frame(frame, frame_index, video_time_ms, regions)
 
     def process_background_numeric_frame(
@@ -290,6 +330,55 @@ class AnalysisSession:
             regions = [region for region in self.regions if region.kind == "arrow"]
             return self._process_frame(frame, frame_index, video_time_ms, regions)
 
+    def process_game_end_frame(
+        self, frame: np.ndarray, frame_index: int, video_time_ms: int,
+    ) -> Optional[FrameAnalysisResult]:
+        """Detect boundaries at video rate; drain OCR only when rotating a session."""
+        if not self.is_running:
+            return None
+        start = time.perf_counter()
+        results = []
+        ended = False
+        with self._arrow_lock:
+            if frame_index <= self._last_game_end_frame:
+                return None
+            regions = [region for region in self.regions if region.kind == "game_end"]
+            if not regions:
+                return None
+            initial_event = self.event_bus.ensure_session(frame_index, video_time_ms)
+            self._last_game_end_frame = frame_index
+            for region in regions:
+                crop = _safe_crop(frame, region, frame.shape[1], frame.shape[0])
+                references = self._arrow_references.get(region.key(), {}).get("ended", [])
+                tracker: ArrowStateTracker = self._trackers[region.key()]
+                error = None
+                state = None
+                score = None
+                if crop.size == 0:
+                    error = "Empty game-end crop (region out of frame bounds?)"
+                elif not references:
+                    error = "Capture a game-end reference before using this detector."
+                else:
+                    score = max(image_utils.similarity(crop, reference) for reference in references)
+                    state = "ended" if score >= self.game_end_similarity_threshold else "idle"
+                confirmed = tracker.observe(state)
+                ended = ended or confirmed == "ended"
+                if state == "idle" and tracker.status().pending_count >= self.game_end_confirm_frames:
+                    self._game_end_active = False
+                results.append(RegionFrameResult(
+                    region=region, confidence=score, error=error, arrow_state=state,
+                    is_unreadable=error is not None, crop=crop,
+                    frame_index=frame_index, video_time_ms=video_time_ms,
+                ))
+        events = [initial_event] if initial_event is not None else []
+        if ended and not self._game_end_active:
+            with self._score_lock, self._combo_lock, self._arrow_lock:
+                events.append(self.new_session(
+                    frame_index, video_time_ms, reason="game_end", clear_events=False,
+                ))
+                self._game_end_active = True
+        return FrameAnalysisResult(results, events, (time.perf_counter() - start) * 1000)
+
     def _process_frame(
         self,
         frame: np.ndarray,
@@ -302,7 +391,11 @@ class AnalysisSession:
 
         start_time = time.perf_counter()
         region_results: List[RegionFrameResult] = []
-        new_events: List[Event] = []
+        initial_event = self.event_bus.ensure_session(frame_index, video_time_ms)
+        new_events: List[Event] = [initial_event] if initial_event is not None else []
+
+        if self._game_end_active:
+            return FrameAnalysisResult([], new_events, 0)
 
         frame_h, frame_w = frame.shape[:2]
 

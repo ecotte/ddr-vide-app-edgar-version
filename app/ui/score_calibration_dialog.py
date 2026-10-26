@@ -37,12 +37,12 @@ class ScoreCalibrationDialog(tk.Toplevel):
             wraplength=560,
         ).pack(anchor="w")
         ttk.Label(
-            body, textvariable=self.error, foreground="red", wraplength=560,
+            body, textvariable=self.error, style="Error.TLabel", wraplength=560,
         ).pack(anchor="w")
         buttons = ttk.Frame(body)
         buttons.pack(anchor="e", pady=6)
         ttk.Button(buttons, text="Cancel", command=self.destroy).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Learn", command=self._confirm).pack(side="left")
+        ttk.Button(buttons, text="Learn", style="Accent.TButton", command=self._confirm).pack(side="left")
         self.bind("<Return>", lambda _: self._confirm())
         self.bind("<Escape>", lambda _: self.destroy())
         self.transient(parent)

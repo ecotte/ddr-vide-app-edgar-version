@@ -31,6 +31,7 @@ def test_changing_score_emits_unconfirmed_observations_and_exports_them(tmp_path
         assert result.region_results[0].accepted_value is None
         emitted.extend(result.new_events)
     assert emitted == bus.events
+    assert emitted.pop(0).event_type == "new_session"
     assert [event.event_type for event in emitted] == ["score_observed"] * 2
     assert [event.payload["observed_value"] for event in emitted] == [428008, 428508]
     assert all(event.payload["confirmed"] is False for event in emitted)
@@ -41,34 +42,34 @@ def test_changing_score_emits_unconfirmed_observations_and_exports_them(tmp_path
     assert emitted[1].video_time_ms == 17
     assert EventsTab._format_detail(emitted[0]) == "UNCONFIRMED: 428008"
     path = tmp_path / "events.jsonl"
-    assert bus.export_jsonl(str(path)) == 2
+    assert bus.export_jsonl(str(path)) == 3
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    assert rows[0]["payload"]["confirmed"] is False
-    assert [row["sequence"] for row in rows] == [0, 1]
+    assert rows[1]["payload"]["confirmed"] is False
+    assert [row["sequence"] for row in rows] == [0, 1, 2]
 
 
 def test_observation_deduplicates_without_suppressing_confirmation():
     session, bus, frame = _session([OcrResult("100", 0.99)] * 3)
     for i in range(3):
         session.process_background_numeric_frame(frame, i, i * 17)
-    assert [event.event_type for event in bus.events] == ["score_observed", "score_changed"]
-    assert bus.events[1].payload["new_value"] == 100
-    assert bus.events[1].payload["previous_value"] is None
+    assert [event.event_type for event in bus.events] == ["new_session", "score_observed", "score_changed"]
+    assert bus.events[2].payload["new_value"] == 100
+    assert bus.events[2].payload["previous_value"] is None
 
 
 def test_recording_toggle_and_reset_apply_to_observations():
     session, bus, frame = _session([OcrResult("100", 0.99)] * 3)
     session.recording_enabled = False
     session.process_background_numeric_frame(frame, 0, 0)
-    assert bus.events == []
+    assert [event.event_type for event in bus.events] == ["new_session"]
     session.recording_enabled = True
     session.process_background_numeric_frame(frame, 1, 17)
-    assert [event.event_type for event in bus.events] == ["score_observed"]
-    assert bus.events[0].payload["accepted_value"] == 100
+    assert [event.event_type for event in bus.events] == ["new_session", "score_observed"]
+    assert bus.events[1].payload["accepted_value"] == 100
     session.reset_tracking()
     session.process_background_numeric_frame(frame, 0, 0)
     assert [event.event_type for event in bus.events] == [
-        "score_observed", "score_observed", "score_changed",
+        "new_session", "score_observed", "score_observed", "score_changed",
     ]
     assert bus.events[-2].payload["accepted_value"] is None
 
@@ -80,4 +81,4 @@ def test_duplicate_frame_and_unreadable_text_do_not_emit_observations():
     session.process_background_numeric_frame(frame, 0, 0)
     session.process_background_numeric_frame(frame, 0, 0)
     session.process_background_numeric_frame(frame, 1, 17)
-    assert bus.events == []
+    assert [event.event_type for event in bus.events] == ["new_session"]

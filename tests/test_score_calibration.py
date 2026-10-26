@@ -79,7 +79,7 @@ def test_older_taught_templates_need_new_alignment_before_activation(monkeypatch
     assert result.validation_note is None
     assert result.candidate_value == 123
     assert result.accepted_value == 123
-    assert [e.event_type for e in session.event_bus.events] == ["score_observed", "score_changed"]
+    assert [e.event_type for e in session.event_bus.events] == ["new_session", "score_observed", "score_changed"]
 
 
 def test_digit_row_keeps_dark_zero_and_excludes_tall_border():
@@ -204,7 +204,7 @@ def test_partial_templates_require_ocr_and_do_not_veto_correct_ocr(monkeypatch):
     assert result.error is None
     assert result.validation_note is None
     assert result.accepted_value == 63890
-    assert len(bus.events) == 2
+    assert len(bus.events) == 3
 
 
 def test_waiting_reading_is_visible_and_not_reported_as_ocr_error(monkeypatch):
@@ -229,7 +229,7 @@ def test_waiting_reading_is_visible_and_not_reported_as_ocr_error(monkeypatch):
     assert result.error is None
     status = App._format_numeric_status(result, session.tracker_for(region).status())
     assert status == "Waiting for repeated evidence for score 83890 (1/2)."
-    assert [e.event_type for e in bus.events] == ["score_observed"]
+    assert [e.event_type for e in bus.events] == ["new_session", "score_observed"]
 
 
 def test_reviewed_samples_survive_save_load_and_rescale(tmp_path):

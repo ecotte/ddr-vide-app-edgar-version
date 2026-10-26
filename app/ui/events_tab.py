@@ -12,16 +12,26 @@ COLUMNS = (
     "detail",
     "video_time_ms",
     "observed_at_utc",
+    "session_id",
 )
 
 
 class EventsTab(ttk.Frame):
     def __init__(self, parent: tk.Widget, controller):
-        super().__init__(parent, padding=6)
+        super().__init__(parent, padding=12)
         self.controller = controller
         self._build_layout()
 
     def _build_layout(self) -> None:
+        ttk.Label(self, text="Event activity", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(
+            self, text="Review captured events, export a local copy, or share your session.",
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(4, 16))
+        self.session_var = tk.StringVar(value="Session: created when analysis starts")
+        ttk.Label(self, textvariable=self.session_var, style="Muted.TLabel").pack(
+            anchor="w", pady=(0, 8),
+        )
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 6))
 
@@ -31,10 +41,10 @@ class EventsTab(ttk.Frame):
         ).pack(side="left")
 
         ttk.Button(top, text="Clear Table", command=self._on_clear).pack(side="left", padx=8)
-        ttk.Button(top, text="Export to JSONL...", command=self._on_export).pack(side="left", padx=8)
+        ttk.Button(top, text="Export to JSONL...", style="Accent.TButton", command=self._on_export).pack(side="left", padx=8)
 
         self.count_var = tk.StringVar(value="0 events recorded")
-        ttk.Label(top, textvariable=self.count_var).pack(side="right")
+        ttk.Label(top, textvariable=self.count_var, style="Muted.TLabel").pack(side="right")
 
         publishing = ttk.Frame(self)
         publishing.pack(fill="x", pady=(0, 6))
@@ -65,7 +75,11 @@ class EventsTab(ttk.Frame):
             fill="x", pady=(0, 6),
         )
 
-        self.tree = ttk.Treeview(self, columns=COLUMNS, show="headings", height=20)
+        table = ttk.Frame(self)
+        table.pack(fill="both", expand=True, pady=(8, 0))
+        table.columnconfigure(0, weight=1)
+        table.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(table, columns=COLUMNS, show="headings", height=20)
         headings = {
             "sequence": "#",
             "event_type": "Event type",
@@ -74,6 +88,7 @@ class EventsTab(ttk.Frame):
             "detail": "Detail",
             "video_time_ms": "Video time (ms)",
             "observed_at_utc": "Observed at (UTC)",
+            "session_id": "Session ID",
         }
         widths = {
             "sequence": 50,
@@ -83,14 +98,18 @@ class EventsTab(ttk.Frame):
             "detail": 220,
             "video_time_ms": 120,
             "observed_at_utc": 190,
+            "session_id": 300,
         }
         for col in COLUMNS:
             self.tree.heading(col, text=headings[col])
-            self.tree.column(col, width=widths[col], anchor="w")
-        self.tree.pack(fill="both", expand=True)
+            self.tree.column(col, width=widths[col], minwidth=widths[col], anchor="w")
+        self.tree.grid(row=0, column=0, sticky="nsew")
 
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
+        scrollbar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.tree.configure(yscrollcommand=scrollbar.set, xscrollcommand=horizontal.set)
 
     def append_event(self, event) -> None:
         self.tree.insert(
@@ -104,14 +123,19 @@ class EventsTab(ttk.Frame):
                 self._format_detail(event),
                 event.video_time_ms,
                 event.observed_at_utc,
+                event.session_id,
             ),
         )
         self.tree.yview_moveto(1.0)
+        if event.event_type == "new_session":
+            self.session_var.set(f"Session: {event.session_id}")
         self._refresh_count()
 
     @staticmethod
     def _format_detail(event) -> str:
         payload = event.payload
+        if event.event_type == "new_session":
+            return f"New session ({payload['reason']}): {event.session_id}"
         if event.event_type == "score_observed":
             return f"UNCONFIRMED: {payload.get('observed_value')}"
         if "previous_value" in payload or "new_value" in payload:

@@ -52,7 +52,7 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 
 **Does:**
 - Open a local `.mp4`/`.avi`/`.mov`/`.mkv` file, play/pause/step through it frame by frame, and seek with a slider.
-- Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per arrow direction - Up/Down/Left/Right - per player).
+- Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per arrow direction - Up/Down/Left/Right - per player), plus a shared `game_end` indicator.
 - Save/load named layout profiles (JSON files under `layouts/`), tied to a specific source resolution, with an explicit warning (never a silent guess) if you load a layout onto a differently-sized video. If you continue, regions are fitted with one uniform scale and centered so different aspect ratios do not distort them. Arrow-lane reference snapshots (see below) travel with the layout and are resized by the same scale.
 - Run OCR (EasyOCR, CPU) on each `score`/`combo` region once you click **Start Analysis**. Recognition runs on a single-threaded background worker without blocking source-rate playback. After each job it immediately processes the newest available frame, using a retained neighboring frame only when a result actually needs confirmation. It never builds an unbounded backlog.
 - Teach score-digit references with one input: pause on a clear score, click **Teach score...**, and enter all visible digits. References support background OCR verification; they never emit score events on their own. Advance/play to analyze new frames after teaching. Save the layout to retain the samples.
@@ -60,7 +60,7 @@ and streaming to Microsoft Fabric are **not** implemented yet - see
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo (a value is only "accepted" after N consecutive matching frames) and a separate edge-triggered debouncer for arrows (a hit/miss flash is reported once per pulse, since it's often brief rather than steady) - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
-- Record `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` events in a table, with recording on/off and clear-table controls.
+- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` events in a table, with gameplay recording on/off and clear-table controls.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
@@ -107,6 +107,12 @@ run it again if `requirements.txt` changes.
 
 ## 4. Running the app
 
+The desktop opens with a dark charcoal theme, blue primary actions, and
+consistent styling across Video & Regions, Events, and calibration dialogs.
+The Events table supports vertical and horizontal scrolling for smaller windows.
+Windows-managed title bars and native file/message dialogs follow your OS theme.
+No additional theme packages or setup steps are required.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
@@ -132,7 +138,7 @@ powershell -ExecutionPolicy Bypass -File .\run_tests.ps1
 
 1. **Open Video...** and pick your `.mp4` file. The video's resolution, fps, and frame count appear next to the button. The first frame is displayed.
 2. Use **Step >|** / **|< Step** to move frame by frame, or drag the slider, to find a moment where the score and combo are clearly on screen (not a menu/loading screen - the app never assumes every screen is gameplay, so pick a frame where they're actually visible).
-3. Click **Draw Region: OFF** to turn it **ON**. Click-drag a rectangle around the score digits on the canvas. When you release the mouse, a dialog asks for a label, player (P1/P2/Unknown), and field kind (`score`/`combo`/`arrow`). Repeat for combo. Turn Draw Region back **OFF** when done so you don't accidentally start new rectangles while browsing the video.
+3. Click **Draw Region: OFF** to turn it **ON**. Click-drag a rectangle around the score digits on the canvas. When you release the mouse, a dialog asks for a label, player (P1/P2/Unknown), and field kind (`score`/`combo`/`arrow`/`game_end`). Repeat for combo. Turn Draw Region back **OFF** when done so you don't accidentally start new rectangles while browsing the video.
 4. Adjust **Consistency frames** if needed (default 1). Numeric OCR runs in the background and may sample changing values, so one readable sample is accepted by default. Raise this only when repeated OCR noise is more important than capturing fast score/combo changes - see section 6.
 
 For yellow combo digits with a white glow, try **Yellow-digit filter** in that combo's recognition row, then **Save Layout**. This optional per-region filter subtracts blue from the weaker of red and green, emphasizing yellow fill while suppressing white outlines and red/pink arrows. It is off by default, is restored when the layout is loaded (including rescaled layouts), and never affects score OCR. Turning it on or off clears pending evidence but preserves accepted values and existing events. It can improve `3`/`8` confusion on this skin, but can worsen other crops and cannot restore pixels hidden by an arrow. OCR confidence and acceptance thresholds are unchanged; a correctly read but low-confidence candidate remains unaccepted. Disable it for non-yellow digits or if recognition worsens.
@@ -152,6 +158,48 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
 
 ### 5c. Running analysis and reviewing events
 
+#### Automatic game sessions
+
+Each game has one in-memory UUID/GUID shared by both players and all its events.
+Opening a video starts a fresh session; if no session has been announced yet,
+the first analysis pass creates a `new_session` event before gameplay events.
+Every new session starts with sequence 0 and gameplay events follow at sequence 1.
+Session IDs are shown above the Events table and in its **Session ID** column.
+
+To detect when a game ends:
+
+1. Pause on a distinctive results banner or other end-of-game indicator.
+2. Draw a region around it and select **game_end**. This is shared by the game,
+   not assigned to P1/P2; only one game-end region is allowed.
+3. In **Game session**, click **Add game-end ref**. Capture additional examples
+   if needed, then **Save Layout** to retain the region and reference images.
+   **Clear game-end refs** removes these examples.
+4. Set **Game-end similarity threshold** (default 0.95) and
+   **Game-end confirm frames** (default 2), then run analysis.
+
+Once confirmed on distinct forward video frames, the indicator generates one
+`new_session` event with the next GUID. Its payload contains `session_id`,
+`previous_session_id`, `is_new_session: true`, and `reason: "game_end"`.
+The event belongs to the **new** session; the previous session's events remain
+in the table and JSONL export. Numeric/arrow tracking and live scoreboard totals
+reset together. Already-running OCR finishes under the old GUID; queued old-game
+work cannot emit into the new session.
+
+While the end indicator remains active, gameplay readings are suppressed.
+The detector rearms only after the indicator stops matching for the configured
+confirmation count. Repeated frames and backward seeks do not retrigger a
+boundary; seek playback does not reconstruct historical game IDs. Reopen the
+video for a fresh pass. Image matching can be wrong: use a tight, distinctive
+crop rather than a generic background or banner shown during gameplay.
+
+Lifecycle events are still recorded and sent to connected publishers when
+**Record events** is off; that switch suppresses gameplay events only.
+Manual **New Session** retains its existing clear-history behavior, now leaving
+the new session's lifecycle event in the table. GUIDs are not persisted across
+app restarts; exported events and queued Fabric messages retain their original IDs.
+
+#### Playback and event review
+
 1. (Recommended) Give the layout a name in **Layout profile > Name** and click **Save Layout** so you don't have to redo calibration next time - this always saves into the app's built-in `layouts/` folder, keyed by that name, and shows up in the **Load** dropdown. If you'd rather choose exactly where the file goes (e.g. a USB drive, a project folder, alongside the video itself), use **Save Layout As...** instead, which opens a normal Windows file-save dialog defaulting to the `layouts/` folder. To load a layout saved that way (or from anywhere else on disk), use **Load Layout From...**, which opens a file-open dialog - as opposed to **Load Layout**, which only loads from the Name dropdown of layouts saved in the built-in folder. Loading a saved layout on a video of a different resolution will show an explicit prompt asking whether to fit the coordinates and arrow reference snapshots. The fit uses one uniform scale and centers the old coordinate space in the new frame, so wide, square, and portrait videos do not distort regions. It will never silently apply the wrong coordinates, whichever way you loaded it.
 2. Click **Start Analysis**. Now step or play through the video. The right-hand panel shows, per region, the current crop and either (score/combo) raw OCR text/candidate/accepted value, or (arrow) the observed state (idle/hit/miss), similarity score, and reference thumbnails, plus a status line.
 
@@ -160,7 +208,7 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
    To reduce playback overhead, unchanged arrow cards refresh their crop, similarity, and pending-count display at most ten times per second. Arrow-state changes, errors, unreadable crops, and tracking resets update immediately. This only paces the recognition panel: arrow analysis and event recording still run on every displayed video frame, and completed score/combo OCR results are displayed immediately.
 
    Each numeric card shows **OCR frame** and its video timestamp. Its crop and readings belong to that completed OCR job, not necessarily the frame currently playing on the left. OCR latency still applies, but unnecessary confirmation passes no longer hold the panel on older footage; pausing lets the worker catch up to the final displayed frame. Confirmation jobs process only pending fields, so confirming a score does not rerun unrelated combo OCR on the older frame.
-3. Switch to the **Events** tab to see `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` rows appear as they're confirmed. Use **Record events** to pause recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
+3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
 4. **New Session** resets the session ID, sequence counter, and all recognition state - use it if you want a clean slate on the same video without reloading it. Loading a different video or seeking (slider, or the frame-back button) also resets recognition state automatically, so a jump in the video never gets misread as a huge score change or a phantom arrow hit.
 
 ---
@@ -187,11 +235,11 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
 - **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
 
 **Both:**
-- **New Session waits for in-flight numeric analysis before resetting events and tracking.** The old frame finishes under its original session, then its events are cleared. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
+- **Session changes wait for in-flight numeric analysis before resetting tracking.** The old frame finishes under its original GUID. Manual **New Session** clears old history; automatic game-end transitions retain it. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
 - **End of video flushes the final displayed numeric frame.** It is retained separately from the confirmation neighbor, processed after that pair if needed, and never submitted twice. This guarantees an analysis attempt, not successful OCR or acceptance.
 - **Preview frame skipping preserves explicit seeks.** Small catch-up gaps (up to eight frames) decode sequentially without rendering discarded frames, avoiding expensive codec seeks; larger gaps still seek forward. Restarting playback from EOF still resets recognition even when a delayed preview skips the first few frames.
 - **Every accepted change emits exactly one event**, not one per frame it stays on screen.
-- **Recognition state is reset** whenever you seek/jump in the video, load a different video, edit the region list, capture/clear an arrow reference, or click New Session - never carried over incorrectly across a discontinuity.
+- **Numeric/arrow recognition state is reset** whenever you seek/jump in the video, load a different video, edit the region list, capture/clear an image reference, or click New Session. The game-end detector retains its forward-frame watermark and active latch across seeks so the same end screen cannot repeatedly rotate GUIDs.
 - **Confidence numbers** (OCR confidence, or arrow similarity score) are shown as-is from the underlying measurement and are not a calibrated accuracy probability.
 
 ---
@@ -429,7 +477,7 @@ code yet:
 - Delivery is **at least once**, not exactly once: an acknowledgement lost during a crash/network failure can cause a duplicate. Consumers should deduplicate by `event_id`. Do not treat `score_observed` as accepted gameplay scores; use `score_changed` for that.
 - **Disconnect Fabric** stops forwarding new events and stops retries. An already in-flight send may finish. Unsent events remain queued and resume when you explicitly reconnect to the same endpoint, including after app restart. The app refuses to redirect a nonempty queue to a different endpoint. Rotating a key for the same endpoint is supported.
 - **Forget saved connection** disconnects and removes the app's Windows Credential Manager entry (`DDR Video Event Extractor - Fabric Eventstream`). It does not delete pending events. Use it before entering a rotated key; the next connection prompts again. If you use the environment variable override, update that in your launcher instead. Credential-store failures are reported explicitly; the app never falls back to saving plaintext credentials.
-- **Clear Table** and **New Session** clear local history/tracking as before; they do not cancel queued deliveries or delete already sent Fabric data. **Record events** off stops new recognition events but does not pause delivery of existing queued events. The explicit mapping-sample button still sends when recording is off.
+- **Clear Table** and manual **New Session** clear local history/tracking as before; they do not cancel queued deliveries or delete already sent Fabric data. Automatic game-end transitions retain history. **Record events** off stops gameplay events, but session announcements and delivery of existing queued events continue. The explicit mapping-sample button still sends when recording is off.
 - Disk/serialization failures are shown as **NOT QUEUED** in the Events tab; affected events remain in the local event table for export. Export before closing if this occurs. A durable queue cannot protect against disk failure. Pending events consume disk space until successfully delivered.
 - Closing the app stops new capture and requests publisher shutdown. An interrupted send remains retryable from the durable queue on the next explicitly enabled connection.
 

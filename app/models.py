@@ -18,18 +18,18 @@ class Region:
     space), so they remain meaningful regardless of how the video is scaled
     for on-screen display.
 
-    ``direction`` and ``reference_images`` are only used when
-    ``kind == "arrow"``: ``direction`` is one of config.ARROW_DIRECTIONS
+    ``direction`` is only used when ``kind == "arrow"`` and is one of config.ARROW_DIRECTIONS
     ("Up"/"Down"/"Left"/"Right"), and ``reference_images`` holds
     user-captured example crops (base64 PNG) grouped by state name ("hit",
     "miss") that the arrow classifier compares live frames against. These
     are never pre-supplied by the app - only what the user captures from
-    their own footage.
+    their own footage. ``game_end`` regions use ``reference_images["ended"]``
+    for a shared, game-wide end indicator.
     """
 
     label: str
     player: str  # one of config.PLAYER_CHOICES, e.g. "P1", "P2", "Unknown"
-    kind: str    # "score", "combo", or "arrow"
+    kind: str    # "score", "combo", "arrow", or "game_end"
     x: int
     y: int
     w: int
@@ -64,6 +64,8 @@ class Region:
 
     def key(self) -> str:
         """Stable identity for this region used to key recognition trackers."""
+        if self.kind == "game_end":
+            return "game_end"
         if self.kind == "arrow":
             return f"{self.player}:{self.kind}:{self.direction}"
         return f"{self.player}:{self.kind}"

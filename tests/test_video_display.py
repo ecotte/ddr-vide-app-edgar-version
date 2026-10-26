@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.models import Region
 from app.ui.app_window import App
+from app.ui.theme import apply_dark_theme
 from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
 
 
@@ -22,6 +23,7 @@ from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
 def tk_root():
     root = tk.Tk()
     root.withdraw()
+    apply_dark_theme(root)
     yield root
     root.destroy()
 
