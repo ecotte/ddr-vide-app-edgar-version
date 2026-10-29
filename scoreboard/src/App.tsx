@@ -89,18 +89,17 @@ export default function App({ client }: { client: Client }) {
   </BoothShell>;
   if (!authenticated) {
     const content = <>
-    <p className="booth-card-kicker">{registration ? 'LET\'S GET THE BOOTH MOVING' : 'EVERY MOVE TELLS A STORY'}</p>
-      <span className="booth-card-icon" aria-hidden="true">&#8599;</span>
+    {!registration && <><p className="booth-card-kicker">EVERY MOVE TELLS A STORY</p>
+      <span className="booth-card-icon" aria-hidden="true">&#8599;</span></>}
       <p className="booth-overline">{registration ? 'ORGANIZER SETUP' : 'LIVE SCOREBOARD'}</p>
     <h2>{registration ? 'Open the dance floor.' : 'DDR Scoreboard'}</h2>
-    <p>{registration ? 'Organizer: sign in once on this shared device. Players do not need Microsoft accounts. Sign in again if the session expires.'
+    <p>{registration ? 'Organizer: sign in once to open this station. Players do not need Microsoft accounts.'
       : 'Sign in with an authorized Microsoft account to view the live scores.'}</p>
     <button className="booth-primary" onClick={() => {
       setError('');
       void signIn(client).then(session => setAuthenticated(session.isAuthenticated))
         .catch(e => setError(message(e)));
     }}>Sign in with Microsoft</button>
-    {registration && <p className="booth-card-note">Organizer signs in. Everyone gets to play.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     </>;
     return <BoothShell variant={registration ? 'registration' : 'scoreboard'}>

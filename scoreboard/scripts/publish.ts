@@ -40,6 +40,8 @@ async function main() {
     );
     const session = await signInWithEntraToken(client.auth, { entraToken: credentials.token });
     if (!session.isAuthenticated) throw new Error('Sign-in failed');
+    const [previousGame] = await client.data.GameSession.select(['id']).orderBy({ startedAt: 'desc' }).first(1).execute();
+    let lastSessionId = previousGame?.id;
     report('ready');
     let lastRevision = -1;
     for await (const line of input) {
@@ -56,7 +58,9 @@ async function main() {
         );
         const registrations = await syncRegistrations(
           client, snapshot, request.acknowledgedRegistrations ?? [], request.acknowledgedSpecialRegistrations ?? [],
+          request.acknowledgedGamePlayerRegistrations ?? [], lastSessionId,
         );
+        lastSessionId = snapshot.sessionId;
         lastRevision = snapshot.revision;
         report('published', snapshot.revision, registrations);
       } catch {

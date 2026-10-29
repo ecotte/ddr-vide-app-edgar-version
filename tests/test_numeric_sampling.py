@@ -476,13 +476,14 @@ def test_new_session_drains_whole_numeric_frame_before_reset(monkeypatch, tmp_pa
     assert len(old_result.new_events) == 4
     assert all(event.session_id == old_session for event in old_result.new_events)
     assert app.event_bus.session_id != old_session
-    assert [event.event_type for event in app.event_bus.events] == ["new_session"]
+    assert app.event_bus.events[:4] == old_result.new_events
+    assert [event.event_type for event in app.event_bus.events[-2:]] == ["session_end", "new_session"]
     assert all(analysis.tracker_for(region).accepted_value is None for region in analysis.regions)
     assert analysis.is_running
-    app.events_tab.clear.assert_called_once()
-    app.events_tab.append_event.assert_called_once_with(app.event_bus.events[0])
+    app.events_tab.clear.assert_not_called()
+    assert [call.args[0] for call in app.events_tab.append_event.call_args_list][-2:] == app.event_bus.events[-2:]
     export_path = tmp_path / "new-session.jsonl"
-    assert app.event_bus.export_jsonl(str(export_path)) == 1
+    assert app.event_bus.export_jsonl(str(export_path)) == 6
 
 
 def test_queued_job_from_previous_session_is_ignored(monkeypatch):

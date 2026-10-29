@@ -88,11 +88,40 @@ def apply_dark_theme(root: tk.Tk) -> None:
             widget, background=[("active", SURFACE)],
             indicatorbackground=[("disabled", BORDER), ("selected", ACCENT), ("active", BORDER)],
         )
-    style.configure("TNotebook", background=BACKGROUND, borderwidth=0, tabmargins=(0, 0, 0, 8))
-    style.configure("TNotebook.Tab", padding=(18, 9), background=BACKGROUND, foreground=MUTED)
+    tab_images = []
+    for background, underline in (
+        (BACKGROUND, BORDER), (SURFACE, BORDER), ("#253349", ACCENT),
+    ):
+        image = tk.PhotoImage(master=root, width=8, height=8)
+        image.put(background, to=(0, 0, 8, 8))
+        image.put(underline, to=(0, 5, 8, 8))
+        tab_images.append(image)
+    # Tk stores image names, not Python references.
+    root._notebook_tab_images = tab_images
+    style.element_create(
+        "FlatNotebook.tab", "image", tab_images[0],
+        ("selected", tab_images[2]), ("active", tab_images[1]),
+        border=(0, 0, 0, 3), sticky="nsew",
+    )
+    style.layout("TNotebook.Tab", [
+        ("FlatNotebook.tab", {"sticky": "nsew", "children": [
+            ("Notebook.padding", {"sticky": "nsew", "children": [
+                ("Notebook.focus", {"sticky": "nsew", "children": [
+                    ("Notebook.label", {"sticky": "nsew"}),
+                ]}),
+            ]}),
+        ]}),
+    ])
+    style.configure("TNotebook", background=BACKGROUND, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    style.configure(
+        "TNotebook.Tab", padding=(18, 9), background=BACKGROUND, foreground=MUTED,
+        borderwidth=0, relief="flat", font=("Segoe UI", 10, "bold"),
+    )
     style.map(
-        "TNotebook.Tab", background=[("selected", SURFACE), ("active", "#253349")],
+        "TNotebook.Tab", background=[("selected", "#253349"), ("active", SURFACE)],
         foreground=[("selected", ACCENT), ("active", TEXT)],
+        expand=[("selected", (0, 0, 0, 0)), ("!selected", (0, 0, 0, 0))],
+        padding=[("selected", (18, 9)), ("!selected", (18, 9))],
     )
     style.configure("Treeview", background=FIELD, fieldbackground=FIELD, rowheight=32, borderwidth=0)
     style.configure("Treeview.Heading", background="#253349", foreground=MUTED, padding=(10, 8))

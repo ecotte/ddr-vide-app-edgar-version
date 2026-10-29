@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
+import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import App from '../App';
 import { initializeOperator, signIn } from '../client';
 
@@ -18,7 +19,7 @@ const snapshot = { active: true, sessionId: 'session', revision: 1, players: {
 } };
 
 function fakeClient() {
-  const client = new RayfinClient<AppSchema>({
+  const client = new RayfinClient<AppSchema, AppFunctionsSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
   const entity = client.data.LiveBoard;
@@ -33,6 +34,7 @@ function fakeClient() {
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/');
   window.location.hash = '';
   vi.useFakeTimers();
   vi.mocked(initializeOperator).mockResolvedValue(true);
@@ -41,7 +43,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); window.location.hash = ''; vi.useRealTimers(); });
 
 it('themes the organizer sign-in without querying data or changing the Microsoft sign-in flow', async () => {
-  window.location.hash = '#register';
+  window.history.replaceState(null, '', '/?player=2#register');
   vi.mocked(initializeOperator).mockResolvedValue(false);
   vi.mocked(signIn).mockRejectedValue(new Error('Please try signing in again.'));
   const { client, execute } = fakeClient();
@@ -49,6 +51,7 @@ it('themes the organizer sign-in without querying data or changing the Microsoft
   expect(screen.getByRole('heading', { name: /PUT YOUR/ })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Open the dance floor.' })).toBeInTheDocument();
   expect(screen.getByText('ORGANIZER SETUP')).toBeInTheDocument();
+  expect(screen.getByText('Station 2').closest('header')).toBeInTheDocument();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' })); });
   expect(signIn).toHaveBeenCalledWith(client);
   expect(screen.getByRole('alert')).toHaveTextContent('Please try signing in again.');

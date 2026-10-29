@@ -180,7 +180,7 @@ class AnalysisSession:
                 frame_index, video_time_ms, reason=reason, clear_events=clear_events,
             )
             self.reset_tracking()
-            if clear_events:
+            if clear_events or reason == "manual":
                 self._last_game_end_frame = -1
                 self._game_end_active = False
                 for region in self.regions:
@@ -373,9 +373,11 @@ class AnalysisSession:
         events = [initial_event] if initial_event is not None else []
         if ended and not self._game_end_active:
             with self._score_lock, self._combo_lock, self._arrow_lock:
-                events.append(self.new_session(
+                previous_count = len(self.event_bus.events)
+                self.new_session(
                     frame_index, video_time_ms, reason="game_end", clear_events=False,
-                ))
+                )
+                events.extend(self.event_bus.events[previous_count:])
                 self._game_end_active = True
         return FrameAnalysisResult(results, events, (time.perf_counter() - start) * 1000)
 

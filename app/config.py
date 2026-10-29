@@ -59,6 +59,7 @@ SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow", "game_end"]
 NEW_SESSION_EVENT_TYPE = "new_session"
+SESSION_END_EVENT_TYPE = "session_end"
 DEFAULT_GAME_END_SIMILARITY_THRESHOLD = 0.95
 DEFAULT_GAME_END_CONFIRM_FRAMES = 2
 

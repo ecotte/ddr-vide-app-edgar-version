@@ -65,7 +65,10 @@ def test_game_end_rotates_once_preserves_history_and_resets_numeric_state(tmp_pa
     assert first.region_results[-1].accepted_value == 10
     assert session.process_frame(_frame(True), 1, 33).new_events == []
     boundary = session.process_frame(_frame(True), 2, 66)
-    event, = boundary.new_events
+    ended, event = boundary.new_events
+    assert ended.event_type == "session_end"
+    assert ended.session_id == first_id
+    assert ended.payload["next_session_id"] == event.session_id
     assert event.event_type == "new_session"
     assert UUID(event.session_id).version == 4
     assert event.session_id != first_id
@@ -140,7 +143,7 @@ def test_recording_off_still_tracks_and_announces_session_boundaries():
     session.process_frame(_frame(), 0, 0)
     session.process_frame(_frame(True), 1, 33)
     session.process_frame(_frame(True), 2, 66)
-    assert [event.event_type for event in bus.events] == ["new_session", "new_session"]
+    assert [event.event_type for event in bus.events] == ["new_session", "session_end", "new_session"]
 
 
 def test_game_end_references_round_trip_and_rescale(tmp_path):
@@ -192,7 +195,7 @@ def test_game_end_waits_for_old_ocr_and_rejects_queued_old_session_jobs():
         old_result = old_work.result(timeout=5)
         boundary_result = boundary.result(timeout=5)
     assert all(event.session_id == original_id for event in old_result.new_events)
-    assert bus.events[-1] == boundary_result.new_events[0]
+    assert bus.events[-1] == boundary_result.new_events[-1]
     assert bus.session_id != original_id
     assert session.process_background_numeric_frame(
         _frame(), 1, 33, expected_session_id=original_id, expected_generation=generation,

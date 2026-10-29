@@ -29,6 +29,7 @@ class RayfinSender:
         self._registration_sink = registration_sink
         self._acknowledged_registrations = []
         self._acknowledged_special_registrations = []
+        self._acknowledged_slot_registrations = []
         root = Path(config.APP_ROOT) / "scoreboard"
         worker = root / ".publisher" / "scripts" / "publish.js"
         node = shutil.which("node")
@@ -85,6 +86,8 @@ class RayfinSender:
             request["acknowledgedRegistrations"] = self._acknowledged_registrations
         if self._acknowledged_special_registrations:
             request["acknowledgedSpecialRegistrations"] = self._acknowledged_special_registrations
+        if self._acknowledged_slot_registrations:
+            request["acknowledgedGamePlayerRegistrations"] = self._acknowledged_slot_registrations
         self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
         self._process.stdin.flush()
         result = self._receive(90)
@@ -98,6 +101,7 @@ class RayfinSender:
             )
         self._acknowledged_registrations = []
         self._acknowledged_special_registrations = []
+        self._acknowledged_slot_registrations = []
         rows = result.get("registrations", [])
         if not isinstance(rows, list) or len(rows) > 25:
             raise ScoreboardPublishError("Rayfin returned invalid user registrations.")
@@ -112,7 +116,9 @@ class RayfinSender:
                     "Player registration relay failed. Connect to Fabric and check local disk access; "
                     "SQL registrations remain pending."
                 ) from None
-            if event.payload["registration_type"] == "special":
+            if row.get("relaySource") == "slot":
+                self._acknowledged_slot_registrations.append(event.event_id)
+            elif event.payload["registration_type"] == "special":
                 self._acknowledged_special_registrations.append(event.event_id)
             else:
                 self._acknowledged_registrations.append(event.event_id)

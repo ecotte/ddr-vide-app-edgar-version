@@ -8,5 +8,6 @@ export class GameSession {
   @uuid() id!: string;
   @date() startedAt!: Date;
   @date() lastSeenAt!: Date;
+  @date({ optional: true }) endedAt?: Date;
   @boolean() active!: boolean;
 }

@@ -59,6 +59,23 @@ def _contrast(foreground: str, background: str) -> float:
     return (light + 0.05) / (dark + 0.05)
 
 
+def test_notebook_tabs_are_flat_and_selected_state_is_distinct_without_expanding(root):
+    style = ttk.Style(root)
+    assert style.layout("TNotebook.Tab")[0][0] == "FlatNotebook.tab"
+    assert style.lookup("TNotebook.Tab", "relief", ("selected",)) == "flat"
+    assert style.lookup("TNotebook.Tab", "foreground", ("selected",)) == ACCENT
+    assert style.lookup("TNotebook.Tab", "foreground", ("selected", "active")) == ACCENT
+    assert style.lookup("TNotebook.Tab", "foreground", ()) == MUTED
+    for state in ((), ("selected",), ("active",), ("selected", "active")):
+        assert str(style.lookup("TNotebook.Tab", "expand", state)) == "0 0 0 0"
+        assert str(style.lookup("TNotebook.Tab", "padding", state)) == "18 9"
+    normal, hover, selected = root._notebook_tab_images
+    assert normal.get(0, 0) != selected.get(0, 0)
+    assert hover.get(0, 0) != selected.get(0, 0)
+    assert selected.get(0, 7) == (121, 170, 255)
+    assert _contrast(ACCENT, "#253349") >= 4.5
+
+
 @pytest.mark.parametrize("foreground,background", [
     (TEXT, SURFACE), (TEXT, FIELD), (MUTED, SURFACE), (MUTED, BACKGROUND),
     (ACCENT, SURFACE), (FIELD, ACCENT), (ERROR, SURFACE), (TEXT, "#284c7d"),

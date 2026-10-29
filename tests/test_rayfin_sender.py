@@ -141,3 +141,23 @@ def test_special_registration_acknowledgment_uses_separate_sql_entity(monkeypatc
         assert "acknowledgedRegistrations" not in request
     finally:
         sender.close()
+
+
+def test_current_player_slots_are_acknowledged_only_after_durable_enqueue(monkeypatch, tmp_path):
+    row = {**REGISTRATION, "player": "P1", "registrationType": "player", "relaySource": "slot"}
+    process, _ = fake_process(monkeypatch, tmp_path, [
+        {"status": "ready"},
+        {"status": "published", "revision": 3, "registrations": [row]},
+        {"status": "published", "revision": 4, "registrations": []},
+    ])
+    sink = Mock()
+    sender = RayfinSender(registration_sink=sink)
+    try:
+        sender.publish({"revision": 3})
+        assert sink.call_args.args[0].player == "P1"
+        sender.publish({"revision": 4})
+        request = json.loads(process.stdin.getvalue().splitlines()[1])
+        assert request["acknowledgedGamePlayerRegistrations"] == [row["id"]]
+        assert "acknowledgedRegistrations" not in request
+    finally:
+        sender.close()

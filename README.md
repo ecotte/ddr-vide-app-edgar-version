@@ -32,6 +32,10 @@ their own Microsoft accounts. They photograph the saved identity screen.
 Registrations link to the current game in Rayfin SQL and are relayed through
 the desktop's durable Eventstream outbox as `user.register`; PINs stay out of
 telemetry. See the [kiosk setup and delivery rules](scoreboard/README.md#player-registration-kiosk).
+Station URLs require `?player=1#register` or `?player=2#register`. Each game has
+one registration slot per player, including special entries. In the desktop,
+**New Session** emits `session_end` for the announced old game before emitting
+`new_session` for a fresh GUID and two empty registration slots.
 
 Wide, flat score rows are stretched vertically for OCR when the median padded
 digit-box width/height ratio is at least 1.3. This targets skins whose flattened
@@ -125,6 +129,8 @@ For an existing environment, the new named-device picker requires
 
 The desktop opens with a dark charcoal theme, blue primary actions, and
 consistent styling across Video & Regions, Events, and calibration dialogs.
+The two tabs stay flat and the same size when switching; the selected tab has
+a blue underline, highlighted text, and a distinct background.
 The Events table supports vertical and horizontal scrolling for smaller windows.
 Windows-managed title bars and native file/message dialogs follow your OS theme.
 No additional theme packages or setup steps are required.

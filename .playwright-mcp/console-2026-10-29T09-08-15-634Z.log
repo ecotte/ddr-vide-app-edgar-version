@@ -11,3 +11,7 @@
 [  362560ms] [WARNING] [FabricAuth] Handling brokeredAuth.error — code=AUTHORIZE_FAILED @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
 [  362560ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
 [  362560ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[14307989ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=49933d9a:22429
+[14308108ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5174/favicon.ico:0
+[14366402ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://127.0.0.1:5174/node_modules/.vite/deps/react-dom_client.js?v=49933d9a:22429
+[14367766ms] [LOG] ✅ POST Success: http://127.0.0.1:5174/api/auth/v1/token @ http://127.0.0.1:5174/node_modules/.vite/deps/chunk-SMSTSMUP.js?v=49933d9a:890

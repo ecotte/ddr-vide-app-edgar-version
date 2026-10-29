@@ -82,12 +82,30 @@ Neither feed sends video footage or teaching/reference images.
 
 The Rayfin frontend's `#register` route is an organizer-authenticated kiosk.
 Players need no Microsoft accounts. SQL `GameSession` rows track the game GUID
-and heartbeat published by the desktop; `UserSession` stores the generated
-Fabric-themed username, unique six-digit PIN, game GUID, and relay status.
-Both tables are accessible only to the authorized publisher account, unlike the
+and heartbeat published by the desktop. `GamePlayerSession` holds the generated
+name, optional PIN, game GUID, station, registration type, and relay status.
+Required `?player=1` / `?player=2` kiosk flags persist `P1` / `P2` on the
+registration and event envelope. A unique game/player `slotKey` allows just two
+rows per game, shared by normal and no-PIN special entries; SQL rejects racing
+claims for the same station. Normal names and PINs have unique reservation keys.
+The tablet invokes one authenticated `registerPlayer` Rayfin function, passing
+a request UUID, station, and optional special name. The server selects the
+game, generates credentials, checks history, and creates the slot via the
+caller-scoped `ctx.getDataClient()`. Retry IDs recover a saved pass without
+claiming a second slot; the function does not elevate database permissions.
+Only player-pass fields return to the tablet. Per-operation duration/status logs
+exclude names, PINs, tokens, and database response bodies.
+Historical `UserSession` and `SpecialSession` rows remain readable but cannot be
+created or have their identity fields updated through the old APIs. Their assigned
+stations still count; ambiguous pre-limit games must be replaced with a new game.
+Corner gestures register the two special names but
+never bypass Microsoft authentication or grant authorization.
+These tables are accessible only to the authorized publisher account, unlike the
 scoreboard's authenticated-reader view. The kiosk rejects inactive or stale games.
 
 The desktop SDK worker reads pending registrations with each publish cycle.
+Current slots and historical registrations share a 25-row limit, ordered by creation time,
+and are acknowledged to their respective SQL tables only after durable enqueue.
 Python writes their `user.register` envelopes into the same durable Eventstream
 outbox as gameplay. Only a successful queue write is acknowledged back to SQL
 on the next cycle. `eventQueued` means queued, not Eventhouse-ingested.
@@ -135,6 +153,12 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   players. Payload includes the new and previous IDs, `is_new_session: true`,
   and the reason (`initial`, `video_loaded`, `hdmi_connected`, `manual`, or `game_end`).
   Lifecycle events are recorded even with gameplay recording disabled.
+- `session_end`: emitted with the old GUID and its next sequence before a new
+  GUID is announced. Payload contains the old and next session IDs and reason.
+  Manual **New Session**, source changes, and calibrated game ends all use this
+  ordering; an unannounced initial GUID has no end event. Both events enter the
+  durable outbox and Events table. The Rayfin worker closes the previous SQL
+  game with `active: false` and `endedAt` before publishing the replacement.
 
 A shared `game_end` region matches user-captured end-indicator references at
 video rate. Confirmed matches rotate the GUID once, retain historical events,

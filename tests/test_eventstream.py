@@ -116,12 +116,12 @@ def test_event_bus_forwards_only_future_recorded_events():
     sink.assert_called_once_with(event)
     bus.clear_events()
     lifecycle = bus.new_session()
-    assert sink.call_count == 2
+    assert sink.call_count == 3
     assert sink.call_args.args == (lifecycle,)
     assert lifecycle.event_type == "new_session"
     bus.set_delivery_sink(None)
     bus.record(sample(bus))
-    assert sink.call_count == 2
+    assert sink.call_count == 3
 
 
 def test_session_announcements_and_gameplay_remain_ordered_in_durable_outbox(tmp_path):
@@ -134,7 +134,7 @@ def test_session_announcements_and_gameplay_remain_ordered_in_durable_outbox(tmp
         bus.new_session(100, 3300, reason="game_end", clear_events=False)
         bus.record(sample(bus))
         rows = queue.next_events(100)
-        assert len(rows) == 2
+        assert len(rows) == 3
         queue.acknowledge_many([row[0] for row in rows])
         next_rows = queue.next_events(100)
         assert len(next_rows) == 2
@@ -142,9 +142,9 @@ def test_session_announcements_and_gameplay_remain_ordered_in_durable_outbox(tmp
         assert [json.loads(row[2]) for row in rows] == [
             event.to_dict() for event in bus.events
         ]
-        assert [row[1] for row in rows] == [first_id, first_id, bus.session_id, bus.session_id]
+        assert [row[1] for row in rows] == [first_id, first_id, first_id, bus.session_id, bus.session_id]
         assert [json.loads(row[2])["event_type"] for row in rows] == [
-            "new_session", "score_observed", "new_session", "score_observed",
+            "new_session", "score_observed", "session_end", "new_session", "score_observed",
         ]
     finally:
         bus.set_delivery_sink(None)
@@ -443,8 +443,8 @@ def test_network_wait_does_not_block_recording_or_delete_queued_events(tmp_path)
         assert publisher.status().sent == 0
         bus.clear_events()
         bus.new_session()
-        assert publisher.status().pending == 4
-        assert [event.event_type for event in bus.events] == ["new_session"]
+        assert publisher.status().pending == 5
+        assert [event.event_type for event in bus.events] == ["session_end", "new_session"]
     finally:
         release.set()
         bus.set_delivery_sink(None)

@@ -282,14 +282,15 @@ class App(tk.Tk):
         self.analysis.stop()
         self.event_bus.source_mode = source.source_mode
         timestamp = source.video_time_ms_for_frame(frame_index)
-        session_event = self.analysis.new_session(frame_index, timestamp, reason=reason)
+        self.analysis.new_session(frame_index, timestamp, reason=reason)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self._last_frame_position = None
         self._last_frame_bgr = None
         self.events_tab.clear()
-        self.events_tab.append_event(session_event)
+        for event in self.event_bus.events:
+            self.events_tab.append_event(event)
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
         self.video_tab.set_source_selection("HDMI input" if is_live else "Video file")
@@ -987,14 +988,15 @@ class App(tk.Tk):
     def new_session(self) -> None:
         self._analysis_generation += 1
         position = self._last_frame_position or (None, None)
-        event = self.analysis.new_session(*position)
+        previous_count = len(self.event_bus.events)
+        self.analysis.new_session(*position, clear_events=False)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
-        self.events_tab.clear()
-        self.events_tab.append_event(event)
+        for event in self.event_bus.events[previous_count:]:
+            self.events_tab.append_event(event)
         self.video_tab.set_error_status("")
-        self.video_tab.set_processing_status("New session started - recognition state reset.")
+        self.video_tab.set_processing_status(f"New session: {self.event_bus.session_id}. Any previous active session was ended.")
 
     # ------------------------------------------------------------------
     # Events tab support
