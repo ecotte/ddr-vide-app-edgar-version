@@ -1,9 +1,0 @@
-- main [ref=f1e3]:
-  - paragraph [ref=f1e4]: DANCE DANCE REVOLUTION
-  - heading "Player check-in" [level=1] [ref=f1e5]
-  - generic [ref=f1e6]:
-    - heading "Ready to play?" [level=2] [ref=f1e7]
-    - paragraph [ref=f1e8]: Get a fun Fabric player name and a unique six-digit PIN. No personal details needed.
-    - button "Registering..." [disabled] [ref=f1e9]
-  - link "View scoreboard" [ref=f1e11] [cursor=pointer]:
-    - /url: "#scoreboard"

@@ -19,7 +19,18 @@ function setup() {
   vi.spyOn(games, 'first').mockReturnValue(games);
   const gameExecute = vi.spyOn(games, 'execute').mockResolvedValue([game]);
   const slots = client.data.GamePlayerSession.select(['id']);
-  vi.spyOn(client.data.GamePlayerSession, 'select').mockReturnValue(slots);
+  const savedQuery = client.data.GamePlayerSession.select(['id', 'pin']);
+  const find = vi.fn<(id: string) => Promise<GamePlayerSession | null>>().mockResolvedValue(null);
+  const savedWhere = vi.spyOn(savedQuery, 'where').mockReturnValue(savedQuery);
+  vi.spyOn(savedQuery, 'first').mockReturnValue(savedQuery);
+  vi.spyOn(savedQuery, 'execute').mockImplementation(async () => {
+    const filter = savedWhere.mock.lastCall?.[0].id;
+    const id = typeof filter === 'object' && filter !== null && 'eq' in filter ? filter.eq : filter;
+    if (typeof id !== 'string') throw new Error('Missing retry lookup ID');
+    const row = await find(id);
+    return row ? [row] : [];
+  });
+  vi.spyOn(client.data.GamePlayerSession, 'select').mockImplementation(fields => fields.includes('pin') ? savedQuery : slots);
   const slotWhere = vi.spyOn(slots, 'where').mockReturnValue(slots);
   vi.spyOn(slots, 'first').mockReturnValue(slots);
   const slotExecute = vi.spyOn(slots, 'execute').mockResolvedValue([]);
@@ -33,13 +44,12 @@ function setup() {
   vi.spyOn(specials, 'where').mockReturnValue(specials);
   vi.spyOn(specials, 'first').mockReturnValue(specials);
   vi.spyOn(specials, 'execute').mockResolvedValue([]);
-  const find = vi.spyOn(client.data.GamePlayerSession, 'findById').mockResolvedValue(null);
   const create = vi.spyOn(client.data.GamePlayerSession, 'create').mockImplementation(async row => ({
     ...row, id: row.id ?? crypto.randomUUID(), pin: row.pin ?? undefined,
   }));
   return { client, game, gameExecute, slotExecute, slotWhere, userExecute, find, create };
 }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 it.each([['?player=1', 'P1'], ['?player=2', 'P2']])('reads station %s', (search, player) => {
   expect(registrationStation(search)).toEqual({ player, error: '' });
@@ -76,12 +86,47 @@ it('rejects invalid parameters before accessing the database', async () => {
   }
   expect(find).not.toHaveBeenCalled();
 });
-it('rejects inactive, absent, ended and stale game sessions without reserving a slot', async () => {
+it('rejects inactive, absent, ended and invalid-date game sessions without reserving a slot', async () => {
   const { client, game, gameExecute, create } = setup();
-  for (const rows of [[], [{ ...game, active: false }], [{ ...game, endedAt: new Date() }], [{ ...game, lastSeenAt: new Date(0) }]]) {
+  for (const rows of [[], [{ ...game, active: false }], [{ ...game, endedAt: new Date() }], [{ ...game, lastSeenAt: new Date(NaN) }]]) {
     gameExecute.mockResolvedValueOnce(rows);
     await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '')).rejects.toThrow('No live game session');
   }
+  expect(create).not.toHaveBeenCalled();
+});
+it.each([-52000, 52000])('accepts a live publisher with %i ms clock offset only after its heartbeat advances', async offset => {
+  vi.useFakeTimers();
+  const { client, game, gameExecute, create } = setup();
+  const seen = Date.now() + offset;
+  gameExecute.mockResolvedValueOnce([{ ...game, lastSeenAt: new Date(seen) }])
+    .mockResolvedValue([{ ...game, lastSeenAt: new Date(seen + 2000) }]);
+  const pending = registerPlayer(client.data, crypto.randomUUID(), 'P1', '');
+  await vi.advanceTimersByTimeAsync(499);
+  expect(create).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1);
+  expect((await pending).gameSessionId).toBe(game.id);
+});
+it('rejects a stopped publisher even when its active flag remains set', async () => {
+  vi.useFakeTimers();
+  const { client, game, gameExecute, create } = setup();
+  gameExecute.mockResolvedValue([{ ...game, lastSeenAt: new Date(Date.now() - 52000) }]);
+  const pending = expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '')).rejects.toThrow('not updating');
+  await vi.advanceTimersByTimeAsync(8000);
+  await pending;
+  expect(create).not.toHaveBeenCalled();
+  expect(gameExecute).toHaveBeenCalledTimes(17);
+});
+it.each(['ended', 'changed'] as const)('rejects a game that is %s while verifying clock-skewed heartbeats', async state => {
+  vi.useFakeTimers();
+  const { client, game, gameExecute, create } = setup();
+  const seen = Date.now() - 52000;
+  gameExecute.mockResolvedValueOnce([{ ...game, lastSeenAt: new Date(seen) }])
+    .mockResolvedValue([{ ...game, lastSeenAt: new Date(seen + 2000),
+      ...(state === 'ended' ? { endedAt: new Date() } : { id: crypto.randomUUID() }) }]);
+  const pending = expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '')).rejects
+    .toThrow(state === 'ended' ? 'No live game' : 'game session changed');
+  await vi.advanceTimersByTimeAsync(2000);
+  await pending;
   expect(create).not.toHaveBeenCalled();
 });
 it('reserves the correct station with server-generated credentials and returns only player-pass fields', async () => {
@@ -92,6 +137,28 @@ it('reserves the correct station with server-generated credentials and returns o
   expect(pass.pin).toMatch(/^[1-9][0-9]{5}$/);
   expect(pass).not.toHaveProperty('pinKey');
   expect(create.mock.calls[0][0].slotKey).toBe(`${gameId}:P2`);
+});
+it('returns a complete player pass even when the SDK create response contains only the ID', async () => {
+  const { client, create } = setup();
+  create.mockResolvedValue(JSON.parse('{"id":"c7510905-589f-4d05-bd14-cd718e288a49"}'));
+  const result = await registerPlayer(client.data, gameId, 'P1', '');
+  expect(result).toMatchObject({ id: gameId, gameSessionId: gameId, player: 'P1', registrationType: 'player' });
+  expect(result.username).toMatch(/^[A-Z][a-z]+[A-Z][a-z]+[0-9]{4}$/);
+  expect(result.pin).toMatch(/^[1-9][0-9]{5}$/);
+});
+it('starts independent station checks while waiting for the clock-skew heartbeat', async () => {
+  vi.useFakeTimers();
+  const { client, game, gameExecute, slotExecute, userExecute, create } = setup();
+  const seen = Date.now() - 52000;
+  gameExecute.mockResolvedValueOnce([{ ...game, lastSeenAt: new Date(seen) }])
+    .mockResolvedValue([{ ...game, lastSeenAt: new Date(seen + 1000) }]);
+  const pending = registerPlayer(client.data, crypto.randomUUID(), 'P1', '');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(slotExecute).toHaveBeenCalled();
+  expect(userExecute).toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(500);
+  await pending;
 });
 it('replays the same saved request even after the game ends, without revealing another player request', async () => {
   const { client, find, gameExecute, create } = setup();

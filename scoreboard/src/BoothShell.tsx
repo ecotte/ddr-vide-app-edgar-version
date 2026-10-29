@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { registrationStation } from './registration';
+import fabricLogo from './assets/fabric-logo-white.png';
 
 export default function BoothShell({ children, variant = 'registration', playerPass = false }: {
   children: ReactNode;
@@ -17,7 +18,7 @@ export default function BoothShell({ children, variant = 'registration', playerP
     </div>
     <div className="booth-content">
       <header className="booth-header">
-        <span className="booth-brand">Microsoft <strong>Fabric</strong></span>
+        <img className="booth-brand" src={fabricLogo} alt="Microsoft Fabric" width="2296" height="768" />
         {station
           ? <span className="booth-station">Station {station === 'P1' ? '1' : '2'}</span>
           : <span className="booth-label"><span aria-hidden="true" /> {scoreboard ? 'DDR LIVE SCOREBOARD' : 'DDR PLAYER CHECK-IN'}</span>}

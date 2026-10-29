@@ -1,6 +1,7 @@
 import type { RayfinContext } from '@microsoft/fabric-user-data-functions';
 import type { AppSchema } from '../../data/schema.js';
 import type { GamePlayerSession } from '../../data/GamePlayerSession.js';
+import type { GameSession } from '../../data/GameSession.js';
 import { newIdentity, SPECIAL_NAMES } from './identity.js';
 
 export type RegistrationData = ReturnType<RayfinContext<AppSchema>['getDataClient']>;
@@ -22,6 +23,31 @@ function playerPass(row: GamePlayerSession): PlayerPass {
   };
 }
 
+async function verifyLiveGame(data: RegistrationData, game: GameSession | undefined, requestedAt: number) {
+  const unavailable = () => new RegistrationError('No live game session. Ask the organizer to enable Share live scoreboard in the DDR app.');
+  if (!game?.active || game.endedAt != null) throw unavailable();
+  const seen = new Date(game.lastSeenAt).getTime();
+  if (!Number.isFinite(seen)) throw unavailable();
+  if (requestedAt - seen <= 15000 && seen <= Date.now() + 5000) return game;
+
+  // Publisher and Functions clocks can differ. An advancing heartbeat proves
+  // liveness without extending the stale timeout or accepting an ended game.
+  const deadline = Date.now() + 8000;
+  for (let attempt = 0; attempt < 16 && Date.now() < deadline; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const [current] = await data.GameSession.select(['id', 'startedAt', 'lastSeenAt', 'active', 'endedAt'])
+      .orderBy({ startedAt: 'desc' }).first(1).execute();
+    if (!current?.active || current.endedAt != null) throw unavailable();
+    if (current.id !== game.id) {
+      throw new RegistrationError('The game session changed. Please retry registration.');
+    }
+    const latest = new Date(current.lastSeenAt).getTime();
+    if (!Number.isFinite(latest) || latest < seen) throw unavailable();
+    if (latest > seen) return current;
+  }
+  throw new RegistrationError('The desktop is not updating this game. Check Share live scoreboard and its connection status, then retry.');
+}
+
 export async function registerPlayer(
   data: RegistrationData, requestId: string, player: string, specialName: string,
 ): Promise<PlayerPass> {
@@ -39,16 +65,20 @@ export async function registerPlayer(
     }
     return playerPass(row);
   };
+  const findSaved = async () => {
+    const [row] = await data.GamePlayerSession
+      .select(['id', 'gameSessionId', 'player', 'username', 'pin', 'registrationType'])
+      .where({ id: { eq: requestId } }).first(1).execute();
+    return row;
+  };
   const [existing, games] = await Promise.all([
-    data.GamePlayerSession.findById(requestId),
+    findSaved(),
     data.GameSession.select(['id', 'startedAt', 'lastSeenAt', 'active', 'endedAt'])
       .orderBy({ startedAt: 'desc' }).first(1).execute(),
   ]);
   if (existing) return replay(existing);
   const game = games[0];
-  const seen = game ? new Date(game.lastSeenAt).getTime() : NaN;
-  if (!game?.active || game.endedAt != null || !Number.isFinite(seen)
-      || started - seen > 15000 || seen > Date.now() + 5000) {
+  if (!game?.active || game.endedAt != null || !Number.isFinite(new Date(game.lastSeenAt).getTime())) {
     throw new RegistrationError('No live game session. Ask the organizer to enable Share live scoreboard in the DDR app.');
   }
   const slotKey = `${game.id}:${player}`;
@@ -69,6 +99,7 @@ export async function registerPlayer(
     data.SpecialSession.select(['id', 'player']).where({ gameSessionId: { eq: game.id } }).first(3).execute(),
     occupied(),
     historicalIdentityTaken(firstIdentity.username, firstIdentity.pin),
+    verifyLiveGame(data, game, started),
   ]);
   const legacy = [...legacyPlayers, ...legacySpecials];
   if (legacy.some(row => !row.player) || legacy.length > 2) {
@@ -98,9 +129,11 @@ export async function registerPlayer(
     // Historical identities are read-only; current identities are reserved by SQL unique constraints.
     if (attempt === 0 ? firstIdentityTaken : await historicalIdentityTaken(identity.username, pin)) continue;
     try {
-      return playerPass(await data.GamePlayerSession.create(draft));
+      const created = await data.GamePlayerSession.create(draft);
+      if (created.id !== requestId) throw new Error('Registration write returned an unexpected ID.');
+      return playerPass(draft);
     } catch (error) {
-      const saved = await data.GamePlayerSession.findById(requestId);
+      const saved = await findSaved();
       if (saved) return replay(saved);
       if (await occupied()) throw full();
       if (specialName || !await identityTaken()) throw error;

@@ -51,6 +51,7 @@ it('themes the organizer sign-in without querying data or changing the Microsoft
   expect(screen.getByRole('heading', { name: /PUT YOUR/ })).toBeInTheDocument();
   expect(screen.getByRole('heading', { name: 'Open the dance floor.' })).toBeInTheDocument();
   expect(screen.getByText('ORGANIZER SETUP')).toBeInTheDocument();
+  expect(screen.getByRole('img', { name: 'Microsoft Fabric' })).toHaveAttribute('src', expect.stringContaining('fabric-logo-white.png'));
   expect(screen.getByText('Station 2').closest('header')).toBeInTheDocument();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' })); });
   expect(signIn).toHaveBeenCalledWith(client);
@@ -71,6 +72,7 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   await act(async () => { render(<App client={client} />); });
   expect(select).toHaveBeenCalledWith(['id', 'snapshot', 'publishedAt']);
   expect(screen.getByText('DDR LIVE SCOREBOARD')).toBeInTheDocument();
+  expect(screen.getByRole('img', { name: 'Microsoft Fabric' })).toHaveAttribute('width', '2296');
   expect(screen.getByRole('heading', { name: 'Live scoreboard' })).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /Player check-in/ })).not.toBeInTheDocument();
   expect(screen.getByText('1,200')).toBeInTheDocument();

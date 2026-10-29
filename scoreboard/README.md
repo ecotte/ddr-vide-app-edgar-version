@@ -12,6 +12,8 @@ The organizer sign-in, player check-in, photo-ready player pass, and live
 scoreboard share the booth's dark indigo, neon-track, and "Put your data in
 motion" visual theme. The scoreboard keeps distinct cyan and pink player panels,
 all existing metrics, and visible connection/staleness warnings.
+Both screens use the supplied white Microsoft Fabric logo asset, preserving its
+colors, aspect ratio, and transparent clear space on the dark background.
 Check-in uses a compact, single-column card for tablets in portrait or landscape,
 with short instructions and large touch targets rather than a large marketing panel.
 The saved player pass omits the decorative heading/footer and uses viewport-aware
@@ -39,6 +41,11 @@ data; neither registration/PIN access nor scoreboard data is anonymous.
    server function reads the newest SQL `GameSession`, requires an active
    heartbeat within 15 seconds and no `endedAt`, generates the identity, and
    saves a `GamePlayerSession` linked by `gameSessionId`.
+   If desktop and server clocks disagree, the server verifies an advancing
+   heartbeat for the same open game (checks every half-second, for up to eight
+   seconds plus in-flight query time), alongside the independent slot/history checks.
+   A frozen heartbeat, ended game, or game change is rejected rather than
+   accepting an arbitrarily old timestamp.
 3. The generated name concatenates one of 40 positive playful adjectives, one
    of 40 Fabric-related nouns (items, features, and data concepts), and four
    digits, capitalizing both words, for example `SillyEventhouse1234`.
