@@ -24,6 +24,7 @@ from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
+from app.rayfin_sender import RayfinSender
 from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
 from app.ui.score_calibration_dialog import ScoreCalibrationDialog
@@ -41,9 +42,11 @@ class App(tk.Tk):
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
-        self.live_scoreboard = LiveScoreboard()
-        self.event_bus.set_live_sink(self.live_scoreboard.record)
         self.publisher = EventstreamPublisher(os.path.join(config.DATA_DIR, "eventstream-outbox.sqlite3"))
+        self.live_scoreboard = LiveScoreboard(
+            sender_factory=lambda: RayfinSender(registration_sink=self.publisher.enqueue_registration),
+        )
+        self.event_bus.set_live_sink(self.live_scoreboard.record)
         self._publishing_enabled = False
         self._publisher_poll_after_id = None
         self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)

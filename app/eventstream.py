@@ -240,6 +240,18 @@ class EventstreamPublisher:
                 pending, self._sent, self._not_queued, self._error,
             )
 
+    def enqueue_registration(self, event: Event) -> None:
+        """Acknowledge the SQL relay only after a successful durable queue write."""
+        if self._outbox is None:
+            raise RuntimeError("Connect to Fabric to relay pending player registrations.")
+        try:
+            self._outbox.enqueue(event)
+        except (sqlite3.Error, ValueError, TypeError):
+            with self._lock:
+                self._error = "Registration queue write failed. The registration remains pending in Rayfin."
+            raise RuntimeError(self._error) from None
+        self._wake.set()
+
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()

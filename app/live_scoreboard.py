@@ -171,11 +171,11 @@ class LiveScoreboard:
                     sender.publish(state)
                 except ScoreboardConnectionError:
                     raise
-                except ScoreboardPublishError:
+                except ScoreboardPublishError as exc:
                     with self._lock:
                         self._connection_status = (
                             "Live scoreboard: update not acknowledged; retrying latest state. "
-                            "Check connectivity and publishing permissions."
+                            f"{exc}"
                         )
                 else:
                     with self._lock:

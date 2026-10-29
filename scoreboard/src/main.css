@@ -38,4 +38,14 @@ footer { color: #acbad0; display: flex; flex-wrap: wrap; justify-content: space-
 .error { background: #34281c; padding: 16px; border-left: 3px solid #ffc671; overflow-wrap: anywhere; }
 button { background: #84eadb; color: #0d1724; border: none; border-radius: 8px; padding: 12px 20px; font: inherit; font-weight: 650; cursor: pointer; }
 button:focus-visible { outline: 3px solid white; outline-offset: 4px; }
+a { color: #84eadb; }
+button:disabled { opacity: .6; cursor: wait; }
+.registration { max-width: 860px; text-align: center; }
+.registration-card { background: #101c30; border: 1px solid #386374; border-radius: 16px; padding: 32px; margin-top: 32px; }
+.registration-card h2 { margin-bottom: 20px; }
+.identity { display: block; color: #84eadb; font-size: clamp(24px, 5vw, 44px); overflow-wrap: anywhere; }
+.pin { display: block; font-size: clamp(40px, 9vw, 80px); letter-spacing: .15em; font-variant-numeric: tabular-nums; }
+.photo-prompt { font-size: 22px; font-weight: 650; color: #ffdb92; }
+.game-id { font-size: 13px; overflow-wrap: anywhere; color: #acbad0; }
+.registration-card button { margin: 12px; }
 @media (max-width: 700px) { main { padding: 20px 16px; } header { align-items: flex-start; flex-direction: column; } .players { grid-template-columns: 1fr; gap: 24px; } .player { grid-template-rows: none; grid-row: auto; } }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { initializeOperator, signIn, type Client } from './client';
 import { BOARD_ID, DIRECTIONS, arrowBalance, parseSnapshot, poll, type BoardSnapshot, type PlayerState } from './state';
+import Registration from './Registration';
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : 'The scoreboard request failed.';
@@ -59,9 +60,15 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
 }
 
 export default function App({ client }: { client: Client }) {
+  const [registration, setRegistration] = useState(window.location.hash === '#register');
   const [ready, setReady] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState('');
+  useEffect(() => {
+    const changed = () => setRegistration(window.location.hash === '#register');
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
   useEffect(() => {
     let disposed = false;
     void initializeOperator(client).then(value => {
@@ -73,9 +80,10 @@ export default function App({ client }: { client: Client }) {
     });
     return () => { disposed = true; unsubscribe(); };
   }, [client]);
-  if (!ready) return <main><h1>DDR Scoreboard</h1><p>Checking Microsoft sign-in...</p></main>;
-  if (!authenticated) return <main><h1>DDR Scoreboard</h1>
-    <p>Sign in with an authorized Microsoft account to view the live scores.</p>
+  if (!ready) return <main><h1>{registration ? 'Player check-in' : 'DDR Scoreboard'}</h1><p>Checking Microsoft sign-in...</p></main>;
+  if (!authenticated) return <main><h1>{registration ? 'Player check-in' : 'DDR Scoreboard'}</h1>
+    <p>{registration ? 'Organizer: sign in once on this shared device. Players do not need Microsoft accounts. Sign in again if the session expires.'
+      : 'Sign in with an authorized Microsoft account to view the live scores.'}</p>
     <button onClick={() => {
       setError('');
       void signIn(client).then(session => setAuthenticated(session.isAuthenticated))
@@ -83,7 +91,7 @@ export default function App({ client }: { client: Client }) {
     }}>Sign in with Microsoft</button>
     {error && <p role="alert" className="error">{error}</p>}
   </main>;
-  return <Scoreboard client={client} />;
+  return registration ? <Registration client={client} /> : <Scoreboard client={client} />;
 }
 
 function Scoreboard({ client }: { client: Client }) {
@@ -126,7 +134,7 @@ function Scoreboard({ client }: { client: Client }) {
       <Player name="Player 1" state={snapshot?.players.P1} waiting={!snapshot?.active} />
       <Player name="Player 2" state={snapshot?.players.P2} waiting={!snapshot?.active} />
     </div>
-    <footer><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
+    <footer><a href="#register">Player check-in kiosk</a><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
       <span>{published ? 'Connected to DDR Scoreboard on Fabric' : 'No scoreboard state published yet'}</span></footer>
   </main>;
 }
