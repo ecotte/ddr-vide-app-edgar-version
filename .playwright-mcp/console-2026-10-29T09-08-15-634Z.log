@@ -1,0 +1,13 @@
+[     318ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:4173/favicon.ico:0
+[  319047ms] [INFO] [FabricAuth] brokeredAuth.ready from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  319047ms] [INFO] [FabricAuth] postMessage from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  321346ms] [INFO] [FabricAuth] postMessage from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  321346ms] [WARNING] [FabricAuth] Handling brokeredAuth.error — code=AUTHORIZE_FAILED @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  321347ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  321347ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  361465ms] [INFO] [FabricAuth] brokeredAuth.ready from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  361465ms] [INFO] [FabricAuth] postMessage from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  362559ms] [INFO] [FabricAuth] postMessage from origin="https://msitpbiabd.powerbi.com" (expected portal="https://app.fabric.microsoft.com") — continuing (secured by state + PKCE) @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  362560ms] [WARNING] [FabricAuth] Handling brokeredAuth.error — code=AUTHORIZE_FAILED @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  362560ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77
+[  362560ms] [ERROR] Cross-Origin-Opener-Policy policy would block the window.closed call. @ http://127.0.0.1:4173/assets/index-Br2kKhzS.js:77

@@ -1,0 +1,19 @@
+[  111878ms] [LOG] Angular is running in development mode. @ sources:///node_modules/.pnpm/@angular+core@21.2.19_@angular+compiler@21.2.19_rxjs@6.6.7_patch_hash=ce9f9c9d19e2e9b55_bf590b8bf9970ea640ffefde30c513c0/node_modules/@angular/core/fesm2022/_debug_node-chunk.mjs:11426
+[  112041ms] [WARNING] An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing. @ https://msit.fabric.microsoft.com/itemEmbed:0
+[  114474ms] [ERROR] ERROR TypeError: Cannot read properties of undefined (reading 'extensionInstances')
+    at https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:5277922
+    at https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7449636
+    at memoized (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7448527)
+    at kt (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7449009)
+    at https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7449693
+    at memoized (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7448527)
+    at s.project (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:7448040)
+    at s._next (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:481642)
+    at s.next (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:454848)
+    at Ki._subscribe (https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:1:447572) @ https://content.powerapps.com/resource/powerbiwfe2/scripts/itemEmbed.min.803c663fdc0df43996a5.js:0
+[  118093ms] [ERROR] Failed to load resource: the server responded with a status of 403 () @ https://api.powerbi.com/metadata/artifacts/9730dd32-5b08-45fc-8a6a-d94a45742604:0
+[  125575ms] [LOG] [AppBackend] Emitting embed event: rendered. @ https://content.powerapps.com/resource/powerbiwfe2/extension/abd/static/js/9397.835ed9cd8e.chunk.js:0
+[  126669ms] [INFO] Brokered auth route: sending brokeredAuth.ready to opener @ https://content.powerapps.com/resource/powerbiwfe2/extension/abd/static/js/9397.835ed9cd8e.chunk.js:0
+[  126670ms] [INFO] Brokered auth route: brokeredAuth.challenge received via postMessage @ https://content.powerapps.com/resource/powerbiwfe2/extension/abd/static/js/9397.835ed9cd8e.chunk.js:0
+[  128503ms] [INFO] Brokered auth route: authorize response received successfully @ https://content.powerapps.com/resource/powerbiwfe2/extension/abd/static/js/9397.835ed9cd8e.chunk.js:0
+[  128778ms] [INFO] Brokered auth route: auto-accepted (no consent required or remembered) @ https://content.powerapps.com/resource/powerbiwfe2/extension/abd/static/js/9397.835ed9cd8e.chunk.js:0

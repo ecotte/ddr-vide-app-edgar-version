@@ -5,7 +5,9 @@ from bisect import bisect_right, insort
 
 from app import config
 from app.models import Event
-from app.rayfin_sender import RayfinSender, ScoreboardConnectionError, ScoreboardPublishError
+from app.rayfin_sender import (
+    RayfinSender, ScoreboardConnectionError, ScoreboardPublishError, ScoreboardRegistrationError,
+)
 
 
 def _player():
@@ -175,7 +177,8 @@ class LiveScoreboard:
                     with self._lock:
                         self._connection_status = (
                             "Live scoreboard: update not acknowledged; retrying latest state. "
-                            f"{exc}"
+                            + (str(exc) if isinstance(exc, ScoreboardRegistrationError)
+                               else "Check connectivity and publishing permissions.")
                         )
                 else:
                     with self._lock:

@@ -20,10 +20,15 @@ class ScoreboardConnectionError(ScoreboardPublishError):
     pass
 
 
+class ScoreboardRegistrationError(ScoreboardPublishError):
+    pass
+
+
 class RayfinSender:
     def __init__(self, registration_sink=None):
         self._registration_sink = registration_sink
         self._acknowledged_registrations = []
+        self._acknowledged_special_registrations = []
         root = Path(config.APP_ROOT) / "scoreboard"
         worker = root / ".publisher" / "scripts" / "publish.js"
         node = shutil.which("node")
@@ -78,6 +83,8 @@ class RayfinSender:
         request = dict(snapshot)
         if self._acknowledged_registrations:
             request["acknowledgedRegistrations"] = self._acknowledged_registrations
+        if self._acknowledged_special_registrations:
+            request["acknowledgedSpecialRegistrations"] = self._acknowledged_special_registrations
         self._process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
         self._process.stdin.flush()
         result = self._receive(90)
@@ -90,18 +97,25 @@ class RayfinSender:
                 "Rayfin did not acknowledge the update. Check connectivity, sign-in and app permissions."
             )
         self._acknowledged_registrations = []
+        self._acknowledged_special_registrations = []
         rows = result.get("registrations", [])
         if not isinstance(rows, list) or len(rows) > 25:
             raise ScoreboardPublishError("Rayfin returned invalid user registrations.")
         if rows and self._registration_sink is None:
-            raise ScoreboardPublishError("Connect to Fabric to relay pending player registrations.")
+            raise ScoreboardRegistrationError("Connect to Fabric to relay pending player registrations.")
         for row in rows:
             try:
                 event = registration_event(row)
                 self._registration_sink(event)
-            except (ValueError, RuntimeError) as exc:
-                raise ScoreboardPublishError(str(exc)) from None
-            self._acknowledged_registrations.append(event.event_id)
+            except (ValueError, RuntimeError):
+                raise ScoreboardRegistrationError(
+                    "Player registration relay failed. Connect to Fabric and check local disk access; "
+                    "SQL registrations remain pending."
+                ) from None
+            if event.payload["registration_type"] == "special":
+                self._acknowledged_special_registrations.append(event.event_id)
+            else:
+                self._acknowledged_registrations.append(event.event_id)
 
     def close(self):
         if self._process.stdin and not self._process.stdin.closed:

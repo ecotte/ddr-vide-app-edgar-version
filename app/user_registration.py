@@ -11,8 +11,20 @@ def registration_event(row: dict) -> Event:
         event_id = str(UUID(row["id"]))
         session_id = str(UUID(row["gameSessionId"]))
         username = row["username"]
+        registration_type = row.get("registrationType", "player")
+        player = row.get("player")
+        if player not in (None, "P1", "P2"):
+            raise ValueError
         timestamp = row["createdAt"]
-        if not isinstance(username, str) or not re.fullmatch(r"[a-z]+[0-9]{4}", username):
+        if registration_type == "special":
+            valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown")
+        elif registration_type == "player":
+            valid_name = isinstance(username, str) and re.fullmatch(
+                r"[A-Za-z][a-z]+(?:[A-Z][a-z]+)?[0-9]{4}", username,
+            )
+        else:
+            valid_name = False
+        if not valid_name:
             raise ValueError
         if len(username) > 80 or not isinstance(timestamp, str):
             raise ValueError
@@ -24,9 +36,9 @@ def registration_event(row: dict) -> Event:
     return Event(
         schema_version="1.0", event_id=event_id, session_id=session_id, sequence=0,
         source_mode="registration", frame_index=None, video_time_ms=None,
-        observed_at_utc=timestamp, event_type="user.register", player=None,
+        observed_at_utc=timestamp, event_type="user.register", player=player,
         payload={
             "user_session_id": event_id, "game_session_id": session_id,
-            "username": username,
+            "username": username, "registration_type": registration_type,
         },
     )

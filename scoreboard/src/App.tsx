@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { initializeOperator, signIn, type Client } from './client';
 import { BOARD_ID, DIRECTIONS, arrowBalance, parseSnapshot, poll, type BoardSnapshot, type PlayerState } from './state';
-import Registration from './Registration';
+import RegistrationKiosk from './RegistrationKiosk';
+import BoothShell from './BoothShell';
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : 'The scoreboard request failed.';
@@ -10,7 +11,7 @@ function message(error: unknown) {
 function Player({ name, state, waiting }: { name: string; state?: PlayerState; waiting: boolean }) {
   const balance = waiting ? null : arrowBalance(state);
   return <section className={`player ${name === 'Player 2' ? 'pink' : ''}`}>
-    <h2>{name}</h2>
+    <h2>{name}<span className="player-corner" aria-hidden="true">{name === 'Player 2' ? '\u2198' : '\u2197'}</span></h2>
     <div className="score-label">ACCEPTED SCORE</div>
     <div className="score">{waiting || state?.score == null ? 'Waiting for players' : state.score.toLocaleString()}</div>
     <div className="combo"><span>COMBO</span><strong>{waiting || state?.combo == null ? '--' : state.combo}</strong></div>
@@ -80,18 +81,33 @@ export default function App({ client }: { client: Client }) {
     });
     return () => { disposed = true; unsubscribe(); };
   }, [client]);
-  if (!ready) return <main><h1>{registration ? 'Player check-in' : 'DDR Scoreboard'}</h1><p>Checking Microsoft sign-in...</p></main>;
-  if (!authenticated) return <main><h1>{registration ? 'Player check-in' : 'DDR Scoreboard'}</h1>
+  if (!ready) return <BoothShell variant={registration ? 'registration' : 'scoreboard'}>
+    <section className="booth-card booth-auth-panel">
+      <h2>{registration ? 'Player check-in' : 'DDR Scoreboard'}</h2>
+      <p role="status">Checking Microsoft sign-in...</p>
+    </section>
+  </BoothShell>;
+  if (!authenticated) {
+    const content = <>
+    <p className="booth-card-kicker">{registration ? 'LET\'S GET THE BOOTH MOVING' : 'EVERY MOVE TELLS A STORY'}</p>
+      <span className="booth-card-icon" aria-hidden="true">&#8599;</span>
+      <p className="booth-overline">{registration ? 'ORGANIZER SETUP' : 'LIVE SCOREBOARD'}</p>
+    <h2>{registration ? 'Open the dance floor.' : 'DDR Scoreboard'}</h2>
     <p>{registration ? 'Organizer: sign in once on this shared device. Players do not need Microsoft accounts. Sign in again if the session expires.'
       : 'Sign in with an authorized Microsoft account to view the live scores.'}</p>
-    <button onClick={() => {
+    <button className="booth-primary" onClick={() => {
       setError('');
       void signIn(client).then(session => setAuthenticated(session.isAuthenticated))
         .catch(e => setError(message(e)));
     }}>Sign in with Microsoft</button>
+    {registration && <p className="booth-card-note">Organizer signs in. Everyone gets to play.</p>}
     {error && <p role="alert" className="error">{error}</p>}
-  </main>;
-  return registration ? <Registration client={client} /> : <Scoreboard client={client} />;
+    </>;
+    return <BoothShell variant={registration ? 'registration' : 'scoreboard'}>
+      <section className="booth-card booth-auth-panel">{content}</section>
+    </BoothShell>;
+  }
+  return registration ? <RegistrationKiosk client={client} /> : <Scoreboard client={client} />;
 }
 
 function Scoreboard({ client }: { client: Client }) {
@@ -123,8 +139,12 @@ function Scoreboard({ client }: { client: Client }) {
     return () => { disposed = true; stop(); clearInterval(clock); };
   }, [client]);
   const stale = Boolean(snapshot?.active && now - lastChange > 15000);
-  return <main>
-    <header><div><p className="eyebrow">DANCE DANCE REVOLUTION</p><h1>Live scoreboard</h1></div>
+  return <BoothShell variant="scoreboard">
+    <header className="booth-scoreboard-heading"><div>
+      <p className="booth-kicker">PUT YOUR DATA IN MOTION</p>
+      <h1>Live <span>scoreboard</span></h1>
+      <p className="booth-subtitle">Feel the beat. See every move in real time.</p>
+    </div>
       <span className={`badge ${stale || error ? 'offline' : ''}`}>
         {error ? 'Connection error' : stale ? 'Desktop publisher disconnected' : snapshot?.active ? 'Live feed' : 'Waiting for players'}
       </span></header>
@@ -134,7 +154,7 @@ function Scoreboard({ client }: { client: Client }) {
       <Player name="Player 1" state={snapshot?.players.P1} waiting={!snapshot?.active} />
       <Player name="Player 2" state={snapshot?.players.P2} waiting={!snapshot?.active} />
     </div>
-    <footer><a href="#register">Player check-in kiosk</a><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
-      <span>{published ? 'Connected to DDR Scoreboard on Fabric' : 'No scoreboard state published yet'}</span></footer>
-  </main>;
+    <div className="booth-feed-notes"><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
+      <span>{published ? 'Connected to DDR Scoreboard on Fabric' : 'No scoreboard state published yet'}</span></div>
+  </BoothShell>;
 }

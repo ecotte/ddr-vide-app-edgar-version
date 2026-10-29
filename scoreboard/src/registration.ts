@@ -1,8 +1,33 @@
 import type { UserSession } from '../rayfin/data/UserSession';
+import type { SpecialSession } from '../rayfin/data/SpecialSession';
 import type { Client } from './client';
 
-export const ADJECTIVES = ['silly', 'jolly', 'bouncy', 'cheery', 'zippy', 'groovy', 'sparkly', 'peppy'];
-export const NOUNS = ['eventhouse', 'lakehouse', 'warehouse', 'notebook', 'pipeline', 'onelake', 'dataflow', 'spark'];
+export const SPECIAL_NAMES = ['YaelTheChampion', 'EdgarIsGoingDown'] as const;
+export type SpecialName = typeof SPECIAL_NAMES[number];
+
+export function registrationStation(search: string): { player?: 'P1' | 'P2'; error: string } {
+  const flags = new URLSearchParams(search).getAll('player');
+  if (!flags.length) return { error: '' };
+  if (flags.length !== 1 || !['1', '2'].includes(flags[0])) {
+    return { error: 'Invalid station URL. Use ?player=1 or ?player=2, or remove the player flag for an unassigned registration.' };
+  }
+  return { player: flags[0] === '1' ? 'P1' : 'P2', error: '' };
+}
+
+export const ADJECTIVES = [
+  'silly', 'jolly', 'bouncy', 'cheery', 'zippy', 'groovy', 'sparkly', 'peppy',
+  'wobbly', 'bubbly', 'giggly', 'fluffy', 'snazzy', 'jazzy', 'perky', 'quirky',
+  'sunny', 'happy', 'merry', 'joyful', 'playful', 'sprightly', 'lively', 'jaunty',
+  'plucky', 'spunky', 'sassy', 'nifty', 'dapper', 'chirpy', 'cuddly', 'fuzzy',
+  'twinkly', 'zany', 'goofy', 'whimsical', 'cheerful', 'radiant', 'brilliant', 'dazzling',
+];
+export const NOUNS = [
+  'eventhouse', 'lakehouse', 'warehouse', 'notebook', 'pipeline', 'onelake', 'dataflow', 'spark',
+  'eventstream', 'activator', 'shortcut', 'mirroring', 'report', 'dashboard', 'workspace', 'capacity',
+  'dataset', 'table', 'column', 'measure', 'dimension', 'partition', 'schema', 'catalog',
+  'query', 'database', 'sqlendpoint', 'deltatable', 'datahub', 'semanticmodel', 'connector', 'gateway',
+  'experiment', 'model', 'environment', 'schedule', 'trigger', 'parameter', 'function', 'deployment',
+];
 
 function randomInteger(limit: number) {
   const ceiling = Math.floor(0x100000000 / limit) * limit;
@@ -12,9 +37,11 @@ function randomInteger(limit: number) {
 }
 
 export function newIdentity() {
+  const adjective = ADJECTIVES[randomInteger(ADJECTIVES.length)];
+  const noun = NOUNS[randomInteger(NOUNS.length)];
   return {
-    username: ADJECTIVES[randomInteger(ADJECTIVES.length)]
-      + NOUNS[randomInteger(NOUNS.length)] + (1000 + randomInteger(9000)),
+    username: adjective[0].toUpperCase() + adjective.slice(1)
+      + noun[0].toUpperCase() + noun.slice(1) + (1000 + randomInteger(9000)),
     pin: String(100000 + randomInteger(900000)),
   };
 }
@@ -50,4 +77,29 @@ export async function saveRegistration(client: Client, draft: UserSession): Prom
     }
   }
   throw new Error('Could not reserve a unique name and PIN. Please retry registration.');
+}
+
+export async function saveSpecialRegistration(client: Client, draft: SpecialSession): Promise<SpecialSession> {
+  if (!SPECIAL_NAMES.some(name => name === draft.username)
+      || draft.registrationKey !== `${draft.gameSessionId}:${draft.username}:${draft.player ?? 'unassigned'}`) {
+    throw new Error('Invalid special registration.');
+  }
+  const game = await latestGame(client);
+  if (game.id !== draft.gameSessionId) {
+    throw new Error('The game session changed. Choose Next player to start a new registration.');
+  }
+  const find = async () => {
+    const [existing] = await client.data.SpecialSession.select(['id', 'gameSessionId', 'player', 'registrationKey', 'username', 'createdAt', 'eventQueued'])
+      .where({ registrationKey: { eq: draft.registrationKey } }).first(1).execute();
+    return existing;
+  };
+  const existing = await find();
+  if (existing) return existing;
+  try {
+    return await client.data.SpecialSession.create(draft);
+  } catch (error) {
+    const saved = await find();
+    if (saved) return saved;
+    throw error;
+  }
 }

@@ -25,6 +25,14 @@ request completes; latency is not guaranteed to be sub-second.
 Sharing is off at startup, excludes synthetic samples, and does not change
 the existing durable Fabric publishing path. - Milestone 1 (recorded video)
 
+The same Rayfin app includes a shared-device **Player check-in kiosk** at
+`#register`. An organizer signs in once (and again if the Microsoft session
+expires); players generate a Fabric-themed name and unique six-digit PIN without
+their own Microsoft accounts. They photograph the saved identity screen.
+Registrations link to the current game in Rayfin SQL and are relayed through
+the desktop's durable Eventstream outbox as `user.register`; PINs stay out of
+telemetry. See the [kiosk setup and delivery rules](scoreboard/README.md#player-registration-kiosk).
+
 Wide, flat score rows are stretched vertically for OCR when the median padded
 digit-box width/height ratio is at least 1.3. This targets skins whose flattened
 `1` was read as `7`; ordinary score proportions, saved teaching templates, crop
@@ -68,7 +76,7 @@ remains future work - see "Later milestones" at the end of this document.
 - No live rewind, seeking, or audio capture. An HDMI output port on a laptop is not a capture input; use a Windows-compatible HDMI-to-USB capture device.
 - No judgment-tier text recognition (e.g. "Marvelous"/"Great"/"Miss" as printed text), life gauge, or "final results" recognition. Arrow hit/miss is detected from the arrow receptor's appearance, not from reading judgment text.
 - No tracking of individual falling notes as they travel down the track - only the fixed receptor region per lane.
-- No automatic network publishing: you must explicitly connect in the Events tab. Player registration and stable player UIDs are not implemented yet.
+- No automatic network publishing: you must explicitly connect in the Events tab. Kiosk registrations have stable user-session IDs, but assigning registrations to P1/P2 gameplay and redeeming PINs are not implemented yet.
 - No claim that OCR or arrow-similarity readings are accurate. See section 7 for real numbers measured against a real clip.
 
 ---

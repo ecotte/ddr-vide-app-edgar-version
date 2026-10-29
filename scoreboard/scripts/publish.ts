@@ -54,7 +54,9 @@ async function main() {
         await client.data.LiveBoard.upsert(
           { id: BOARD_ID }, { id: BOARD_ID, ...body }, body,
         );
-        const registrations = await syncRegistrations(client, snapshot, request.acknowledgedRegistrations ?? []);
+        const registrations = await syncRegistrations(
+          client, snapshot, request.acknowledgedRegistrations ?? [], request.acknowledgedSpecialRegistrations ?? [],
+        );
         lastRevision = snapshot.revision;
         report('published', snapshot.revision, registrations);
       } catch {

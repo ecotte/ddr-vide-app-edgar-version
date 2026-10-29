@@ -78,6 +78,29 @@ Both feeds use recorded event envelopes from the selected source. Turning off
 Their connect/share controls remain independent.
 Neither feed sends video footage or teaching/reference images.
 
+## Shared-device player registration
+
+The Rayfin frontend's `#register` route is an organizer-authenticated kiosk.
+Players need no Microsoft accounts. SQL `GameSession` rows track the game GUID
+and heartbeat published by the desktop; `UserSession` stores the generated
+Fabric-themed username, unique six-digit PIN, game GUID, and relay status.
+Both tables are accessible only to the authorized publisher account, unlike the
+scoreboard's authenticated-reader view. The kiosk rejects inactive or stale games.
+
+The desktop SDK worker reads pending registrations with each publish cycle.
+Python writes their `user.register` envelopes into the same durable Eventstream
+outbox as gameplay. Only a successful queue write is acknowledged back to SQL
+on the next cycle. `eventQueued` means queued, not Eventhouse-ingested.
+Failures retain SQL rows for retry; duplicate deliveries use the same event ID.
+PINs never enter event telemetry. Players photograph the saved name/PIN screen
+for future validation; gameplay player assignment and PIN redemption are separate,
+not yet implemented.
+
+This adds a SQL registration path, not an Eventhouse query connector. Both
+**Share live scoreboard** and **Connect to Fabric** must be configured for
+end-to-end registration delivery. The earlier overview diagram shows gameplay
+and scoreboard paths; this registration relay joins them at the desktop outbox.
+
 ## Desktop video sources
 
 **Video file** preserves sequential playback, frame stepping, and explicit

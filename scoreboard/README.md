@@ -1,5 +1,96 @@
 # DDR Scoreboard (Rayfin)
 
+## Player registration kiosk
+
+Open the hosted app with `#register` appended to its URL, or choose **Player
+check-in kiosk** in the scoreboard footer. The organizer signs in on this shared
+device using the authorized publisher account (`yaschust@microsoft.com`).
+Players take turns; they do not sign in with their own Microsoft accounts.
+Microsoft sessions can expire; the organizer must sign in again when prompted.
+Keep this organizer-authenticated device supervised.
+The organizer sign-in, player check-in, photo-ready player pass, and live
+scoreboard share the booth's dark indigo, neon-track, and "Put your data in
+motion" visual theme. The scoreboard keeps distinct cyan and pink player panels,
+all existing metrics, and visible connection/staleness warnings.
+Player-facing screens omit database, event-delivery, and internal session details.
+Registration and the scoreboard are designed for separate screens, with no
+navigation links between them. Open the kiosk at `#register` and the scoreboard
+at the app's main URL or `#scoreboard`.
+
+For station-specific kiosks, open `?player=1#register` or `?player=2#register`.
+The kiosk displays its station and saves `P1` or `P2` on normal and special
+registrations and the `user.register` event's `player` field. Omitting the flag
+allows an unassigned registration; invalid or repeated player flags show an
+error and block registration. Changing a kiosk station requires opening its
+corresponding URL.
+Static page assets are public so the kiosk can load without Fabric's separate
+hosting sign-in gate. The app still requires Microsoft sign-in before querying
+data; neither registration/PIN access nor scoreboard data is anonymous.
+
+1. Enable **Share live scoreboard** in the DDR desktop and **Connect to Fabric**
+   using the existing Eventstream destination.
+2. Select **Register me** on the kiosk. The app reads the newest SQL
+   `GameSession`, requires an active heartbeat within 15 seconds, and saves a
+   `UserSession` linked by `gameSessionId`.
+3. The generated name concatenates one of 40 positive playful adjectives, one
+   of 40 Fabric-related nouns (items, features, and data concepts), and four
+   digits, capitalizing both words, for example `SillyEventhouse1234`.
+   Existing registered names are unchanged. The independent PIN has
+   six digits. SQL unique constraints reserve both names and PINs across all
+   registrations; confirmed collisions generate a fresh pair.
+4. The player photographs the saved name/PIN screen and keeps it private for
+   later identity validation. Choose **I have my photo - Next player** to clear
+   the screen before handing over the device.
+
+`GameSession.startedAt` records when this publisher first sees a game GUID, not
+the Eventhouse ingestion timestamp. The publisher preserves that timestamp on
+subsequent heartbeats. This path uses Rayfin SQL rather than querying Eventhouse;
+it needs no new Eventhouse connector or anonymous data access.
+
+The desktop retrieves up to 25 pending registrations per publish cycle and
+durably enqueues a `user.register` event in the existing Fabric outbox. Only
+after a successful local queue write does a subsequent request mark the SQL row
+`eventQueued`. That flag means **queued locally**, not ingested by Eventhouse.
+If Fabric is unconfigured or the disk write fails, SQL remains pending and the
+desktop shows an error; sharing retries the relay. Offline sends use the existing
+durable retry behavior. Leave both publishing controls enabled to deliver events.
+This is at-least-once delivery: consumers must deduplicate by `event_id`.
+
+The event uses the user-session UUID as `event_id`, the game GUID as `session_id`,
+`event_type: "user.register"`, `source_mode: "registration"`, `sequence: 0`,
+`player: "P1"` / `"P2"` (or null when unassigned), and null frame/video-time fields.
+Payload contains `user_session_id`,
+`game_session_id`, and `username`. Sequence is not a gameplay sequence; use
+event ID for identity. **PINs stay in organizer-only SQL and the photo screen**;
+they are not copied into telemetry. A PIN-checking/claim-redemption flow is not
+included. The PIN is a workshop claim code, not strong account authentication.
+
+Both new entities restrict read/create/update to the authorized publisher account;
+ordinary scoreboard viewers cannot read registrations or PINs. Apply the new
+schema and frontend together with `npx rayfin up` before using the kiosk, and
+rebuild the desktop worker with `npm run build:publisher`.
+
+### Booth easter eggs
+
+On the signed-in player check-in screen, tap the actual screen corners within
+eight seconds, in order:
+
+- Top-right twice, then bottom-left twice: **YaelTheChampion**.
+- Bottom-left twice, then top-right twice: **EdgarIsGoingDown**.
+
+The fourth tap immediately registers the special name with **no PIN**. These
+are easter eggs, not Microsoft sign-in or authorization bypasses. Each special
+name can be registered once per game and station and reused in later games;
+repeating its gesture within the same game and station returns the existing entry.
+Normal player names and PINs retain their unique constraints.
+
+No-PIN entries use organizer-only `SpecialSession` rows, with a unique
+`registrationKey` combining game GUID, special name, and station. The desktop relays both
+registration tables through the same durable outbox as `user.register`, with
+`payload.registration_type` set to `player` or `special`. Both tables' pending
+rows share the 25-per-cycle relay limit. Restart the DDR desktop after updating
+its Python code and rebuilding its SDK worker to enable this relay.
+
 ## Workshop use: one desktop control
 
 1. Launch the updated DDR desktop app.
@@ -27,7 +118,7 @@ one second between attempts; failed requests do not create a replay backlog.
 The hosted viewer independently waits one second after each completed query.
 OCR and network time still add latency; this is not a sub-second guarantee.
 
-The SQL table contains a single `LiveBoard` current-state row. It does not replace
+The `LiveBoard` SQL table contains a single current-state row. It does not replace
 the durable event history in Eventhouse. Publishing is off at app startup.
 Disabling sharing sends an inactive, cleared state when the connection permits.
 An interrupted connection or abrupt shutdown can leave old values in the cloud;

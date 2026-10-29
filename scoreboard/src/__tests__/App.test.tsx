@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
@@ -33,11 +33,27 @@ function fakeClient() {
 }
 
 beforeEach(() => {
+  window.location.hash = '';
   vi.useFakeTimers();
   vi.mocked(initializeOperator).mockResolvedValue(true);
   vi.mocked(signIn).mockReset();
 });
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); window.location.hash = ''; vi.useRealTimers(); });
+
+it('themes the organizer sign-in without querying data or changing the Microsoft sign-in flow', async () => {
+  window.location.hash = '#register';
+  vi.mocked(initializeOperator).mockResolvedValue(false);
+  vi.mocked(signIn).mockRejectedValue(new Error('Please try signing in again.'));
+  const { client, execute } = fakeClient();
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.getByRole('heading', { name: /PUT YOUR/ })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Open the dance floor.' })).toBeInTheDocument();
+  expect(screen.getByText('ORGANIZER SETUP')).toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' })); });
+  expect(signIn).toHaveBeenCalledWith(client);
+  expect(screen.getByRole('alert')).toHaveTextContent('Please try signing in again.');
+  expect(execute).not.toHaveBeenCalled();
+});
 
 it('does not query data before sign-in', async () => {
   vi.mocked(initializeOperator).mockResolvedValue(false);
@@ -51,6 +67,9 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   const { client, select } = fakeClient();
   await act(async () => { render(<App client={client} />); });
   expect(select).toHaveBeenCalledWith(['id', 'snapshot', 'publishedAt']);
+  expect(screen.getByText('DDR LIVE SCOREBOARD')).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Live scoreboard' })).toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /Player check-in/ })).not.toBeInTheDocument();
   expect(screen.getByText('1,200')).toBeInTheDocument();
   expect(screen.getByText('65')).toBeInTheDocument();
   expect(screen.getByText('Unconfirmed OCR: 1,300')).toBeInTheDocument();
