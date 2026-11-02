@@ -41,7 +41,7 @@ class RegionFrameResult:
     validation_note: Optional[str] = None  # numeric reading pending or rejected by acceptance rules
     candidate_value: Optional[int] = None  # score/combo only
     accepted_value: Optional[int] = None   # score/combo only
-    arrow_state: Optional[str] = None      # image match: "hit" / "miss" / "ended" / "idle"
+    arrow_state: Optional[str] = None      # image match: "hit" / "miss" / "appeared" / "ended" / "idle"
     is_unreadable: bool = False
     crop: Optional[np.ndarray] = None  # kept only for UI preview, not required for logic
     needs_confirmation: bool = False
@@ -67,6 +67,9 @@ class AnalysisSession:
         self.regions: List[Region] = []
         self._trackers: Dict[str, Tracker] = {}
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
+        self._arrow_appearances: Dict[str, Optional[int]] = {}
+        self._arrow_state_started: Dict[str, int] = {}
+        self._last_arrow_frame: Dict[str, tuple[int, int]] = {}
         self._score_templates: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
         self._numeric_evidence: Dict[str, tuple[int, int, int]] = {}
@@ -103,6 +106,9 @@ class AnalysisSession:
             self.regions = list(regions)
             self._trackers = {}
             self._arrow_references = {}
+            self._arrow_appearances.clear()
+            self._arrow_state_started.clear()
+            self._last_arrow_frame.clear()
             self._score_templates = {}
             self._last_numeric_accept_time_ms = {}
             self._numeric_evidence = {}
@@ -169,6 +175,14 @@ class AnalysisSession:
             self._numeric_evidence = {}
             self._last_numeric_frame = {}
             self._last_observed_score = {}
+            self._arrow_appearances.clear()
+            self._arrow_state_started.clear()
+            self._last_arrow_frame.clear()
+
+    def set_recording_enabled(self, enabled: bool) -> None:
+        with self._arrow_lock:
+            self.recording_enabled = enabled
+            self._arrow_appearances.clear()
 
     def new_session(
         self, frame_index: Optional[int] = None, video_time_ms: Optional[int] = None,
@@ -196,6 +210,7 @@ class AnalysisSession:
         with self._score_lock, self._combo_lock, self._arrow_lock:
             self._generation += 1
             self.is_running = False
+            self._arrow_appearances.clear()
 
     def tracker_for(self, region: Region) -> Tracker:
         if region.kind in ("arrow", "game_end"):
@@ -615,8 +630,17 @@ class AnalysisSession:
         return result, events
 
     def _process_arrow_region(self, region, crop, frame_index, video_time_ms):
-        tracker: ArrowStateTracker = self._trackers[region.key()]
-        references = self._arrow_references.get(region.key(), {})
+        key = region.key()
+        tracker: ArrowStateTracker = self._trackers[key]
+        references = self._arrow_references.get(key, {})
+        previous_frame = self._last_arrow_frame.get(key)
+        if previous_frame and (
+            frame_index < previous_frame[0] or video_time_ms < previous_frame[1]
+        ):
+            tracker.reset()
+            self._arrow_appearances.pop(key, None)
+            self._arrow_state_started.pop(key, None)
+        self._last_arrow_frame[key] = (frame_index, video_time_ms)
 
         if crop is None or crop.size == 0:
             tracker.observe(None)
@@ -630,13 +654,32 @@ class AnalysisSession:
 
         note = None
         if not references:
-            note = "No hit/miss reference captured yet for this lane - see the Capture buttons."
+            note = "No arrow references captured yet for this lane - see the Capture buttons."
 
         state, score = classify_arrow_state(crop, references, self.arrow_similarity_threshold)
+        if previous_frame == (frame_index, video_time_ms):
+            return RegionFrameResult(
+                region=region, confidence=score, error=note, arrow_state=state, crop=crop,
+            ), None
+        if tracker.status().pending_state != state:
+            self._arrow_state_started[key] = video_time_ms
         confirmed = tracker.observe(state)
 
         event = None
         if confirmed is not None and self.recording_enabled:
+            onset = self._arrow_state_started[key]
+            timing = {}
+            if confirmed == "appeared":
+                # More than one appearance before an outcome has no unique hit pairing.
+                self._arrow_appearances[key] = onset if key not in self._arrow_appearances else None
+            else:
+                appearance = self._arrow_appearances.pop(key, None)
+                if confirmed == "hit" and appearance is not None and onset > appearance:
+                    timing = {
+                        "appearance_video_time_ms": appearance,
+                        "hit_video_time_ms": onset,
+                        "response_time_ms": onset - appearance,
+                    }
             event_type = config.ARROW_EVENT_TYPES[confirmed]
             player = None if region.player == "Unknown" else region.player
             event = self.event_bus.make_event(
@@ -646,6 +689,7 @@ class AnalysisSession:
                     "region_label": region.label,
                     "direction": region.direction,
                     "state": confirmed,
+                    **timing,
                 },
                 frame_index=frame_index,
                 video_time_ms=video_time_ms,

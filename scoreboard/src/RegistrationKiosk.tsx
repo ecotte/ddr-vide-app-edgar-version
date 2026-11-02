@@ -6,13 +6,14 @@ import {
 import BoothShell from './BoothShell';
 
 type Registration = { kind: 'player' | 'special'; data: PlayerPass };
-type Corner = 'top' | 'bottom';
+type Corner = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
 
 export default function RegistrationKiosk({ client }: { client: Client }) {
   const draft = useRef<RegistrationRequest | null>(null);
   const busy = useRef(false);
   const gesture = useRef<{ taps: Corner[]; startedAt: number }>({ taps: [], startedAt: 0 });
   const [saving, setSaving] = useState(false);
+  const [chickenDancing, setChickenDancing] = useState(false);
   const [saved, setSaved] = useState<Registration | null>(null);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState('');
@@ -47,6 +48,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   function next() {
     draft.current = null;
     gesture.current = { taps: [], startedAt: 0 };
+    setChickenDancing(false);
     setSaved(null);
     setError('');
   }
@@ -56,20 +58,62 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
     if (now - gesture.current.startedAt > 8000) gesture.current.taps = [];
     if (!gesture.current.taps.length) gesture.current.startedAt = now;
     gesture.current.taps = [...gesture.current.taps, corner].slice(-4);
+    if (gesture.current.taps.slice(-3).join(',') === 'top-left,top-left,top-left') {
+      gesture.current = { taps: [], startedAt: 0 };
+      setChickenDancing(true);
+      return;
+    }
     const sequence = gesture.current.taps.join(',');
-    const name = sequence === 'top,top,bottom,bottom' ? SPECIAL_NAMES[0]
-      : sequence === 'bottom,bottom,top,top' ? SPECIAL_NAMES[1] : undefined;
+    const name = sequence === 'top-right,top-right,bottom-left,bottom-left' ? SPECIAL_NAMES[0]
+      : sequence === 'bottom-left,bottom-left,top-right,top-right' ? SPECIAL_NAMES[1]
+      : sequence === 'top-left,top-right,bottom-right,bottom-left' ? SPECIAL_NAMES[2] : undefined;
     if (name) {
       gesture.current = { taps: [], startedAt: 0 };
       void register(name);
     }
   }
   return <BoothShell playerPass={Boolean(saved)}>
+    {chickenDancing && <div className="booth-funky-chicken" role="img"
+      aria-label="A chicken doing the funky chicken dance"
+      onAnimationEnd={event => {
+        if (event.target === event.currentTarget) setChickenDancing(false);
+      }}>
+      <svg className="booth-chicken-dancer" viewBox="0 0 160 180" aria-hidden="true" focusable="false">
+        <g fill="none" stroke="#f6a735" strokeWidth="8" strokeLinecap="round" strokeLinejoin="round">
+          <path className="booth-chicken-left-leg" d="M66 126 58 154 42 160 M58 154 67 162" />
+          <path className="booth-chicken-right-leg" d="M96 126 104 154 120 160 M104 154 95 162" />
+        </g>
+        <ellipse cx="80" cy="104" rx="43" ry="38" fill="#fff3cd" stroke="#633c35" strokeWidth="3" />
+        <path className="booth-chicken-left-wing" d="M55 92 Q8 62 23 104 Q32 128 57 112"
+          fill="#f8d77e" stroke="#633c35" strokeWidth="3" />
+        <path className="booth-chicken-right-wing" d="M103 92 Q150 62 137 104 Q128 128 103 112"
+          fill="#f8d77e" stroke="#633c35" strokeWidth="3" />
+        <path d="M66 40 Q48 13 65 16 Q71 1 81 20 Q101 6 96 32 L90 44" fill="#ef5963" stroke="#633c35" strokeWidth="3" />
+        <circle cx="80" cy="58" r="29" fill="#fff3cd" stroke="#633c35" strokeWidth="3" />
+        <path d="M74 74 Q65 94 79 90 Q93 94 86 74" fill="#ef5963" stroke="#633c35" strokeWidth="2" />
+        <g className="booth-chicken-eye">
+          <ellipse cx="68" cy="52" rx="8" ry="10" fill="#fff" stroke="#633c35" strokeWidth="2" />
+          <circle cx="70" cy="53" r="4" fill="#302338" />
+          <circle cx="71" cy="51" r="1.5" fill="#fff" />
+        </g>
+        <g className="booth-chicken-eye">
+          <ellipse cx="92" cy="52" rx="8" ry="10" fill="#fff" stroke="#633c35" strokeWidth="2" />
+          <circle cx="90" cy="53" r="4" fill="#302338" />
+          <circle cx="91" cy="51" r="1.5" fill="#fff" />
+        </g>
+        <path d="m69 66 11-5 11 5-11 13Z" fill="#f6a735" stroke="#633c35" strokeWidth="2" strokeLinejoin="round" />
+        <path d="M70 66h20" fill="none" stroke="#633c35" strokeWidth="2" />
+      </svg>
+    </div>}
     {!saved && <>
-      <button type="button" className="booth-corner booth-corner-top" aria-label="Top-right corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('top')} />
-      <button type="button" className="booth-corner booth-corner-bottom" aria-label="Bottom-left corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('bottom')} />
+      <button type="button" className="booth-corner booth-corner-top-left" aria-label="Top-left corner"
+        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('top-left')} />
+      <button type="button" className="booth-corner booth-corner-top-right" aria-label="Top-right corner"
+        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('top-right')} />
+      <button type="button" className="booth-corner booth-corner-bottom-right" aria-label="Bottom-right corner"
+        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('bottom-right')} />
+      <button type="button" className="booth-corner booth-corner-bottom-left" aria-label="Bottom-left corner"
+        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('bottom-left')} />
     </>}
     {saved ? <section className="booth-card booth-player-pass" aria-label="Your player identity">
       <p className="booth-card-kicker"><span aria-hidden="true">&#10003;</span> PLAYER PASS / CHECKED IN</p>

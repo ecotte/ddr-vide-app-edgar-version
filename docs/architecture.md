@@ -98,7 +98,7 @@ exclude names, PINs, tokens, and database response bodies.
 Historical `UserSession` and `SpecialSession` rows remain readable but cannot be
 created or have their identity fields updated through the old APIs. Their assigned
 stations still count; ambiguous pre-limit games must be replaced with a new game.
-Corner gestures register the two special names but
+Corner gestures register the three special names but
 never bypass Microsoft authentication or grant authorization.
 These tables are accessible only to the authorized publisher account, unlike the
 scoreboard's authenticated-reader view. The kiosk rejects inactive or stale games.
@@ -149,6 +149,9 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
+- Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
+  crop as its outcome. Unique subsequent hits carry source-time appearance,
+  hit-onset, and response-duration fields; misses and ambiguous pairings do not.
 - `new_session`: sequence 0, announcing the in-memory game GUID shared by both
   players. Payload includes the new and previous IDs, `is_new_session: true`,
   and the reason (`initial`, `video_loaded`, `hdmi_connected`, `manual`, or `game_end`).
@@ -169,7 +172,10 @@ Reference images travel with layouts; footage and references are not published.
 Backward seeks do not regenerate boundaries or reconstruct historical GUIDs.
 
 The live display includes Up-Right/Up-Left/Down-Right/Down-Left/Center hit counts
-and total hits, but not miss counts. Misses still remain in Fabric history.
+and total hits. Miss totals contribute to cumulative hit percentage:
+`hits / (hits + misses) * 100` for detected outcomes this game, not all chart notes.
+Misses also remain in Fabric history. Without miss calibration this percentage
+can overstate actual performance; old snapshots without miss totals hide it.
 The desktop direction selector, region keys, arrow events, and scoreboard use
 these same five names. Loading a legacy layout warns and removes unsupported
 arrow regions from the active setup while keeping numeric, game-end, and
@@ -180,6 +186,28 @@ The viewer rejects old four-direction snapshots instead of inventing a mapping.
 **Hit pace** is detected hits in the last five seconds of video divided by five.
 Pause holds the source-time rate; seeks clear recent pace; New Session clears
 session totals. Network arrival time does not determine hit pace.
+
+**Time to answer** averages positive, uniquely paired appearance-to-hit
+intervals per player this game. The analysis layer timestamps the first observed
+frames of confirmed states and places the evidence on hit events. Duplicate
+frame processing cannot advance confirmation. Multiple appearances before one
+outcome are ambiguous and excluded. Misses, seeks, calibration changes, recording
+toggles, analysis stops, and session resets clear outstanding pairings.
+The aggregator validates timestamp ordering and duration equality before adding
+a sample, while preserving valid hit counts if timing is invalid.
+The snapshot carries `misses`, `averageResponseTimeMs`, and `responseSamples`;
+the typed SDK publisher preserves them. Older snapshots remain readable without
+inventing these measurements.
+
+Animal comparisons cite the [mouse visual-escape reference, approximately
+250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/) and [goldfish auditory
+C-start mean, 10.64 ms at 0-30 cm from the
+speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). The UI identifies the
+different tasks/senses and does not present them as equivalent tests or a
+universal speed ranking.
+The most-hit lane determines a step title using the configured display mapping;
+a positive five-way tie is All-Step Ace, while partial ties award no title.
+All metric cards without supporting data are omitted rather than left empty.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
 active sharing session, and changes sessions through manual/video-load resets

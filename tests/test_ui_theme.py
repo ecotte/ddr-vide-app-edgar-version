@@ -174,6 +174,29 @@ def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
         dialog.destroy()
 
 
+@pytest.mark.parametrize("x,y", [(320, 180), (4500, 100), (-1000, 120)])
+def test_region_dialog_opens_over_its_parent_before_grabbing_input(root, x, y):
+    from app.ui.region_dialog import RegionDialog
+
+    parent = tk.Toplevel(root)
+    parent.geometry(f"700x500+{x}+{y}")
+    parent.update()
+    dialog = RegionDialog(parent)
+    try:
+        expected_x = parent.winfo_rootx() + (parent.winfo_width() - dialog.winfo_reqwidth()) // 2
+        expected_y = parent.winfo_rooty() + (parent.winfo_height() - dialog.winfo_reqheight()) // 2
+        assert abs(dialog.winfo_rootx() - expected_x) <= 16
+        assert abs(dialog.winfo_rooty() - expected_y) <= 40
+        assert dialog.winfo_viewable()
+        assert dialog.grab_current() is dialog
+        dialog._on_cancel()
+        assert parent.grab_current() is None
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+        parent.destroy()
+
+
 @pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])
 @pytest.mark.parametrize("player", ["P1", "P2"])
 def test_arrow_dialog_offers_and_accepts_all_five_directions(root, direction, player):

@@ -39,7 +39,8 @@ def test_hit_directions_are_separate_and_misses_still_go_to_fabric(tmp_path):
         bus.record(event(bus, "arrow_hit", player="P2", direction="Center"))
         before = board.snapshot()
         bus.record(event(bus, "arrow_miss"))
-        assert board.snapshot() == before
+        assert board.snapshot()["players"]["P1"]["misses"] == 1
+        assert board.snapshot()["players"]["P1"]["hits"] == before["players"]["P1"]["hits"]
         assert fabric[-1].event_type == "arrow_miss"
         p1, p2 = before["players"]["P1"], before["players"]["P2"]
         assert p1["hitsByDirection"] == {
@@ -49,7 +50,7 @@ def test_hit_directions_are_separate_and_misses_still_go_to_fabric(tmp_path):
         assert p2["hitsByDirection"] == {
             "Up-Right": 0, "Up-Left": 0, "Down-Right": 0, "Down-Left": 0, "Center": 1,
         }
-        assert "misses" not in p1
+        assert p1["misses"] == 0
         bus.new_session()
         assert all(v == 0 for v in board.snapshot()["players"]["P1"]["hitsByDirection"].values())
         bus.record(event(bus, "arrow_hit", direction="invalid"))
@@ -411,3 +412,82 @@ def test_stop_does_not_allow_new_worker_until_inflight_send_finishes():
     finally:
         release.set()
         board.stop(5)
+
+
+def timed_hit(bus, appearance, hit, player="P1"):
+    result = event(bus, "arrow_hit", player=player)
+    result.video_time_ms = hit
+    result.payload.update(
+        appearance_video_time_ms=appearance, hit_video_time_ms=hit, response_time_ms=hit - appearance,
+    )
+    return result
+
+
+def test_response_averages_and_outcomes_are_per_player_deduplicated_and_reset():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        first = timed_hit(bus, 100, 300)
+        second = timed_hit(bus, 500, 801)
+        for item in (first, first, second, timed_hit(bus, 100, 200, "P2")):
+            board.record(item, bus.session_id)
+        miss = event(bus, "arrow_miss")
+        for item in (miss, miss, event(bus, "arrow_hit")):
+            board.record(item, bus.session_id)
+        players = board.snapshot()["players"]
+        assert players["P1"]["hits"] == 3
+        assert players["P1"]["misses"] == 1
+        assert players["P1"]["responseSamples"] == 2
+        assert players["P1"]["averageResponseTimeMs"] == 250.5
+        assert players["P2"]["misses"] == 0
+        assert players["P2"]["averageResponseTimeMs"] == 100
+        board.record(None, "next-game")
+        assert board.snapshot()["players"]["P1"]["responseSamples"] == 0
+        assert board.snapshot()["players"]["P1"]["averageResponseTimeMs"] is None
+        assert board.snapshot()["players"]["P1"]["misses"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("payload", [
+    {"response_time_ms": -1},
+    {"response_time_ms": True},
+    {"response_time_ms": 200.5},
+    {"response_time_ms": 201},
+    {"hit_video_time_ms": 301},
+    {"appearance_video_time_ms": None},
+])
+def test_invalid_response_samples_are_reported_without_losing_real_hits(payload):
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        hit = timed_hit(bus, 100, 300)
+        hit.payload.update(payload)
+        board.record(hit, bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert player["hits"] == 1
+        assert player["averageResponseTimeMs"] is None
+        assert player["responseSamples"] == 0
+        assert "invalid response timing" in board.status()
+    finally:
+        board.stop()
+
+
+def test_all_misses_are_real_outcomes_but_invalid_and_synthetic_misses_are_not():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        board.record(event(bus, "arrow_miss"), bus.session_id)
+        board.record(event(bus, "arrow_miss", direction="invalid"), bus.session_id)
+        synthetic = event(bus, "arrow_miss")
+        synthetic.payload["is_test"] = True
+        board.record(synthetic, bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert player["misses"] == 1
+        assert player["hits"] == 0
+        assert player["hitPace"] == 0
+    finally:
+        board.stop()

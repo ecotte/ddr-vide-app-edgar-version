@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
@@ -11,21 +11,21 @@ vi.mock('../client', () => ({
   signIn: vi.fn(),
 }));
 
-const player = { score: 1200, combo: 65, hits: 20,
+const player = { score: 1200, combo: 65, hits: 20, misses: 5,
   hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
-  hitPace: 2.4, observedScore: 1300, lastVideoTimeMs: 1000 };
+  hitPace: 2.4, averageResponseTimeMs: 300.5, responseSamples: 2, observedScore: 1300, lastVideoTimeMs: 1000 };
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: {
-  P1: player, P2: { ...player, score: null, combo: null, observedScore: null },
+  P1: player, P2: { ...player, score: null, combo: null, observedScore: null, averageResponseTimeMs: 125 },
 } };
 
-function fakeClient() {
+function fakeClient(value: unknown = snapshot) {
   const client = new RayfinClient<AppSchema, AppFunctionsSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
   const entity = client.data.LiveBoard;
   const query = entity.select(['id', 'snapshot', 'publishedAt']);
   const execute = vi.spyOn(query, 'execute').mockResolvedValue([{
-    id: 'board', snapshot: JSON.stringify(snapshot), publishedAt: new Date('2026-10-12T16:00:00Z'),
+    id: 'board', snapshot: JSON.stringify(value), publishedAt: new Date('2026-10-12T16:00:00Z'),
   }]);
   const select = vi.spyOn(entity, 'select').mockReturnValue(query);
   vi.spyOn(query, 'where').mockReturnValue(query);
@@ -78,7 +78,7 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   expect(screen.getByText('1,200')).toBeInTheDocument();
   expect(screen.getByText('65')).toBeInTheDocument();
   expect(screen.getByText('Unconfirmed OCR: 1,300')).toBeInTheDocument();
-  expect(screen.getByText('Waiting for players')).toBeInTheDocument();
+  expect(screen.queryByText('Waiting for players')).not.toBeInTheDocument();
   expect(screen.queryByText('MISSES')).not.toBeInTheDocument();
   expect(screen.getAllByLabelText('Up-Right hits')[0]).toHaveTextContent('1');
   expect(screen.getAllByLabelText('Up-Left hits')[0]).toHaveTextContent('2');
@@ -91,6 +91,53 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   expect(screen.getByRole('meter', { name: 'Player 1 Up-Right share' })).toHaveAttribute('aria-valuenow', '5');
   expect(screen.getByRole('meter', { name: 'Player 1 Center share' })).toHaveAttribute('aria-valuenow', '50');
   expect(screen.getByLabelText('Player 1 arrow balance')).toHaveTextContent('not accuracy');
+});
+
+it('shows per-player response averages, sourced comparisons, cumulative percentage and step titles', async () => {
+  const { client } = fakeClient();
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('80.0%');
+  expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('20 hits / 25');
+  expect(screen.getByLabelText('Player 1 time to answer')).toHaveTextContent('301 ms');
+  expect(screen.getByLabelText('Player 1 time to answer')).toHaveTextContent('2 timed hits');
+  expect(screen.getByLabelText('Player 2 time to answer')).toHaveTextContent('125 ms');
+  const comparison = within(screen.getByLabelText('Player 2 animal comparison'));
+  expect(comparison.getByText('Faster than the mouse reference')).toBeInTheDocument();
+  expect(comparison.getByRole('link')).toHaveAttribute('href', 'https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/');
+  expect(comparison.getByText(/not a like-for-like test/)).toBeInTheDocument();
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
+});
+
+it('hides missing metrics in legacy snapshots instead of leaving empty cards', async () => {
+  const legacy = { score: null, combo: null, hits: 3, observedScore: null, lastVideoTimeMs: 100 };
+  const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });
+  await act(async () => { render(<App client={client} />); });
+  for (const name of ['time to answer', 'animal comparison', 'cumulative hit percentage', 'step title', 'hit pace', 'arrow balance', 'hits by arrow']) {
+    expect(screen.queryByLabelText(`Player 1 ${name}`)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(`Player 2 ${name}`)).not.toBeInTheDocument();
+  }
+  expect(screen.queryByText('--')).not.toBeInTheDocument();
+  expect(screen.queryByText('ACCEPTED SCORE')).not.toBeInTheDocument();
+  expect(screen.queryByText('COMBO')).not.toBeInTheDocument();
+});
+
+it('shows zero-percent accuracy for real misses but no timing or title without hits', async () => {
+  const empty = { ...player, hits: 0, misses: 2, hitsByDirection: {
+    'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0,
+  }, averageResponseTimeMs: null, responseSamples: 0 };
+  const { client } = fakeClient({ ...snapshot, players: { P1: empty, P2: empty } });
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('0.0%');
+  expect(screen.queryByLabelText('Player 1 time to answer')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Player 1 step title')).not.toBeInTheDocument();
+});
+
+it('hides all metric cards when the publisher is inactive, even with retained values', async () => {
+  const { client } = fakeClient({ ...snapshot, active: false });
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.queryByLabelText('Player 1 time to answer')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Player 1 cumulative hit percentage')).not.toBeInTheDocument();
+  expect(screen.queryAllByRole('meter')).toHaveLength(0);
 });
 
 it('retains old values with an explicit warning after a query failure', async () => {

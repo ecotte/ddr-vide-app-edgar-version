@@ -232,7 +232,7 @@ it.each(['', 'YaelTheChampion'])('lets only one request win when a normal and %s
   expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
   expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
 });
-it.each(['YaelTheChampion', 'EdgarIsGoingDown'])('keeps %s in the same slot limit without generating a PIN', async name => {
+it.each(['YaelTheChampion', 'EdgarIsGoingDown', 'The Dancing Queen'])('keeps %s in the same slot limit without generating a PIN', async name => {
   const { client, create } = setup();
   const pass = await registerPlayer(client.data, crypto.randomUUID(), 'P1', name);
   expect(pass).toMatchObject({ username: name, pin: null, registrationType: 'special' });

@@ -1111,7 +1111,7 @@ class App(tk.Tk):
         self.events_tab.append_event(sample)
 
     def set_recording_enabled(self, enabled: bool) -> None:
-        self.analysis.recording_enabled = enabled
+        self.analysis.set_recording_enabled(enabled)
 
     def clear_events(self) -> None:
         self.event_bus.clear_events()

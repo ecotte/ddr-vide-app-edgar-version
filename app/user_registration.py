@@ -17,7 +17,7 @@ def registration_event(row: dict) -> Event:
             raise ValueError
         timestamp = row["createdAt"]
         if registration_type == "special":
-            valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown")
+            valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen")
         elif registration_type == "player":
             valid_name = isinstance(username, str) and re.fullmatch(
                 r"[A-Za-z][a-z]+(?:[A-Z][a-z]+)?[0-9]{4}", username,

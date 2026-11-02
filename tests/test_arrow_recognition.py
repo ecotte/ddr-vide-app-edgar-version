@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -107,6 +108,111 @@ def test_classify_with_no_references_is_always_idle():
     state, score = classify_arrow_state(WHITE, {}, threshold=0.9)
     assert state == "idle"
     assert score == 0.0
+
+
+def test_optional_appearance_reference_is_classified_and_outcome_wins_a_tie():
+    assert classify_arrow_state(GREY, {"appeared": [GREY]}, 0.99)[0] == "appeared"
+    assert classify_arrow_state(WHITE, {"hit": [WHITE], "appeared": [WHITE]}, 0.99)[0] == "hit"
+
+
+def _timed_session():
+    bus = EventBus()
+    session = AnalysisSession(bus, OcrEngine())
+    region = _arrow_region_with_refs()
+    region.reference_images["appeared"] = [image_utils.encode_crop_to_base64_png(GREY)]
+    session.set_regions([region])
+    session.set_arrow_similarity_threshold(0.99)
+    session.start()
+    return session, bus, region
+
+
+def test_appearance_to_hit_timing_uses_first_observed_video_frames_not_confirmation_delay():
+    from app.ui.events_tab import EventsTab
+
+    session, bus, _ = _timed_session()
+    session.set_arrow_min_confirm_frames(2)
+    for index, (patch, timestamp) in enumerate([(GREY, 100), (GREY, 133), (WHITE, 300), (WHITE, 333)]):
+        session.process_frame(_frame_with_patch(patch), index, timestamp)
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow_appeared", "arrow_hit"]
+    hit = bus.events[-1]
+    assert hit.video_time_ms == 333
+    assert hit.payload["appearance_video_time_ms"] == 100
+    assert hit.payload["hit_video_time_ms"] == 300
+    assert hit.payload["response_time_ms"] == 200
+    assert EventsTab._format_detail(hit).endswith("200 ms response")
+
+
+def test_repeated_processing_of_one_frame_cannot_confirm_an_appearance():
+    session, bus, _ = _timed_session()
+    session.set_arrow_min_confirm_frames(2)
+    for _ in range(3):
+        session.process_frame(_frame_with_patch(GREY), 1, 100)
+    assert not any(event.event_type == "arrow_appeared" for event in bus.events)
+    session.process_frame(_frame_with_patch(GREY), 2, 133)
+    assert bus.events[-1].event_type == "arrow_appeared"
+
+
+def test_same_timestamp_appearance_and_hit_do_not_claim_instant_reaction():
+    session, bus, _ = _timed_session()
+    session.process_frame(_frame_with_patch(GREY), 1, 100)
+    session.process_frame(_frame_with_patch(WHITE), 2, 100)
+    assert bus.events[-1].event_type == "arrow_hit"
+    assert "response_time_ms" not in bus.events[-1].payload
+
+
+@pytest.mark.parametrize("reason", ["miss", "overlap", "seek", "reset", "recording", "stop"])
+def test_unmatched_or_interrupted_appearances_do_not_invent_response_times(reason):
+    session, bus, _ = _timed_session()
+    session.process_frame(_frame_with_patch(GREY), 10, 1000)
+    if reason == "miss":
+        session.process_frame(_frame_with_patch(BLACK), 11, 1100)
+    elif reason == "overlap":
+        session.process_frame(_frame_with_patch(_solid((0, 0, 255))), 11, 1100)
+        session.process_frame(_frame_with_patch(GREY), 12, 1200)
+    elif reason == "seek":
+        session.process_frame(_frame_with_patch(_solid((0, 0, 255))), 1, 100)
+    elif reason == "reset":
+        session.reset_tracking()
+    elif reason == "recording":
+        session.set_recording_enabled(False)
+        session.set_recording_enabled(True)
+    elif reason == "stop":
+        session.stop()
+        session.start()
+    session.process_frame(_frame_with_patch(WHITE), 20, 2000)
+    assert bus.events[-1].event_type == "arrow_hit"
+    assert "response_time_ms" not in bus.events[-1].payload
+
+
+def test_appearance_calibration_is_optional_and_hit_detection_is_unchanged():
+    bus = EventBus()
+    session = AnalysisSession(bus, OcrEngine())
+    session.set_regions([_arrow_region_with_refs()])
+    session.start()
+    session.process_frame(_frame_with_patch(WHITE), 0, 100)
+    assert bus.events[-1].event_type == "arrow_hit"
+    assert "response_time_ms" not in bus.events[-1].payload
+
+
+def test_response_timing_flows_from_calibration_through_events_to_live_snapshot():
+    from app.live_scoreboard import LiveScoreboard
+
+    session, bus, _ = _timed_session()
+    board = LiveScoreboard(Mock)
+    bus.set_live_sink(board.record)
+    board.start(bus.session_id)
+    try:
+        for index, (patch, timestamp) in enumerate([
+            (GREY, 100), (WHITE, 300), (GREY, 500), (WHITE, 801), (BLACK, 900),
+        ]):
+            session.process_frame(_frame_with_patch(patch), index, timestamp)
+        player = board.snapshot()["players"]["P1"]
+        assert player["hits"] == 2
+        assert player["misses"] == 1
+        assert player["responseSamples"] == 2
+        assert player["averageResponseTimeMs"] == 250.5
+    finally:
+        board.stop()
 
 
 # ---------------------------------------------------------------------

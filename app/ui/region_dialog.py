@@ -15,6 +15,7 @@ class RegionDialog(tk.Toplevel):
 
     def __init__(self, parent: tk.Widget, existing_keys: Optional[set] = None):
         super().__init__(parent)
+        self.withdraw()
         self.title("Label region")
         self.resizable(False, False)
         self.result: Optional[Tuple[str, str, str, Optional[str]]] = None
@@ -25,7 +26,8 @@ class RegionDialog(tk.Toplevel):
 
         ttk.Label(frm, text="Label:").grid(row=0, column=0, sticky="w", pady=4)
         self.label_var = tk.StringVar(value="Score")
-        ttk.Entry(frm, textvariable=self.label_var, width=24).grid(row=0, column=1, pady=4)
+        label_entry = ttk.Entry(frm, textvariable=self.label_var, width=24)
+        label_entry.grid(row=0, column=1, pady=4)
 
         ttk.Label(frm, text="Player:").grid(row=1, column=0, sticky="w", pady=4)
         self.player_var = tk.StringVar(value=config.PLAYER_CHOICES[0])
@@ -65,10 +67,16 @@ class RegionDialog(tk.Toplevel):
         self._on_kind_changed()
 
         self.transient(parent)
-        self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_reqwidth()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_reqheight()) // 2
+        self.geometry(f"+{x}+{y}")
+        self.deiconify()
         self.wait_visibility()
-        self.focus()
+        self.lift()
+        self.grab_set()
+        label_entry.focus_set()
 
     def _on_kind_changed(self) -> None:
         is_arrow = self.kind_var.get() == "arrow"

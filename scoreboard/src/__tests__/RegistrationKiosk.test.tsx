@@ -63,15 +63,66 @@ it('shows progress and prevents concurrent clicks while its single server reques
 it.each([
   ['YaelTheChampion', ['Top-right corner', 'Top-right corner', 'Bottom-left corner', 'Bottom-left corner']],
   ['EdgarIsGoingDown', ['Bottom-left corner', 'Bottom-left corner', 'Top-right corner', 'Top-right corner']],
+  ['The Dancing Queen', ['Top-left corner', 'Top-right corner', 'Bottom-right corner', 'Bottom-left corner']],
 ])('sends one special registration request for %s without creating a PIN', async (name, corners) => {
   vi.mocked(saveRegistration).mockResolvedValue({ ...pass, username: name, pin: null, registrationType: 'special' });
   render(<RegistrationKiosk client={client()} />);
   for (const corner of corners.slice(0, 3)) fireEvent.click(screen.getByRole('button', { name: corner }));
   expect(saveRegistration).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: corners[3] })); });
+  expect(saveRegistration).toHaveBeenCalledTimes(1);
   expect(vi.mocked(saveRegistration).mock.calls[0][1]).toMatchObject({ player: 'P1', specialName: name });
   expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.queryByText('Your unique PIN')).not.toBeInTheDocument();
+});
+it.each(['wrong order', 'expired'])('does not activate The Dancing Queen for %s taps', reason => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
+  render(<RegistrationKiosk client={client()} />);
+  const corners = reason === 'wrong order'
+    ? ['Top-left corner', 'Bottom-right corner', 'Top-right corner', 'Bottom-left corner']
+    : ['Top-left corner', 'Top-right corner', 'Bottom-right corner', 'Bottom-left corner'];
+  try {
+    for (const [index, corner] of corners.entries()) {
+      if (reason === 'expired' && index === 3) now.mockReturnValue(18001);
+      fireEvent.click(screen.getByRole('button', { name: corner }));
+    }
+    expect(saveRegistration).not.toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
+});
+it('launches a chicken after three top-left taps without registering, cleans up and can repeat', () => {
+  render(<RegistrationKiosk client={client()} />);
+  const corner = screen.getByRole('button', { name: 'Top-left corner' });
+  const chickenName = 'A chicken doing the funky chicken dance';
+  fireEvent.click(corner);
+  fireEvent.click(corner);
+  expect(screen.queryByRole('img', { name: chickenName })).not.toBeInTheDocument();
+  fireEvent.click(corner);
+  const chicken = screen.getByRole('img', { name: chickenName });
+  expect(chicken.querySelectorAll('.booth-chicken-eye')).toHaveLength(2);
+  fireEvent.animationEnd(chicken.querySelector('svg')!);
+  expect(chicken).toBeInTheDocument();
+  fireEvent.animationEnd(chicken);
+  expect(screen.queryByRole('img', { name: chickenName })).not.toBeInTheDocument();
+  for (let i = 0; i < 3; i++) fireEvent.click(corner);
+  expect(screen.getByRole('img', { name: chickenName })).toBeInTheDocument();
+  expect(saveRegistration).not.toHaveBeenCalled();
+});
+it('does not launch a chicken for expired top-left taps', () => {
+  const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
+  render(<RegistrationKiosk client={client()} />);
+  try {
+    const corner = screen.getByRole('button', { name: 'Top-left corner' });
+    fireEvent.click(corner);
+    fireEvent.click(corner);
+    now.mockReturnValue(18001);
+    fireEvent.click(corner);
+    expect(screen.queryByRole('img', { name: /funky chicken dance/ })).not.toBeInTheDocument();
+    expect(saveRegistration).not.toHaveBeenCalled();
+  } finally {
+    now.mockRestore();
+  }
 });
 it.each([['1', 'P1'], ['2', 'P2']])('sends station %s in its single request', async (flag, player) => {
   window.history.replaceState(null, '', `/?player=${flag}#register`);

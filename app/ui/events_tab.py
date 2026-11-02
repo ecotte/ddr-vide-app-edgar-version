@@ -145,7 +145,10 @@ class EventsTab(ttk.Frame):
             new = payload.get("new_value")
             return f"{prev if prev is not None else 'unknown'} -> {new}"
         if payload.get("field") == "arrow":
-            return f"{payload.get('direction', '?')} - {payload.get('state', '?').upper()}"
+            detail = f"{payload.get('direction', '?')} - {payload.get('state', '?').upper()}"
+            if "response_time_ms" in payload:
+                detail += f" | {payload['response_time_ms']} ms response"
+            return detail
         return "-"
 
     def clear(self) -> None:

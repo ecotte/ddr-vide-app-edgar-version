@@ -125,6 +125,11 @@ eight seconds, in order:
 
 - Top-right twice, then bottom-left twice: **YaelTheChampion**.
 - Bottom-left twice, then top-right twice: **EdgarIsGoingDown**.
+- Top-left, top-right, bottom-right, then bottom-left: **The Dancing Queen**.
+
+Tap top-left three times within eight seconds to send a funky dancing chicken
+across the screen. It disappears after six seconds and does not register a player.
+With reduced motion enabled, the chicken appears without dancing or crossing.
 
 The fourth tap immediately registers the special name with **no PIN**. These
 are easter eggs, not Microsoft sign-in or authorization bypasses. Each special
@@ -202,6 +207,30 @@ Connection/publish errors appear in the desktop Events tab.
   it, and seeks clear it. New Session resets both recent pace and totals.
 - Misses, synthetic samples, unknown-player events and unconfirmed observations
   never increase hit counts or pace. Miss events still go to Fabric history.
+- Cumulative hit percentage is `hits / (hits + misses) * 100` for detected
+  outcomes in the current game. Undetected notes do not count; missing miss
+  calibration can overstate performance. Old snapshots without miss totals do
+  not show this card.
+- Optional **Add Appearance** lane calibration in the desktop enables
+  `arrow_appeared` events and positive `response_time_ms` samples on uniquely
+  paired hits. The average uses first-observed source timestamps for confirmed
+  appearance and hit states, not confirmation, network, or wall-clock delay.
+  Misses, overlapping appearances, zero-time pairs, seeks, recording toggles,
+  stopping analysis, recalibration, and new sessions clear pending pairings.
+  Response totals reset with the game, not with playback pause.
+- Animal comparisons use the [mouse visual-escape reference of approximately
+  250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/) and the [goldfish
+  auditory C-start mean of 10.64 ms, 0-30 cm from the
+  speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). Sources and test
+  conditions appear on the card. They are different tasks/senses, not
+  equivalent tests or a universal animal speed ranking.
+- The unique most-hit lane receives Left-Step Legend (Up-Left), Right-Step
+  Royalty (Up-Right), Forward-Step Phenom (Down-Left), Back-Step Boss
+  (Down-Right), or Center-Step Superstar (Center). A positive five-way tie is
+  All-Step Ace. Zero counts and partial ties have no title.
+- Cards without data are omitted, including score/combo, response timing,
+  animal comparisons, percentages, pace, directional breakdown, and titles.
+  A real zero (for example 0% after detected misses) is not missing data.
 - The SDK worker rejects revisions older than its last acknowledged revision.
 
 There is no distributed multiple-publisher mechanism: this app uses one

@@ -1,21 +1,21 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { arrowBalance, parseSnapshot, poll } from '../state';
 
-const player = { score: null, combo: 3, hits: 0,
+const player = { score: null, combo: 3, hits: 0, misses: 0,
   hitsByDirection: { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 },
-  hitPace: 0, observedScore: 4, lastVideoTimeMs: 10 };
+  hitPace: 0, averageResponseTimeMs: null, responseSamples: 0, observedScore: 4, lastVideoTimeMs: 10 };
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: { P1: player, P2: player } };
 
 describe('scoreboard state', () => {
   it('retains accepted and observed values separately', () => {
     expect(parseSnapshot(snapshot).players.P1).toEqual(player);
   });
-  it('does not invent a directional breakdown for older snapshots or retain misses', () => {
+  it('does not invent a directional breakdown for older snapshots', () => {
     const legacy = { ...player, hitsByDirection: undefined, hits: 10, misses: 2 };
     const result = parseSnapshot({ ...snapshot, players: { P1: legacy, P2: legacy } });
     expect(result.players.P1.hitsByDirection).toBeNull();
     expect(result.players.P1.hits).toBe(10);
-    expect(result.players.P1).not.toHaveProperty('misses');
+    expect(result.players.P1.misses).toBe(2);
   });
   it('rejects invalid directional counts', () => {
     const invalid = { ...player, hitsByDirection: { ...player.hitsByDirection, Center: -1 } };
@@ -49,6 +49,39 @@ describe('scoreboard state', () => {
     expect(() => parseSnapshot({
       ...snapshot, players: { P1: { ...player, hitPace }, P2: player },
     })).toThrow();
+  });
+  it('keeps new metrics unavailable in legacy snapshots instead of inventing data', () => {
+    const legacy = { ...player, misses: undefined, averageResponseTimeMs: undefined, responseSamples: undefined };
+    const result = parseSnapshot({ ...snapshot, players: { P1: legacy, P2: player } }).players.P1;
+    expect(result.misses).toBeNull();
+    expect(result.averageResponseTimeMs).toBeNull();
+    expect(result.responseSamples).toBe(0);
+  });
+  it.each([-1, NaN, Infinity, '2', true])('rejects invalid misses %s', misses => {
+    expect(() => parseSnapshot({ ...snapshot, players: { P1: { ...player, misses }, P2: player } })).toThrow();
+  });
+  it.each([
+    { averageResponseTimeMs: -1, responseSamples: 1 },
+    { averageResponseTimeMs: 0, responseSamples: 1 },
+    { averageResponseTimeMs: NaN, responseSamples: 1 },
+    { averageResponseTimeMs: Infinity, responseSamples: 1 },
+    { averageResponseTimeMs: '123', responseSamples: 1 },
+    { averageResponseTimeMs: 123, responseSamples: 0 },
+    { averageResponseTimeMs: 123, responseSamples: 3 },
+    { averageResponseTimeMs: 123, responseSamples: 1.5 },
+    { averageResponseTimeMs: 123 },
+    { averageResponseTimeMs: null, responseSamples: 1 },
+  ])('rejects inconsistent response measurements %j', timing => {
+    expect(() => parseSnapshot({
+      ...snapshot, players: { P1: { ...player, hits: 2, ...timing }, P2: player },
+    })).toThrow();
+  });
+  it('preserves positive fractional response averages', () => {
+    for (const averageResponseTimeMs of [1, 123.5]) {
+      expect(parseSnapshot({
+        ...snapshot, players: { P1: { ...player, hits: 2, averageResponseTimeMs, responseSamples: 2 }, P2: player },
+      }).players.P1.averageResponseTimeMs).toBe(averageResponseTimeMs);
+    }
   });
   it.each([null, {}, { ...snapshot, revision: -1 }, {
     ...snapshot, players: { P1: { ...player, score: '123' }, P2: player },

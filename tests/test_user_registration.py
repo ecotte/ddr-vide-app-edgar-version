@@ -31,7 +31,7 @@ def test_registration_preserves_capitalized_and_legacy_names(username):
     assert event.payload["username"] == username
 
 
-@pytest.mark.parametrize("username", ["YaelTheChampion", "EdgarIsGoingDown"])
+@pytest.mark.parametrize("username", ["YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen"])
 def test_special_registration_is_explicit_and_needs_no_pin(username):
     row = {**ROW, "username": username, "registrationType": "special"}
     event = registration_event(row)

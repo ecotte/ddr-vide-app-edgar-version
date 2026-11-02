@@ -230,12 +230,49 @@ Combo OCR allows the engine to recognize surrounding words such as "combo", then
 
 For fresher combo updates, enable **Fast live combo** in that region's card and **Save Layout**. This opt-in mode runs recognition directly on the crop and never invokes slow text detection, even when the reading is uncertain. It works with or without the yellow filter. Readable candidates that differ from the accepted value are labeled **unconfirmed**; readings below 0.90 confidence cannot replace the accepted combo or emit combo-change events. Non-numeric/mixed results remain unreadable with a visible explanation. Existing jump and correction rules still apply. Keep the crop tight around the digits: this mode can miss readings the full detector would recover and can still make confident mistakes. Disable it to restore detector fallback. Old layouts default to off; saving/loading or rescaling preserves the choice. Toggling clears pending evidence without erasing accepted values or events. Score OCR remains unchanged and still contributes to the worker's total latency.
 
-### 5b. Arrow lanes (hit/miss, per direction per player)
+### 5b. Arrow lanes (hit/miss and optional response timing)
 
 1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up-Right/Up-Left/Down-Right/Down-Left/Center). Repeat for each of the 5 directions, and again for the other player if needed (up to 10 arrow boxes total for 2 players).
 2. In the recognition panel on the right, each arrow region gets its own row with **Add Hit ref** / **Add Miss ref** buttons. Step or seek the video to frames that clearly show that lane in each state and add as many examples as needed. Classification uses the best match across all captured examples. **Clear Hit refs** and **Clear Miss refs** remove all examples for that state. You do not need both states - if your skin doesn't visibly distinguish misses at the receptor, only add hit references and misses simply won't be reported for that lane (never guessed).
 3. Adjust **Arrow similarity threshold** (default 0.90; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
+
+For **Time to answer**, optionally pause on a distinct, newly visible arrow
+before its hit and select **Add Appearance** for that lane. The region must
+include both that appearance and the later hit/miss indicator; a receptor-only
+crop that never shows the incoming arrow cannot measure this interval.
+Do not use the same image for appearance and outcome. **Clear Appearance**
+removes the optional references; old layouts need no migration.
+
+An `arrow_appeared` event records each confirmed appearance. A uniquely paired
+subsequent `arrow_hit` in the same lane carries `appearance_video_time_ms`,
+`hit_video_time_ms`, and `response_time_ms`. Timing uses the first video frame
+of each confirmed state, not wall-clock or network time. Duplicate frames cannot
+confirm states. Misses, multiple appearances before an outcome, zero-time pairs,
+seeks, calibration changes, stopping analysis, recording toggles, and session
+resets cannot produce a response sample from an old appearance.
+
+The scoreboard shows each player's average over valid timed hits this game.
+This is a calibrated, video-detected appearance-to-hit interval, not a pure
+neurological reaction-time or accuracy measurement.
+The animal card compares it with explicitly labeled published test references:
+[mouse visual looming escape, approximately 250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/)
+and [goldfish auditory C-start, mean 10.64 ms at 0-30 cm from the speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/).
+Tasks, senses, and capture resolution differ; the comparison is not a
+like-for-like test or a universal ranking of animals.
+
+**Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
+outcomes in the current game. Undetected notes are not counted. Missing data
+hides its card rather than showing an empty placeholder; the same applies to
+timing, animal comparisons, hit pace, arrow balance, and step titles.
+Without miss references, misses cannot be detected, so this percentage may
+overstate actual performance.
+
+The most-hit lane earns one title: Up-Left is **Left-Step Legend**, Up-Right
+is **Right-Step Royalty**, Down-Left is **Forward-Step Phenom**, Down-Right
+is **Back-Step Boss**, and Center is **Center-Step Superstar**.
+**All-Step Ace** requires equal positive hit counts in all five lanes.
+Zero counts and partial ties award no title until a unique leader emerges.
 
 **Existing four-direction layouts:** loading a layout with Up/Down/Left/Right
 arrow regions shows a warning and removes those unsupported arrow regions from
@@ -427,6 +464,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **"Could not open video"** - the file may be corrupted, in a codec OpenCV can't decode, or the path contains something unusual. Try a standard H.264 `.mp4` first.
 - **I can't see the "Layout profile" box, "Start Analysis" button, or some recognition rows** - the left and right panels of the Video & Regions tab scroll independently once their controls no longer fit the window (this grows as you add more regions, especially several arrow lanes). Hover over the panel and scroll with your mouse wheel, or drag the scrollbar at its right edge, to reach anything below the visible area. If controls seem to be missing entirely, this is almost always the cause - scroll down before assuming a button doesn't exist.
 - **Region drawing does nothing** - make sure **Draw Region** shows **ON** before click-dragging on the canvas.
+- **The app seems frozen after drawing a rectangle** - the modal **Label region** dialog must be completed or canceled before interacting with the main window. It opens centered over the app on the same monitor, including displays with negative desktop coordinates.
 - **Loading a layout pops up a resolution-mismatch warning** - this is intentional. The layout was calibrated against a different video size than the one currently open. Choose to fit it with uniform scaling and centered padding, or cancel and recalibrate. Coordinates are never silently reused across a resolution change.
 - **Playback looks slow/choppy while analysis is running** - numeric OCR runs in the background and skips samples rather than slowing the video to OCR speed. Preview playback skips late frames to stay near source time and reuses video/crop images and unchanged region overlays to reduce rendering overhead. Heavy video decoding/rendering can still cause choppiness. Use frame-stepping for careful calibration. The last OCR-pass time describes recognition latency, not playback speed.
 - **Values seem clearly wrong even though the app "accepted" them** - check the raw OCR text shown in the recognition panel next to the accepted value; a consistent misread will still pass the consistency filter (see section 6/7). Try a tighter crop around just the digits, excluding glow/outline effects.

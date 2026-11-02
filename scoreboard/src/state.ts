@@ -6,8 +6,11 @@ export interface PlayerState {
   score: number | null;
   combo: number | null;
   hits: number;
+  misses?: number | null;
   hitsByDirection?: Record<Direction, number> | null;
   hitPace?: number | null;
+  averageResponseTimeMs?: number | null;
+  responseSamples?: number;
   observedScore: number | null;
   lastVideoTimeMs: number | null;
 }
@@ -33,6 +36,15 @@ function isPlayer(value: unknown): value is PlayerState {
   return isRecord(value) && numberOrNull(value.score) && numberOrNull(value.combo)
     && numberOrNull(value.observedScore) && numberOrNull(value.lastVideoTimeMs)
     && typeof value.hits === 'number' && numberOrNull(value.hits)
+    && (value.misses == null || numberOrNull(value.misses))
+    && (value.responseSamples === undefined || (
+      typeof value.responseSamples === 'number' && numberOrNull(value.responseSamples)
+    ))
+    && ((value.averageResponseTimeMs == null && (value.responseSamples ?? 0) === 0)
+      || (typeof value.averageResponseTimeMs === 'number'
+        && Number.isFinite(value.averageResponseTimeMs) && value.averageResponseTimeMs > 0
+        && typeof value.responseSamples === 'number' && value.responseSamples > 0
+        && value.responseSamples <= value.hits))
     && (value.hitPace == null || (
       typeof value.hitPace === 'number' && Number.isFinite(value.hitPace) && value.hitPace >= 0
     ))
@@ -60,7 +72,10 @@ export function parseSnapshot(value: unknown): BoardSnapshot {
 function cleanPlayer(player: PlayerState): PlayerState {
   return {
     score: player.score, combo: player.combo, hits: player.hits,
+    misses: player.misses ?? null,
     hitPace: player.hitPace ?? null,
+    averageResponseTimeMs: player.averageResponseTimeMs ?? null,
+    responseSamples: player.responseSamples ?? 0,
     observedScore: player.observedScore, lastVideoTimeMs: player.lastVideoTimeMs,
     hitsByDirection: player.hitsByDirection ? {
       'Up-Right': player.hitsByDirection['Up-Right'], 'Up-Left': player.hitsByDirection['Up-Left'],
