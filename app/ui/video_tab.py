@@ -612,6 +612,9 @@ class VideoTab(ttk.Frame):
         ttk.Label(refs, text="Miss ref:").grid(row=0, column=1, sticky="w")
         miss_ref_label = ttk.Label(refs, text="(none)")
         miss_ref_label.grid(row=1, column=1, sticky="w")
+        ttk.Label(refs, text="Appearance ref:").grid(row=2, column=0, sticky="w")
+        appeared_ref_label = ttk.Label(refs, text="(none)")
+        appeared_ref_label.grid(row=3, column=0, columnspan=2, sticky="w")
 
         btns = ttk.Frame(row)
         btns.grid(row=6, column=0, sticky="w", pady=(4, 0))
@@ -627,6 +630,16 @@ class VideoTab(ttk.Frame):
         ttk.Button(
             btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
         ).grid(row=1, column=1, padx=2, pady=(4, 0))
+        ttk.Button(
+            btns, text="Add Appearance", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "appeared")
+        ).grid(row=2, column=0, padx=2, pady=(4, 0))
+        ttk.Button(
+            btns, text="Clear Appearance", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "appeared")
+        ).grid(row=2, column=1, padx=2, pady=(4, 0))
+        ttk.Label(
+            row, text="Optional timing: capture a distinct arrow before its hit. "
+            "The crop must show both appearance and outcome. Overlapping appearances are excluded.",
+        ).grid(row=7, column=0, sticky="w", pady=(4, 0))
 
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
@@ -637,6 +650,7 @@ class VideoTab(ttk.Frame):
             "status_var": status_var,
             "hit_ref_label": hit_ref_label,
             "miss_ref_label": miss_ref_label,
+            "appeared_ref_label": appeared_ref_label,
         }
 
     def _build_game_end_row(self, region, parent) -> None:

@@ -1,0 +1,8 @@
+host.json
+local.settings.json
+deploymetadata.json
+bin/
+obj/
+dist/
+node_modules/
+runtimemetadata.json

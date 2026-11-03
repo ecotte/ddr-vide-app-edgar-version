@@ -24,6 +24,7 @@ from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
+from app.rayfin_sender import RayfinSender
 from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
 from app.ui.score_calibration_dialog import ScoreCalibrationDialog
@@ -41,9 +42,11 @@ class App(tk.Tk):
 
         self.ocr_engine = OcrEngine()
         self.event_bus = EventBus(source_mode=config.SOURCE_MODE_REPLAY)
-        self.live_scoreboard = LiveScoreboard()
-        self.event_bus.set_live_sink(self.live_scoreboard.record)
         self.publisher = EventstreamPublisher(os.path.join(config.DATA_DIR, "eventstream-outbox.sqlite3"))
+        self.live_scoreboard = LiveScoreboard(
+            sender_factory=lambda: RayfinSender(registration_sink=self.publisher.enqueue_registration),
+        )
+        self.event_bus.set_live_sink(self.live_scoreboard.record)
         self._publishing_enabled = False
         self._publisher_poll_after_id = None
         self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
@@ -279,14 +282,15 @@ class App(tk.Tk):
         self.analysis.stop()
         self.event_bus.source_mode = source.source_mode
         timestamp = source.video_time_ms_for_frame(frame_index)
-        session_event = self.analysis.new_session(frame_index, timestamp, reason=reason)
+        self.analysis.new_session(frame_index, timestamp, reason=reason)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
         self._last_frame_position = None
         self._last_frame_bgr = None
         self.events_tab.clear()
-        self.events_tab.append_event(session_event)
+        for event in self.event_bus.events:
+            self.events_tab.append_event(event)
         self.video_tab.set_analysis_status(False)
         self.video_tab.set_error_status("")
         self.video_tab.set_source_selection("HDMI input" if is_live else "Video file")
@@ -984,14 +988,15 @@ class App(tk.Tk):
     def new_session(self) -> None:
         self._analysis_generation += 1
         position = self._last_frame_position or (None, None)
-        event = self.analysis.new_session(*position)
+        previous_count = len(self.event_bus.events)
+        self.analysis.new_session(*position, clear_events=False)
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
-        self.events_tab.clear()
-        self.events_tab.append_event(event)
+        for event in self.event_bus.events[previous_count:]:
+            self.events_tab.append_event(event)
         self.video_tab.set_error_status("")
-        self.video_tab.set_processing_status("New session started - recognition state reset.")
+        self.video_tab.set_processing_status(f"New session: {self.event_bus.session_id}. Any previous active session was ended.")
 
     # ------------------------------------------------------------------
     # Events tab support
@@ -1106,7 +1111,7 @@ class App(tk.Tk):
         self.events_tab.append_event(sample)
 
     def set_recording_enabled(self, enabled: bool) -> None:
-        self.analysis.recording_enabled = enabled
+        self.analysis.set_recording_enabled(enabled)
 
     def clear_events(self) -> None:
         self.event_bus.clear_events()

@@ -5,14 +5,17 @@ from bisect import bisect_right, insort
 
 from app import config
 from app.models import Event
-from app.rayfin_sender import RayfinSender, ScoreboardConnectionError, ScoreboardPublishError
+from app.rayfin_sender import (
+    RayfinSender, ScoreboardConnectionError, ScoreboardPublishError, ScoreboardRegistrationError,
+)
 
 
 def _player():
     return {
-        "score": None, "combo": None, "hits": 0,
+        "score": None, "combo": None, "hits": 0, "misses": 0,
         "hitsByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
         "hitPace": 0.0,
+        "averageResponseTimeMs": None, "responseSamples": 0,
         "observedScore": None, "lastVideoTimeMs": None,
     }
 
@@ -28,6 +31,7 @@ class LiveScoreboard:
         self._connection_status = "Live scoreboard: off"
         self._field_sequences = {}
         self._recent_hits = {"P1": [], "P2": []}
+        self._response_totals = {"P1": 0, "P2": 0}
         self._video_time_ms = 0
         self._playback_clock = False
         self._state = {
@@ -58,6 +62,7 @@ class LiveScoreboard:
         self._seen.clear()
         self._field_sequences.clear()
         self._recent_hits = {"P1": [], "P2": []}
+        self._response_totals = {"P1": 0, "P2": 0}
         self._video_time_ms = 0
         self._playback_clock = False
 
@@ -125,13 +130,34 @@ class LiveScoreboard:
                     (event.player, "observedScore"), -1,
                 ) < event.sequence:
                     player["observedScore"] = None
-            elif event.event_type == "arrow_hit":
+            elif event.event_type in ("arrow_hit", "arrow_miss"):
                 direction = event.payload.get("direction")
                 if direction not in player["hitsByDirection"]:
-                    self._error = "Live scoreboard: hit event has an invalid arrow direction."
+                    self._error = "Live scoreboard: invalid arrow direction in outcome event."
+                    return
+                if event.event_type == "arrow_miss":
+                    player["misses"] += 1
+                    self._state["revision"] += 1
                     return
                 player["hits"] += 1
                 player["hitsByDirection"][direction] += 1
+                response = event.payload.get("response_time_ms")
+                if response is not None:
+                    appearance = event.payload.get("appearance_video_time_ms")
+                    hit = event.payload.get("hit_video_time_ms")
+                    if (
+                        all(type(value) is int and 0 <= value <= 9007199254740991
+                            for value in (response, appearance, hit, event.video_time_ms))
+                        and appearance < hit <= event.video_time_ms
+                        and response == hit - appearance
+                    ):
+                        self._response_totals[event.player] += response
+                        player["responseSamples"] += 1
+                        player["averageResponseTimeMs"] = (
+                            self._response_totals[event.player] / player["responseSamples"]
+                        )
+                    else:
+                        self._error = "Live scoreboard: invalid response timing excluded from average."
                 timestamp = event.video_time_ms
                 if type(timestamp) is int and timestamp >= 0:
                     if not self._playback_clock:
@@ -171,11 +197,12 @@ class LiveScoreboard:
                     sender.publish(state)
                 except ScoreboardConnectionError:
                     raise
-                except ScoreboardPublishError:
+                except ScoreboardPublishError as exc:
                     with self._lock:
                         self._connection_status = (
                             "Live scoreboard: update not acknowledged; retrying latest state. "
-                            "Check connectivity and publishing permissions."
+                            + (str(exc) if isinstance(exc, ScoreboardRegistrationError)
+                               else "Check connectivity and publishing permissions.")
                         )
                 else:
                     with self._lock:

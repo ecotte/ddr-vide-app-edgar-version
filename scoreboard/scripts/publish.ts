@@ -6,10 +6,11 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import { signInWithEntraToken } from '@microsoft/rayfin-auth-provider-fabric';
 import type { AppSchema } from '../rayfin/data/schema.js';
 import { BOARD_ID, parseSnapshot } from '../src/state.js';
+import { syncRegistrations } from './registrations.js';
 
 const prefix = '__DDR_SCOREBOARD__';
-const report = (status: string, revision?: number) => {
-  process.stdout.write(`${prefix}${JSON.stringify({ status, revision })}\n`);
+const report = (status: string, revision?: number, registrations?: unknown) => {
+  process.stdout.write(`${prefix}${JSON.stringify({ status, revision, registrations })}\n`);
 };
 
 async function main() {
@@ -39,11 +40,14 @@ async function main() {
     );
     const session = await signInWithEntraToken(client.auth, { entraToken: credentials.token });
     if (!session.isAuthenticated) throw new Error('Sign-in failed');
+    const [previousGame] = await client.data.GameSession.select(['id']).orderBy({ startedAt: 'desc' }).first(1).execute();
+    let lastSessionId = previousGame?.id;
     report('ready');
     let lastRevision = -1;
     for await (const line of input) {
       try {
-        const snapshot = parseSnapshot(JSON.parse(line));
+        const request = JSON.parse(line);
+        const snapshot = parseSnapshot(request);
         if (snapshot.revision < lastRevision) {
           report('invalid');
           continue;
@@ -52,8 +56,13 @@ async function main() {
         await client.data.LiveBoard.upsert(
           { id: BOARD_ID }, { id: BOARD_ID, ...body }, body,
         );
+        const registrations = await syncRegistrations(
+          client, snapshot, request.acknowledgedRegistrations ?? [], request.acknowledgedSpecialRegistrations ?? [],
+          request.acknowledgedGamePlayerRegistrations ?? [], lastSessionId,
+        );
+        lastSessionId = snapshot.sessionId;
         lastRevision = snapshot.revision;
-        report('published', snapshot.revision);
+        report('published', snapshot.revision, registrations);
       } catch {
         // Never forward SDK responses, tokens or stack traces over the status pipe.
         report('failed');

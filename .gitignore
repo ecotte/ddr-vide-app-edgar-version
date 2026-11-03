@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 .venv/
 .pytest_cache/
+.playwright-mcp/
 *.egg-info/
 
 # --- Credentials / secrets (future milestones: Fabric Eventstream, etc.) --

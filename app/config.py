@@ -59,6 +59,7 @@ SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow", "game_end"]
 NEW_SESSION_EVENT_TYPE = "new_session"
+SESSION_END_EVENT_TYPE = "session_end"
 DEFAULT_GAME_END_SIMILARITY_THRESHOLD = 0.95
 DEFAULT_GAME_END_CONFIRM_FRAMES = 2
 
@@ -66,14 +67,15 @@ PLAYER_CHOICES = ["P1", "P2", "Unknown"]
 
 # --- Arrow (receptor) hit/miss detection ----------------------------------
 # One region per (player, direction) is compared against user-captured
-# reference snapshots ("hit", "miss") rather than any built-in template -
+# reference snapshots ("hit", "miss", optional "appeared") rather than any built-in template -
 # this app has no built-in idea of what a hit/miss looks like for a given
 # note skin.
 ARROW_DIRECTIONS = ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
-ARROW_STATES = ["hit", "miss"]
+ARROW_STATES = ["hit", "miss", "appeared"]
 ARROW_EVENT_TYPES = {
     "hit": "arrow_hit",
     "miss": "arrow_miss",
+    "appeared": "arrow_appeared",
 }
 
 # Similarity score (0..1, see app.image_utils.similarity) above which a live

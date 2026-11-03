@@ -59,10 +59,18 @@ class EventBus:
     ) -> Event:
         with self._lock:
             previous_session_id = self.session_id if self._session_announced and self.session_id else None
-            self.session_id = str(uuid.uuid4())
-            self._sequence = 0
+            next_session_id = str(uuid.uuid4())
             if clear_events:
                 self._events = []
+            if previous_session_id:
+                ended = self.make_event(
+                    config.SESSION_END_EVENT_TYPE,
+                    {"session_id": previous_session_id, "next_session_id": next_session_id, "reason": reason},
+                    frame_index, video_time_ms,
+                )
+                self.record(ended)
+            self.session_id = next_session_id
+            self._sequence = 0
             return self._announce_session(frame_index, video_time_ms, previous_session_id, reason)
 
     def _announce_session(

@@ -136,6 +136,8 @@ class EventsTab(ttk.Frame):
         payload = event.payload
         if event.event_type == "new_session":
             return f"New session ({payload['reason']}): {event.session_id}"
+        if event.event_type == "session_end":
+            return f"Session ended ({payload['reason']}): {event.session_id}"
         if event.event_type == "score_observed":
             return f"UNCONFIRMED: {payload.get('observed_value')}"
         if "previous_value" in payload or "new_value" in payload:
@@ -143,7 +145,10 @@ class EventsTab(ttk.Frame):
             new = payload.get("new_value")
             return f"{prev if prev is not None else 'unknown'} -> {new}"
         if payload.get("field") == "arrow":
-            return f"{payload.get('direction', '?')} - {payload.get('state', '?').upper()}"
+            detail = f"{payload.get('direction', '?')} - {payload.get('state', '?').upper()}"
+            if "response_time_ms" in payload:
+                detail += f" | {payload['response_time_ms']} ms response"
+            return detail
         return "-"
 
     def clear(self) -> None:

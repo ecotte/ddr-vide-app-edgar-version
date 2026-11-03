@@ -32,10 +32,28 @@ def test_new_session_resets_sequence_and_session_id_and_clears_events():
     session_event = bus.new_session()
 
     assert bus.session_id != old_session_id
-    assert bus.events == [session_event]
+    ended, started = bus.events
+    assert started == session_event
+    assert ended.event_type == "session_end"
+    assert ended.session_id == old_session_id
+    assert ended.sequence == event.sequence + 1
+    assert ended.payload["next_session_id"] == session_event.session_id
     new_event = bus.make_event("score_changed", {"previous_value": None, "new_value": 5}, 0, 0)
     assert session_event.sequence == 0
     assert new_event.sequence == 1
+
+
+def test_reset_delivers_end_before_start_and_does_not_end_an_unannounced_session():
+    bus = EventBus()
+    delivered = []
+    bus.set_delivery_sink(delivered.append)
+    bus.new_session()
+    assert [event.event_type for event in delivered] == ["new_session"]
+    previous = bus.session_id
+    bus.new_session()
+    assert [event.event_type for event in delivered] == ["new_session", "session_end", "new_session"]
+    assert delivered[-2].session_id == previous
+    assert delivered[-1].payload["previous_session_id"] == previous
 
 
 def test_clear_events_does_not_reset_session_or_sequence():

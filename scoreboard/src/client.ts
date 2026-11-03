@@ -3,6 +3,7 @@ import {
   ensureSignedInWithFabric, initEmbeddedAuth, signInWithBrokeredToken,
 } from '@microsoft/rayfin-auth-provider-fabric';
 import type { AppSchema } from '../rayfin/data/schema';
+import type { AppFunctionsSchema } from '../rayfin/functions/src/types';
 
 export async function createClient() {
   const resolved = await resolveRayfinConfig({
@@ -15,7 +16,7 @@ export async function createClient() {
   if (!resolved.baseUrl || !resolved.publishableKey) {
     throw new Error('Rayfin configuration is missing. Deploy DDR Scoreboard first.');
   }
-  return new RayfinClient<AppSchema>({
+  return new RayfinClient<AppSchema, AppFunctionsSchema>({
     baseUrl: resolved.baseUrl,
     publishableKey: resolved.publishableKey,
     runtimeConfig: resolved.runtimeConfig,

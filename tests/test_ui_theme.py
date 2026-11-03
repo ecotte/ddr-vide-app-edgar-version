@@ -59,6 +59,23 @@ def _contrast(foreground: str, background: str) -> float:
     return (light + 0.05) / (dark + 0.05)
 
 
+def test_notebook_tabs_are_flat_and_selected_state_is_distinct_without_expanding(root):
+    style = ttk.Style(root)
+    assert style.layout("TNotebook.Tab")[0][0] == "FlatNotebook.tab"
+    assert style.lookup("TNotebook.Tab", "relief", ("selected",)) == "flat"
+    assert style.lookup("TNotebook.Tab", "foreground", ("selected",)) == ACCENT
+    assert style.lookup("TNotebook.Tab", "foreground", ("selected", "active")) == ACCENT
+    assert style.lookup("TNotebook.Tab", "foreground", ()) == MUTED
+    for state in ((), ("selected",), ("active",), ("selected", "active")):
+        assert str(style.lookup("TNotebook.Tab", "expand", state)) == "0 0 0 0"
+        assert str(style.lookup("TNotebook.Tab", "padding", state)) == "18 9"
+    normal, hover, selected = root._notebook_tab_images
+    assert normal.get(0, 0) != selected.get(0, 0)
+    assert hover.get(0, 0) != selected.get(0, 0)
+    assert selected.get(0, 7) == (121, 170, 255)
+    assert _contrast(ACCENT, "#253349") >= 4.5
+
+
 @pytest.mark.parametrize("foreground,background", [
     (TEXT, SURFACE), (TEXT, FIELD), (MUTED, SURFACE), (MUTED, BACKGROUND),
     (ACCENT, SURFACE), (FIELD, ACCENT), (ERROR, SURFACE), (TEXT, "#284c7d"),
@@ -155,6 +172,29 @@ def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
         assert "already exists" in dialog.error_var.get()
     finally:
         dialog.destroy()
+
+
+@pytest.mark.parametrize("x,y", [(320, 180), (4500, 100), (-1000, 120)])
+def test_region_dialog_opens_over_its_parent_before_grabbing_input(root, x, y):
+    from app.ui.region_dialog import RegionDialog
+
+    parent = tk.Toplevel(root)
+    parent.geometry(f"700x500+{x}+{y}")
+    parent.update()
+    dialog = RegionDialog(parent)
+    try:
+        expected_x = parent.winfo_rootx() + (parent.winfo_width() - dialog.winfo_reqwidth()) // 2
+        expected_y = parent.winfo_rooty() + (parent.winfo_height() - dialog.winfo_reqheight()) // 2
+        assert abs(dialog.winfo_rootx() - expected_x) <= 16
+        assert abs(dialog.winfo_rooty() - expected_y) <= 40
+        assert dialog.winfo_viewable()
+        assert dialog.grab_current() is dialog
+        dialog._on_cancel()
+        assert parent.grab_current() is None
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+        parent.destroy()
 
 
 @pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])

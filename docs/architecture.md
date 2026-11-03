@@ -78,6 +78,47 @@ Both feeds use recorded event envelopes from the selected source. Turning off
 Their connect/share controls remain independent.
 Neither feed sends video footage or teaching/reference images.
 
+## Shared-device player registration
+
+The Rayfin frontend's `#register` route is an organizer-authenticated kiosk.
+Players need no Microsoft accounts. SQL `GameSession` rows track the game GUID
+and heartbeat published by the desktop. `GamePlayerSession` holds the generated
+name, optional PIN, game GUID, station, registration type, and relay status.
+Required `?player=1` / `?player=2` kiosk flags persist `P1` / `P2` on the
+registration and event envelope. A unique game/player `slotKey` allows just two
+rows per game, shared by normal and no-PIN special entries; SQL rejects racing
+claims for the same station. Normal names and PINs have unique reservation keys.
+The tablet invokes one authenticated `registerPlayer` Rayfin function, passing
+a request UUID, station, and optional special name. The server selects the
+game, generates credentials, checks history, and creates the slot via the
+caller-scoped `ctx.getDataClient()`. Retry IDs recover a saved pass without
+claiming a second slot; the function does not elevate database permissions.
+Only player-pass fields return to the tablet. Per-operation duration/status logs
+exclude names, PINs, tokens, and database response bodies.
+Historical `UserSession` and `SpecialSession` rows remain readable but cannot be
+created or have their identity fields updated through the old APIs. Their assigned
+stations still count; ambiguous pre-limit games must be replaced with a new game.
+Corner gestures register the three special names but
+never bypass Microsoft authentication or grant authorization.
+These tables are accessible only to the authorized publisher account, unlike the
+scoreboard's authenticated-reader view. The kiosk rejects inactive or stale games.
+
+The desktop SDK worker reads pending registrations with each publish cycle.
+Current slots and historical registrations share a 25-row limit, ordered by creation time,
+and are acknowledged to their respective SQL tables only after durable enqueue.
+Python writes their `user.register` envelopes into the same durable Eventstream
+outbox as gameplay. Only a successful queue write is acknowledged back to SQL
+on the next cycle. `eventQueued` means queued, not Eventhouse-ingested.
+Failures retain SQL rows for retry; duplicate deliveries use the same event ID.
+PINs never enter event telemetry. Players photograph the saved name/PIN screen
+for future validation; gameplay player assignment and PIN redemption are separate,
+not yet implemented.
+
+This adds a SQL registration path, not an Eventhouse query connector. Both
+**Share live scoreboard** and **Connect to Fabric** must be configured for
+end-to-end registration delivery. The earlier overview diagram shows gameplay
+and scoreboard paths; this registration relay joins them at the desktop outbox.
+
 ## Desktop video sources
 
 **Video file** preserves sequential playback, frame stepping, and explicit
@@ -108,10 +149,19 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
+- Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
+  crop as its outcome. Unique subsequent hits carry source-time appearance,
+  hit-onset, and response-duration fields; misses and ambiguous pairings do not.
 - `new_session`: sequence 0, announcing the in-memory game GUID shared by both
   players. Payload includes the new and previous IDs, `is_new_session: true`,
   and the reason (`initial`, `video_loaded`, `hdmi_connected`, `manual`, or `game_end`).
   Lifecycle events are recorded even with gameplay recording disabled.
+- `session_end`: emitted with the old GUID and its next sequence before a new
+  GUID is announced. Payload contains the old and next session IDs and reason.
+  Manual **New Session**, source changes, and calibrated game ends all use this
+  ordering; an unannounced initial GUID has no end event. Both events enter the
+  durable outbox and Events table. The Rayfin worker closes the previous SQL
+  game with `active: false` and `endedAt` before publishing the replacement.
 
 A shared `game_end` region matches user-captured end-indicator references at
 video rate. Confirmed matches rotate the GUID once, retain historical events,
@@ -122,7 +172,10 @@ Reference images travel with layouts; footage and references are not published.
 Backward seeks do not regenerate boundaries or reconstruct historical GUIDs.
 
 The live display includes Up-Right/Up-Left/Down-Right/Down-Left/Center hit counts
-and total hits, but not miss counts. Misses still remain in Fabric history.
+and total hits. Miss totals contribute to cumulative hit percentage:
+`hits / (hits + misses) * 100` for detected outcomes this game, not all chart notes.
+Misses also remain in Fabric history. Without miss calibration this percentage
+can overstate actual performance; old snapshots without miss totals hide it.
 The desktop direction selector, region keys, arrow events, and scoreboard use
 these same five names. Loading a legacy layout warns and removes unsupported
 arrow regions from the active setup while keeping numeric, game-end, and
@@ -133,6 +186,28 @@ The viewer rejects old four-direction snapshots instead of inventing a mapping.
 **Hit pace** is detected hits in the last five seconds of video divided by five.
 Pause holds the source-time rate; seeks clear recent pace; New Session clears
 session totals. Network arrival time does not determine hit pace.
+
+**Time to answer** averages positive, uniquely paired appearance-to-hit
+intervals per player this game. The analysis layer timestamps the first observed
+frames of confirmed states and places the evidence on hit events. Duplicate
+frame processing cannot advance confirmation. Multiple appearances before one
+outcome are ambiguous and excluded. Misses, seeks, calibration changes, recording
+toggles, analysis stops, and session resets clear outstanding pairings.
+The aggregator validates timestamp ordering and duration equality before adding
+a sample, while preserving valid hit counts if timing is invalid.
+The snapshot carries `misses`, `averageResponseTimeMs`, and `responseSamples`;
+the typed SDK publisher preserves them. Older snapshots remain readable without
+inventing these measurements.
+
+Animal comparisons cite the [mouse visual-escape reference, approximately
+250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/) and [goldfish auditory
+C-start mean, 10.64 ms at 0-30 cm from the
+speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). The UI identifies the
+different tasks/senses and does not present them as equivalent tests or a
+universal speed ranking.
+The most-hit lane determines a step title using the configured display mapping;
+a positive five-way tie is All-Step Ace, while partial ties award no title.
+All metric cards without supporting data are omitted rather than left empty.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
 active sharing session, and changes sessions through manual/video-load resets

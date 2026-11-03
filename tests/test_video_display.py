@@ -145,7 +145,7 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
             photo = App._make_thumbnail_photo(np.zeros((region.h, region.w, 3), dtype=np.uint8))
             if region.kind == "arrow":
                 tab.update_arrow_recognition_row(region.key(), photo, "hit", 0.99, "active: hit")
-                for state in ("hit", "miss"):
+                for state in ("hit", "miss", "appeared"):
                     ref = App._make_thumbnail_photo(
                         np.zeros((30, 374, 3), dtype=np.uint8), max_width=96, max_height=64,
                     )
@@ -196,11 +196,15 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                     button for frame in card.winfo_children() if isinstance(frame, ttk.Frame)
                     for button in frame.winfo_children() if isinstance(button, ttk.Button)
                 ]
-                assert len(buttons) == 4
+                assert len(buttons) == 6
                 buttons[2].invoke()
                 controller.capture_arrow_reference.assert_called_with(region, "miss")
                 buttons[3].invoke()
                 controller.clear_arrow_reference.assert_called_with(region, "miss")
+                buttons[4].invoke()
+                controller.capture_arrow_reference.assert_called_with(region, "appeared")
+                buttons[5].invoke()
+                controller.clear_arrow_reference.assert_called_with(region, "appeared")
         tab.refresh_region_list([regions[0]])
         root.update()
         assert len(tab.recognition_container.winfo_children()) == 2
