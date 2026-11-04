@@ -114,6 +114,14 @@ PINs never enter event telemetry. Players photograph the saved name/PIN screen
 for future validation; gameplay player assignment and PIN redemption are separate,
 not yet implemented.
 
+The kiosk's secondary Easy mode action calls `registerEasyPlayer`, which uses
+the same authenticated registration and station reservation path but persists
+`excludeFromLeaderboard: true`. Normal registrations store false; historical
+null/missing flags also mean false. The relay preserves this as
+`user.register.payload.exclude_from_leaderboard`. Future leaderboard consumers
+must join by game session and player and exclude flagged entries. Live scoreboard
+participation and gameplay event calculations are unaffected.
+
 This adds a SQL registration path, not an Eventhouse query connector. Both
 **Share live scoreboard** and **Connect to Fabric** must be configured for
 end-to-end registration delivery. The earlier overview diagram shows gameplay

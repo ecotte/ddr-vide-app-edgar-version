@@ -13,6 +13,7 @@ export interface PlayerPass {
   username: string;
   pin: string | null;
   registrationType: 'player' | 'special';
+  excludeFromLeaderboard: boolean;
 }
 
 function playerPass(row: GamePlayerSession): PlayerPass {
@@ -20,6 +21,7 @@ function playerPass(row: GamePlayerSession): PlayerPass {
     id: row.id, gameSessionId: row.gameSessionId, player: row.player, username: row.username,
     pin: row.registrationType === 'special' ? null : row.pin ?? null,
     registrationType: row.registrationType,
+    excludeFromLeaderboard: row.excludeFromLeaderboard ?? false,
   };
 }
 
@@ -50,15 +52,16 @@ async function verifyLiveGame(data: RegistrationData, game: GameSession | undefi
 
 export async function registerPlayer(
   data: RegistrationData, requestId: string, player: string, specialName: string,
+  excludeFromLeaderboard = false,
 ): Promise<PlayerPass> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId)
-      || (player !== 'P1' && player !== 'P2')
+      || (player !== 'P1' && player !== 'P2') || typeof excludeFromLeaderboard !== 'boolean'
       || (specialName !== '' && !SPECIAL_NAMES.some(name => name === specialName))) {
     throw new RegistrationError('Invalid player registration request.');
   }
   const started = Date.now();
   const replay = (row: GamePlayerSession) => {
-    if (row.player !== player || (specialName
+    if (row.player !== player || (row.excludeFromLeaderboard ?? false) !== excludeFromLeaderboard || (specialName
       ? row.registrationType !== 'special' || row.username !== specialName
       : row.registrationType !== 'player')) {
       throw new RegistrationError('This registration request belongs to a different player. Choose Start over.');
@@ -67,7 +70,7 @@ export async function registerPlayer(
   };
   const findSaved = async () => {
     const [row] = await data.GamePlayerSession
-      .select(['id', 'gameSessionId', 'player', 'username', 'pin', 'registrationType'])
+      .select(['id', 'gameSessionId', 'player', 'username', 'pin', 'registrationType', 'excludeFromLeaderboard'])
       .where({ id: { eq: requestId } }).first(1).execute();
     return row;
   };
@@ -116,6 +119,7 @@ export async function registerPlayer(
       pinKey: specialName ? `special:${requestId}` : `pin:${pin}`,
       ...(pin ? { pin } : {}),
       registrationType: specialName ? 'special' : 'player', createdAt: new Date(), eventQueued: false,
+      excludeFromLeaderboard,
     };
     const identityTaken = async () => {
       const [pins, names, oldPins, oldNames] = await Promise.all([

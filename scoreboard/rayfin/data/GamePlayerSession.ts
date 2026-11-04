@@ -18,6 +18,7 @@ export class GamePlayerSession {
   @text({ max: 6, optional: true }) pin?: string;
   @text({ max: 80, unique: true }) pinKey!: string;
   @set('player', 'special') registrationType!: 'player' | 'special';
+  @boolean({ optional: true }) excludeFromLeaderboard?: boolean;
   @date() createdAt!: Date;
   @boolean() eventQueued!: boolean;
 }

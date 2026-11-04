@@ -12,6 +12,12 @@ The organizer sign-in, player check-in, photo-ready player pass, and live
 scoreboard share the booth's dark indigo, neon-track, and "Put your data in
 motion" visual theme. The scoreboard keeps distinct cyan and pink player panels,
 all existing metrics, and visible connection/staleness warnings.
+Player headers use gender-neutral dancing icons and show each station's check-in
+name below **Player 1** or **Player 2**. The authenticated desktop publisher reads
+only the current game's `GamePlayerSession` player/name fields for the scoreboard;
+names remain available after event relay and are cleared for unregistered slots in
+a new game. Signed-in scoreboard viewers see those names, but never PINs or
+registration records. Older snapshots without names keep the Player 1/2 labels.
 Both screens use the supplied white Microsoft Fabric logo asset, preserving its
 colors, aspect ratio, and transparent clear space on the dark background.
 Check-in uses a compact, single-column card for tablets in portrait or landscape,
@@ -136,6 +142,27 @@ are easter eggs, not Microsoft sign-in or authorization bypasses. Each special
 name occupies that station's only registration slot and can be used again in a
 new game. An occupied station rejects further normal or special registrations.
 Normal player names and PINs retain their unique constraints.
+
+### Easy mode
+
+A small **Easy mode (not ranked)** button below **Register me** checks in a
+normal named player with a PIN. The player still occupies the station's single
+slot and appears on the live scoreboard. It does not change Microsoft sign-in,
+OCR, scores, or game difficulty; the organizer selects the game difficulty separately.
+The saved pass confirms that easy-mode entries are not ranked.
+
+The authenticated `registerEasyPlayer` function stores `excludeFromLeaderboard: true`
+in `GamePlayerSession`; normal `registerPlayer` entries store `false`. The separate
+function keeps the normal request contract compatible with older kiosk clients.
+Retries retain the original mode and request ID; switching modes requires Start over.
+Historical rows without the new optional flag are treated as normal entries.
+
+The desktop relays this flag as `payload.exclude_from_leaderboard` in `user.register`
+events. A future leaderboard must join registrations to gameplay by
+`game_session_id`/`session_id` and `player`, then exclude flagged registrations.
+No leaderboard is implemented here, and live-scoreboard calculations are unchanged.
+Deploy schema, Functions and frontend together with `npx rayfin up`, rebuild the
+publisher and restart desktop sharing to relay the new field.
 
 No-PIN entries use the same `GamePlayerSession` slots as normal players.
 The desktop relays current slots and both historical

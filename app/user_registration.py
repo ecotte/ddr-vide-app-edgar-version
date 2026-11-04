@@ -12,6 +12,11 @@ def registration_event(row: dict) -> Event:
         session_id = str(UUID(row["gameSessionId"]))
         username = row["username"]
         registration_type = row.get("registrationType", "player")
+        excluded = row.get("excludeFromLeaderboard")
+        if excluded is None:
+            excluded = False
+        if type(excluded) is not bool:
+            raise ValueError
         player = row.get("player")
         if player not in (None, "P1", "P2"):
             raise ValueError
@@ -40,5 +45,6 @@ def registration_event(row: dict) -> Event:
         payload={
             "user_session_id": event_id, "game_session_id": session_id,
             "username": username, "registration_type": registration_type,
+            "exclude_from_leaderboard": excluded,
         },
     )

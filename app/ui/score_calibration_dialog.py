@@ -1,4 +1,4 @@
-"""Teach score digits by entering the number shown in one video crop."""
+"""Teach score or combo digits by entering the number shown in one video crop."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -16,7 +16,7 @@ from app.ocr_engine import _extract_score_glyphs, score_templates_from_label
 class ScoreCalibrationDialog(tk.Toplevel):
     def __init__(self, parent: tk.Widget, region: Region, crop: np.ndarray):
         super().__init__(parent)
-        self.title(f"Teach score - {region.label}")
+        self.title(f"Teach {region.kind} - {region.label}")
         self.resizable(False, False)
         self.result: dict[str, list[str]] | None = None
         self._region = region
@@ -26,7 +26,7 @@ class ScoreCalibrationDialog(tk.Toplevel):
         self._image_label = ttk.Label(body)
         self._image_label.pack(pady=6)
         ttk.Label(
-            body, text="Type all visible score digits, including leading zeros:",
+            body, text=f"Type all visible {region.kind} digits, including leading zeros:",
         ).pack(anchor="w")
         self.score = tk.StringVar(self)
         entry = ttk.Entry(body, textvariable=self.score, width=24)

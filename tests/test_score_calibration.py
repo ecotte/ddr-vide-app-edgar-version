@@ -44,10 +44,10 @@ def test_leading_zero_is_not_silently_removed_to_force_alignment(segmented):
         score_templates_from_label(np.zeros((44, 315, 3), dtype=np.uint8), "0,391,650")
 
 
-def _region(reviewed=False):
+def _region(reviewed=False, kind="score"):
     encoded = image_utils.encode_crop_to_base64_png(np.zeros((32, 24), dtype=np.uint8))
     return Region(
-        label="Score", player="P1", kind="score", x=0, y=0, w=315, h=44,
+        label=kind.capitalize(), player="P1", kind=kind, x=0, y=0, w=315, h=44,
         digit_templates={digit: [encoded] for digit in "0123456789"},
         digit_templates_reviewed=reviewed,
         score_template_version=config.SCORE_TEMPLATE_VERSION,
@@ -159,8 +159,9 @@ def test_dim_and_bright_glyphs_have_same_normalized_shape():
     assert len(glyphs) == 2
     np.testing.assert_array_equal(glyphs[0], glyphs[1])
 
-def test_teaching_preserves_accepted_value_and_events():
-    region = _region()
+@pytest.mark.parametrize("kind", ["score", "combo"])
+def test_teaching_preserves_accepted_value_and_events(kind):
+    region = _region(kind=kind)
     bus = EventBus()
     session = AnalysisSession(bus)
     session.set_regions([region])
@@ -232,8 +233,9 @@ def test_waiting_reading_is_visible_and_not_reported_as_ocr_error(monkeypatch):
     assert [e.event_type for e in bus.events] == ["new_session", "score_observed"]
 
 
-def test_reviewed_samples_survive_save_load_and_rescale(tmp_path):
-    profile = LayoutProfile("manual", 1280, 720, [_region(reviewed=True)])
+@pytest.mark.parametrize("kind", ["score", "combo"])
+def test_reviewed_samples_survive_save_load_and_rescale(tmp_path, kind):
+    profile = LayoutProfile("manual", 1280, 720, [_region(reviewed=True, kind=kind)])
     path = str(tmp_path / "manual.json")
     layout_store.save_layout_to_path(profile, path)
     loaded = layout_store.load_layout_from_path(path)
@@ -254,10 +256,12 @@ def root():
     root.destroy()
 
 
-def test_dialog_has_single_score_input_and_replaces_auto_samples(root, segmented):
-    region = _region()
+@pytest.mark.parametrize("kind", ["score", "combo"])
+def test_dialog_has_single_score_input_and_replaces_auto_samples(root, segmented, kind):
+    region = _region(kind=kind)
     original = region.to_dict()
     dialog = ScoreCalibrationDialog(root, region, np.zeros((44, 315, 3), dtype=np.uint8))
+    assert dialog.title() == f"Teach {kind} - {region.label}"
     dialog.score.set("391,650")
     dialog._confirm()
     assert set(dialog.result) == set("391650")
@@ -307,3 +311,61 @@ def test_dialog_rejects_bad_input_without_closing(root, segmented):
     assert dialog.winfo_exists()
     assert dialog.error.get()
     dialog.destroy()
+
+
+@pytest.mark.parametrize("yellow_filter,fast_mode", [(False, False), (True, False), (False, True), (True, True)])
+def test_combo_references_verify_ocr_but_still_require_repeated_low_confidence_evidence(
+    monkeypatch, yellow_filter, fast_mode,
+):
+    region = _region(reviewed=True, kind="combo")
+    region.combo_yellow_filter = yellow_filter
+    region.combo_fast_mode = fast_mode
+    session = AnalysisSession(EventBus())
+    session.set_regions([region])
+    assert session.uses_score_templates(region)
+    calls = []
+
+    def recognize(crop, **kwargs):
+        calls.append(kwargs)
+        return OcrResult("65", 0.5)
+
+    monkeypatch.setattr(session.ocr_engine, "recognize_digits", recognize)
+    monkeypatch.setattr(
+        session.ocr_engine, "recognize_score_from_templates",
+        lambda crop, templates: OcrResult("65", 0.99),
+    )
+    session.start()
+    frame = np.zeros((44, 315, 3), dtype=np.uint8)
+    first = session.process_numeric_frame(frame, 0, 0).region_results[0]
+    assert first.accepted_value is None
+    assert first.needs_confirmation
+    second = session.process_numeric_frame(frame, 1, 100).region_results[0]
+    assert second.accepted_value == 65
+    assert [event.event_type for event in session.event_bus.events] == ["new_session", "combo_changed"]
+    assert calls[0].get("yellow_filter", False) == yellow_filter
+    assert calls[0].get("fast_mode", False) == fast_mode
+
+
+@pytest.mark.parametrize("ocr_text,confidence,template_text,accepted", [
+    ("65", 0.5, "66", None),
+    ("65", 0.99, "66", 65),
+    ("", None, "65", None),
+])
+def test_combo_templates_neither_replace_ocr_nor_veto_confident_ocr(
+    monkeypatch, ocr_text, confidence, template_text, accepted,
+):
+    region = _region(reviewed=True, kind="combo")
+    session = AnalysisSession(EventBus())
+    session.set_regions([region])
+    monkeypatch.setattr(
+        session.ocr_engine, "recognize_digits", lambda crop: OcrResult(ocr_text, confidence),
+    )
+    monkeypatch.setattr(
+        session.ocr_engine, "recognize_score_from_templates",
+        lambda crop, templates: OcrResult(template_text, 0.99),
+    )
+    session.start()
+    result = session.process_numeric_frame(
+        np.zeros((44, 315, 3), dtype=np.uint8), 0, 0,
+    ).region_results[0]
+    assert result.accepted_value == accepted

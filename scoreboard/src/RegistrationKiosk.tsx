@@ -18,7 +18,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   const [error, setError] = useState('');
   const [progress, setProgress] = useState('');
   const [station] = useState(() => registrationStation(window.location.search));
-  async function register(specialName?: SpecialName) {
+  async function register(specialName?: SpecialName, easyMode = false) {
     if (station.error || !station.player) { setError(station.error); return; }
     if (busy.current) return;
     busy.current = true;
@@ -30,9 +30,13 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           && draft.current.specialName !== specialName) {
         throw new Error('Retry the current registration, or choose Start over before changing players.');
       }
+      if (easyMode && draft.current && !draft.current.excludeFromLeaderboard) {
+        throw new Error('Retry the current registration, or choose Start over before changing modes.');
+      }
       if (!draft.current) {
         draft.current = {
           requestId: crypto.randomUUID(), player: station.player, specialName: specialName ?? '',
+          excludeFromLeaderboard: easyMode,
         };
       }
       const data = await saveRegistration(client, draft.current);
@@ -125,6 +129,9 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           : <p className="booth-champion-note">Special entry. No PIN needed.</p>}
       </div>
       <p className="booth-game-session">Game session ID: <code>{saved.data.gameSessionId}</code></p>
+      {saved.data.excludeFromLeaderboard && <p className="booth-card-note">
+        Easy mode: shown on the live scoreboard, excluded from leaderboard rankings.
+      </p>}
       <div className="booth-photo-prompt">
         <svg className="booth-camera-icon" width="32" height="32" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true" focusable="false">
@@ -147,6 +154,10 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         {saving ? 'Registering...' : draft.current ? 'Retry registration' : 'Register me'}
         <span aria-hidden="true">&#8594;</span>
       </button>
+      {!draft.current && <button className="booth-easy-mode"
+        disabled={saving || Boolean(station.error)} onClick={() => { void register(undefined, true); }}>
+        Easy mode <span>(not ranked)</span>
+      </button>}
       {saving && <p role="status" className="booth-card-note">{progress}</p>}
       {(station.error || error) && <p role="alert" className="error">{station.error || error}</p>}
       {error && <button className="booth-secondary" onClick={next}>Next player / Start over</button>}

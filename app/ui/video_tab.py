@@ -253,6 +253,10 @@ class VideoTab(ttk.Frame):
         ttk.Button(layout_box, text="Load Layout From...", command=self._on_load_layout_from_file).grid(
             row=1, column=4, padx=4, pady=(4, 0)
         )
+        ttk.Label(
+            layout_box, text="Layouts include all arrow/game-end references and taught score/combo digits.",
+            style="Muted.TLabel", wraplength=480,
+        ).grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
 
         # --- analysis controls -------------------------------------------
         analysis_box = ttk.LabelFrame(left, text="Analysis", padding=6)
@@ -323,7 +327,7 @@ class VideoTab(ttk.Frame):
         status_box.pack(fill="x", pady=(6, 0))
         self.ocr_status_var = tk.StringVar(value="OCR engine: not loaded yet")
         ttk.Label(status_box, textvariable=self.ocr_status_var).pack(anchor="w")
-        self.calibration_status_var = tk.StringVar(value="Score calibration: not started")
+        self.calibration_status_var = tk.StringVar(value="Digit calibration: not started")
         ttk.Label(status_box, textvariable=self.calibration_status_var).pack(anchor="w")
         self.processing_status_var = tk.StringVar(value="")
         ttk.Label(status_box, textvariable=self.processing_status_var).pack(anchor="w")
@@ -504,26 +508,39 @@ class VideoTab(ttk.Frame):
             widget.destroy()
         self._region_rows = {}
         self._region_thumb_refs = {}
-        columns = {}
         for index, player in enumerate(("P1", "P2")):
             self.recognition_container.columnconfigure(index, weight=1, uniform="players")
-            column = ttk.LabelFrame(self.recognition_container, text=f"Player {index + 1}", padding=4)
-            column.grid(row=0, column=index, sticky="new", padx=(0, 4) if index == 0 else (4, 0))
-            columns[player] = column
+            ttk.Label(
+                self.recognition_container, text=f"Player {index + 1}", style="Section.TLabel",
+            ).grid(row=0, column=index, sticky="w", padx=4, pady=4)
+        paired_rows = {("score", None): 1, ("combo", None): 2}
+        paired_rows.update({
+            ("arrow", direction): index + 3
+            for index, direction in enumerate(config.ARROW_DIRECTIONS)
+        })
+        next_row = len(paired_rows) + 1
+        unknown = None
         if any(r.player == "Unknown" and r.kind != "game_end" for r in regions):
-            columns["Unknown"] = ttk.LabelFrame(
+            unknown = ttk.LabelFrame(
                 self.recognition_container, text="Unknown player", padding=4,
             )
-            columns["Unknown"].grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            unknown.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+            next_row += 1
         for r in regions:
             if r.kind == "game_end":
                 shared = ttk.LabelFrame(self.recognition_container, text="Game session", padding=8)
-                shared.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+                shared.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=(12, 0))
                 self._build_game_end_row(r, shared)
-            elif r.kind == "arrow":
-                self._build_arrow_row(r, columns[r.player])
             else:
-                self._build_numeric_row(r, columns[r.player])
+                grid_row = (
+                    paired_rows[(r.kind, r.direction if r.kind == "arrow" else None)]
+                    if r.player in ("P1", "P2") else None
+                )
+                parent = self.recognition_container if grid_row is not None else unknown
+                if r.kind == "arrow":
+                    self._build_arrow_row(r, parent, grid_row=grid_row)
+                else:
+                    self._build_numeric_row(r, parent, grid_row=grid_row)
 
     @staticmethod
     def _wrap_card_labels(row) -> None:
@@ -535,9 +552,14 @@ class VideoTab(ttk.Frame):
             lambda event: [label.configure(wraplength=max(40, event.width - 12)) for label in labels],
         )
 
-    def _build_numeric_row(self, r, parent=None) -> None:
+    def _build_numeric_row(self, r, parent=None, *, grid_row=None) -> None:
         row = ttk.Frame(parent if parent is not None else self.recognition_container, relief="groove", padding=4)
-        row.pack(fill="x", pady=3)
+        if grid_row is None:
+            row.pack(fill="x", pady=3)
+        else:
+            column = 0 if r.player == "P1" else 1
+            row.grid(row=grid_row, column=column, sticky="nsew", pady=3,
+                     padx=(0, 4) if column == 0 else (4, 0))
         row.columnconfigure(0, weight=1)
         ttk.Label(row, text=f"{r.label} ({r.player}/{r.kind})", font=("", 9, "bold")).grid(
             row=0, column=0, sticky="w"
@@ -553,9 +575,9 @@ class VideoTab(ttk.Frame):
         ttk.Label(row, textvariable=candidate_var).grid(row=3, column=0, sticky="w")
         ttk.Label(row, textvariable=accepted_var).grid(row=4, column=0, sticky="w")
         ttk.Label(row, textvariable=status_var).grid(row=5, column=0, sticky="w")
-        if r.kind == "score":
+        if r.kind in ("score", "combo"):
             ttk.Button(
-                row, text="Teach score...", command=lambda reg=r: self.controller.teach_score(reg),
+                row, text=f"Teach {r.kind}...", command=lambda reg=r: self.controller.teach_score(reg),
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
         yellow_filter_var = None
         fast_mode_var = None
@@ -566,13 +588,13 @@ class VideoTab(ttk.Frame):
                 command=lambda reg=r, var=yellow_filter_var: self.controller.set_combo_yellow_filter(
                     reg, var.get()
                 ),
-            ).grid(row=6, column=0, sticky="w", pady=(4, 0))
+            ).grid(row=7, column=0, sticky="w", pady=(4, 0))
             fast_mode_var = tk.BooleanVar(value=r.combo_fast_mode)
             ttk.Checkbutton(
                 row, text="Fast live combo", variable=fast_mode_var,
                 command=lambda reg=r, var=fast_mode_var: self.controller.set_combo_fast_mode(reg, var.get()),
-            ).grid(row=7, column=0, sticky="w")
-        ttk.Label(row, textvariable=source_var).grid(row=8, column=0, sticky="w", pady=(4, 0))
+            ).grid(row=8, column=0, sticky="w")
+        ttk.Label(row, textvariable=source_var).grid(row=9, column=0, sticky="w", pady=(4, 0))
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
             "kind": "numeric",
@@ -586,9 +608,14 @@ class VideoTab(ttk.Frame):
             "fast_mode_var": fast_mode_var,
         }
 
-    def _build_arrow_row(self, r, parent=None) -> None:
+    def _build_arrow_row(self, r, parent=None, *, grid_row=None) -> None:
         row = ttk.Frame(parent if parent is not None else self.recognition_container, relief="groove", padding=4)
-        row.pack(fill="x", pady=3)
+        if grid_row is None:
+            row.pack(fill="x", pady=3)
+        else:
+            column = 0 if r.player == "P1" else 1
+            row.grid(row=grid_row, column=column, sticky="nsew", pady=3,
+                     padx=(0, 4) if column == 0 else (4, 0))
         row.columnconfigure(0, weight=1)
         ttk.Label(row, text=f"{r.label} ({r.player}/arrow/{r.direction})", font=("", 9, "bold")).grid(
             row=0, column=0, sticky="w"

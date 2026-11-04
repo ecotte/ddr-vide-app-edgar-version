@@ -3,6 +3,7 @@ export const DIRECTIONS = ['Up-Right', 'Up-Left', 'Down-Right', 'Down-Left', 'Ce
 export type Direction = typeof DIRECTIONS[number];
 
 export interface PlayerState {
+  username?: string | null;
   score: number | null;
   combo: number | null;
   hits: number;
@@ -34,6 +35,9 @@ function isPlayer(value: unknown): value is PlayerState {
   if (!isRecord(value)) return false;
   const directions = value.hitsByDirection;
   return isRecord(value) && numberOrNull(value.score) && numberOrNull(value.combo)
+    && (value.username == null || (
+      typeof value.username === 'string' && value.username.trim().length > 0 && value.username.length <= 80
+    ))
     && numberOrNull(value.observedScore) && numberOrNull(value.lastVideoTimeMs)
     && typeof value.hits === 'number' && numberOrNull(value.hits)
     && (value.misses == null || numberOrNull(value.misses))
@@ -71,6 +75,7 @@ export function parseSnapshot(value: unknown): BoardSnapshot {
 
 function cleanPlayer(player: PlayerState): PlayerState {
   return {
+    username: player.username ?? null,
     score: player.score, combo: player.combo, hits: player.hits,
     misses: player.misses ?? null,
     hitPace: player.hitPace ?? null,

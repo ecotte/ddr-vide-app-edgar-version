@@ -2,7 +2,7 @@ import type { AppFunctionsSchema } from '../rayfin/functions/src/types';
 import type { Client } from './client';
 export { SPECIAL_NAMES, type SpecialName } from '../rayfin/functions/src/identity';
 
-export type RegistrationRequest = AppFunctionsSchema['registerPlayer']['input'];
+export type RegistrationRequest = AppFunctionsSchema['registerPlayer']['input'] & { excludeFromLeaderboard?: boolean };
 export type PlayerPass = AppFunctionsSchema['registerPlayer']['output'];
 
 export function registrationStation(search: string): { player?: 'P1' | 'P2'; error: string } {
@@ -15,5 +15,8 @@ export function registrationStation(search: string): { player?: 'P1' | 'P2'; err
 }
 
 export function saveRegistration(client: Client, request: RegistrationRequest): Promise<PlayerPass> {
-  return client.functions.registerPlayer.invoke(request, { timeoutMs: 120000 });
+  const { excludeFromLeaderboard, ...input } = request;
+  return excludeFromLeaderboard
+    ? client.functions.registerEasyPlayer.invoke(input, { timeoutMs: 120000 })
+    : client.functions.registerPlayer.invoke(input, { timeoutMs: 120000 });
 }

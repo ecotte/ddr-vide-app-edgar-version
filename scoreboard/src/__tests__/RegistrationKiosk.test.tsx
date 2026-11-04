@@ -13,6 +13,7 @@ vi.mock('../registration', async importOriginal => ({
 const pass: PlayerPass = {
   id: 'user', gameSessionId: 'game', player: 'P1', username: 'SillyEventhouse1234',
   pin: '123456', registrationType: 'player',
+  excludeFromLeaderboard: false,
 };
 beforeEach(() => {
   window.history.replaceState(null, '', '/?player=1#register');
@@ -49,6 +50,29 @@ it('retains the request ID after a failure so retry cannot create a duplicate', 
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
   expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
   expect(screen.getByText(pass.username)).toBeInTheDocument();
+});
+
+it('offers a discreet easy-mode action below normal registration and retains its mode on retry', async () => {
+  vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Connection interrupted'))
+    .mockResolvedValueOnce({ ...pass, excludeFromLeaderboard: true });
+  render(<RegistrationKiosk client={client()} />);
+  const normal = screen.getByRole('button', { name: 'Register me' });
+  const easy = screen.getByRole('button', { name: 'Easy mode (not ranked)' });
+  expect(normal.nextElementSibling).toBe(easy);
+  expect(easy).toHaveClass('booth-easy-mode');
+  expect(easy).not.toHaveClass('booth-primary');
+  await act(async () => { fireEvent.click(easy); });
+  const request = vi.mocked(saveRegistration).mock.calls[0][1];
+  expect(request).toMatchObject({ player: 'P1', specialName: '', excludeFromLeaderboard: true });
+  expect(screen.queryByRole('button', { name: 'Easy mode (not ranked)' })).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
+  expect(screen.getByText(/Easy mode: shown on the live scoreboard/)).toBeInTheDocument();
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /Next player/ }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[2][1]).toMatchObject({ excludeFromLeaderboard: false });
+  expect(vi.mocked(saveRegistration).mock.calls[2][1].requestId).not.toBe(request.requestId);
 });
 it('shows progress and prevents concurrent clicks while its single server request is pending', async () => {
   let resolve!: (value: PlayerPass) => void;
@@ -136,6 +160,7 @@ it.each(['/', '/?player=3#register'])('blocks missing or invalid station URLs %s
   render(<RegistrationKiosk client={client()} />);
   expect(screen.getByRole('alert')).toHaveTextContent(/station/i);
   expect(screen.getByRole('button', { name: 'Register me' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Easy mode (not ranked)' })).toBeDisabled();
   expect(saveRegistration).not.toHaveBeenCalled();
 });
 it('does not activate on interleaved or expired corner taps', () => {

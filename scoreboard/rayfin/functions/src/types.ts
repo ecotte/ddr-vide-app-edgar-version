@@ -19,6 +19,10 @@
 export type AppFunctionsSchema = {
   registerPlayer: {
     input: { requestId: string; player: string; specialName: string };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special' };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean };
+  };
+  registerEasyPlayer: {
+    input: { requestId: string; player: string; specialName: string };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean };
   };
 };

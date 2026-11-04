@@ -6,12 +6,12 @@ import { registerPlayer, RegistrationError, type PlayerPass } from './registrati
 
 const udf = new UserDataFunctions();
 
-udf.func('registerPlayer', async (
-  requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>,
-): Promise<PlayerPass> => {
+async function savePlayer(
+  requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>, excludeFromLeaderboard: boolean,
+): Promise<PlayerPass> {
   const started = Date.now();
   try {
-    const result = await registerPlayer(ctx.getDataClient(), requestId, player, specialName);
+    const result = await registerPlayer(ctx.getDataClient(), requestId, player, specialName, excludeFromLeaderboard);
     console.log(JSON.stringify({ operation: 'registerPlayer', durationMs: Date.now() - started, status: 'saved' }));
     return result;
   } catch (error) {
@@ -19,4 +19,12 @@ udf.func('registerPlayer', async (
     if (error instanceof RegistrationError) throw new UserThrownError(error.message);
     throw new UserDataFunctionInternalError('Registration service unavailable. Retry the same registration to recover your player pass.');
   }
-}, []);
+}
+
+udf.func('registerPlayer', async (
+  requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>,
+): Promise<PlayerPass> => savePlayer(requestId, player, specialName, ctx, false), []);
+
+udf.func('registerEasyPlayer', async (
+  requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>,
+): Promise<PlayerPass> => savePlayer(requestId, player, specialName, ctx, true), []);

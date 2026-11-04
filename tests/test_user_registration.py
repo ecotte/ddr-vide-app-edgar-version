@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from unittest.mock import Mock
 
@@ -65,6 +66,30 @@ def test_invalid_station_is_not_published():
     with pytest.raises(ValueError):
         registration_event({**ROW, "player": "P3"})
 
+
+@pytest.mark.parametrize("excluded", [False, True])
+def test_leaderboard_exclusion_is_preserved_in_durable_registration_event(tmp_path, excluded):
+    event = registration_event({**ROW, "player": "P1", "excludeFromLeaderboard": excluded})
+    assert event.player == "P1"
+    assert event.payload["exclude_from_leaderboard"] is excluded
+    outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "test")
+    try:
+        outbox.enqueue(event)
+        assert json.loads(outbox.next_event()[2])["payload"]["exclude_from_leaderboard"] is excluded
+    finally:
+        outbox.close()
+
+
+@pytest.mark.parametrize("excluded", [None, False])
+def test_legacy_registration_is_not_excluded(excluded):
+    assert registration_event(ROW).payload["exclude_from_leaderboard"] is False
+    assert registration_event({**ROW, "excludeFromLeaderboard": excluded}).payload["exclude_from_leaderboard"] is False
+
+
+@pytest.mark.parametrize("excluded", ["false", "true", 0, 1, [], {}])
+def test_invalid_leaderboard_exclusion_is_not_published(excluded):
+    with pytest.raises(ValueError, match="Invalid user registration"):
+        registration_event({**ROW, "excludeFromLeaderboard": excluded})
 
 def test_registration_is_durable_and_duplicates_pending_are_safe(tmp_path):
     publisher = EventstreamPublisher(str(tmp_path / "outbox.sqlite3"))

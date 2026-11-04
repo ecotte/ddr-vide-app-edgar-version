@@ -73,11 +73,40 @@ it('invokes exactly one typed function and performs no browser data checks', asy
   const { client } = setup();
   const request = { requestId: crypto.randomUUID(), player: 'P1', specialName: '' };
   const result = { id: request.requestId, player: 'P1' as const, username: 'SillyEventhouse1234',
-    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const };
+    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: false };
   const invoke = vi.spyOn(client.functions.registerPlayer, 'invoke').mockResolvedValue(result);
   expect(await saveRegistration(client, request)).toEqual(result);
   expect(invoke).toHaveBeenCalledExactlyOnceWith(request, { timeoutMs: 120000 });
   expect(client.data.GameSession.select).not.toHaveBeenCalled();
+});
+
+it('uses the easy-mode server function without changing the normal function input contract', async () => {
+  const { client } = setup();
+  const request = { requestId: crypto.randomUUID(), player: 'P2', specialName: '', excludeFromLeaderboard: true };
+  const result = { id: request.requestId, player: 'P2' as const, username: 'SillyEventhouse1234',
+    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: true };
+  const easy = vi.spyOn(client.functions.registerEasyPlayer, 'invoke').mockResolvedValue(result);
+  const normal = vi.spyOn(client.functions.registerPlayer, 'invoke');
+  expect(await saveRegistration(client, request)).toEqual(result);
+  expect(easy).toHaveBeenCalledExactlyOnceWith({
+    requestId: request.requestId, player: 'P2', specialName: '',
+  }, { timeoutMs: 120000 });
+  expect(normal).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('persists leaderboard exclusion %s without altering station or credentials', async excluded => {
+  const { client, create, find, gameExecute } = setup();
+  const id = crypto.randomUUID();
+  const pass = await registerPlayer(client.data, id, 'P1', '', excluded);
+  expect(pass.excludeFromLeaderboard).toBe(excluded);
+  expect(pass.pin).toMatch(/^[1-9][0-9]{5}$/);
+  const draft = create.mock.calls[0][0];
+  expect(draft).toMatchObject({ slotKey: `${gameId}:P1`, excludeFromLeaderboard: excluded, eventQueued: false });
+  find.mockResolvedValue({ ...draft, id });
+  gameExecute.mockResolvedValue([]);
+  expect(await registerPlayer(client.data, id, 'P1', '', excluded)).toEqual(pass);
+  await expect(registerPlayer(client.data, id, 'P1', '', !excluded)).rejects.toThrow('different player');
+  expect(create).toHaveBeenCalledTimes(1);
 });
 it('rejects invalid parameters before accessing the database', async () => {
   const { client, find } = setup();

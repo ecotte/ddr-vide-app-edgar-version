@@ -310,13 +310,13 @@ def score_templates_from_label(
         raise ValueError("Enter digits only, optionally with thousands separators.")
     digits = text.replace(",", "")
     if crop_bgr is None or crop_bgr.size == 0:
-        raise ValueError("No score image is available. Display a clear score frame first.")
+        raise ValueError("No number image is available. Display a clear number frame first.")
     _, _, glyphs = _extract_score_glyphs(crop_bgr)
     if not glyphs:
-        raise ValueError("No digit shapes found. Try a clearer frame or a tighter score region.")
+        raise ValueError("No digit shapes found. Try a clearer frame or a tighter number region.")
     if len(digits) != len(glyphs):
         raise ValueError(
-            f"Found {len(glyphs)} digit shapes, but the entered score has {len(digits)} digits. "
+            f"Found {len(glyphs)} digit shapes, but the entered number has {len(digits)} digits. "
             "Include visible leading zeros, or choose a clearer frame/tighter region."
         )
     return list(zip(digits, glyphs))

@@ -133,7 +133,7 @@ class AnalysisSession:
                     self._arrow_references[r.key()] = decoded
                 else:
                     self._trackers[r.key()] = TemporalValueTracker(1)
-                    if r.kind == "score":
+                    if r.kind in ("score", "combo"):
                         self.update_score_templates(r)
 
     def set_required_consecutive_frames(self, n: int) -> None:
@@ -223,13 +223,13 @@ class AnalysisSession:
             return self._trackers[region.key()]
 
     def has_complete_score_templates(self, region: Region) -> bool:
-        with self._score_lock:
+        with self._combo_lock if region.kind == "combo" else self._score_lock:
             return self.uses_score_templates(region) and _has_complete_score_templates(
                 self._score_templates.get(region.key(), {}), min_examples=1
             )
 
     def uses_score_templates(self, region: Region) -> bool:
-        with self._score_lock:
+        with self._combo_lock if region.kind == "combo" else self._score_lock:
             return (
                 region.digit_templates_reviewed
                 and region.score_template_version == config.SCORE_TEMPLATE_VERSION
@@ -240,14 +240,14 @@ class AnalysisSession:
 
     def update_score_templates(self, region: Region) -> None:
         """Refresh calibration without resetting accepted values or event history."""
-        with self._score_lock:
+        with self._combo_lock if region.kind == "combo" else self._score_lock:
             decoded = {}
             for digit, examples in region.digit_templates.items():
                 images = []
                 for encoded in examples:
                     image = image_utils.decode_base64_png_to_crop(encoded)
                     if image is None or image.shape[:2] != (32, 24):
-                        raise ValueError(f"Invalid score template for digit {digit}.")
+                        raise ValueError(f"Invalid {region.kind} template for digit {digit}.")
                     images.append(image[:, :, 0])
                 decoded[digit] = images
             self._score_templates[region.key()] = decoded
@@ -446,15 +446,7 @@ class AnalysisSession:
         self._last_numeric_frame[region.key()] = (frame_index, video_time_ms)
         template_verified = False
         if region.kind == "score":
-            templates = self._score_templates.get(region.key(), {})
             ocr_result = self.ocr_engine.recognize_score_digits(crop)
-            if self.uses_score_templates(region) and ocr_result.error is None:
-                template_result = self.ocr_engine.recognize_score_from_templates(crop, templates)
-                template_verified = (
-                    template_result.error is None
-                    and parse_digits(template_result.raw_text) is not None
-                    and parse_digits(template_result.raw_text) == parse_digits(ocr_result.raw_text)
-                )
         elif region.combo_fast_mode:
             ocr_result = self.ocr_engine.recognize_digits(
                 crop, yellow_filter=region.combo_yellow_filter, fast_mode=True,
@@ -463,6 +455,15 @@ class AnalysisSession:
             ocr_result = self.ocr_engine.recognize_digits(crop, yellow_filter=True)
         else:
             ocr_result = self.ocr_engine.recognize_digits(crop)
+        if self.uses_score_templates(region) and ocr_result.error is None:
+            template_result = self.ocr_engine.recognize_score_from_templates(
+                crop, self._score_templates.get(region.key(), {}),
+            )
+            template_verified = (
+                template_result.error is None
+                and parse_digits(template_result.raw_text) is not None
+                and parse_digits(template_result.raw_text) == parse_digits(ocr_result.raw_text)
+            )
         max_digits = config.FIELD_MAX_DIGITS.get(region.kind)
         candidate = None
         parsed_candidate = None

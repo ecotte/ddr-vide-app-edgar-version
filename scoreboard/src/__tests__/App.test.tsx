@@ -108,6 +108,39 @@ it('shows per-player response averages, sourced comparisons, cumulative percenta
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
 });
 
+it('shows check-in names under the correct player labels with gender-neutral dancing icons', async () => {
+  const { client, execute } = fakeClient({
+    ...snapshot, players: {
+      P1: { ...player, username: 'SillyEventhouse1234' },
+      P2: { ...player, username: 'HappyLakehouse5678' },
+    },
+  });
+  await act(async () => { render(<App client={client} />); });
+  for (const [label, username] of [
+    ['Player 1', 'SillyEventhouse1234'], ['Player 2', 'HappyLakehouse5678'],
+  ]) {
+    const heading = screen.getByRole('heading', { name: `${label} ${username}` });
+    expect(heading.querySelector('.player-corner svg')).toHaveAttribute('viewBox', '0 0 32 32');
+    expect(heading.querySelector('.player-corner')).toHaveAttribute('aria-hidden', 'true');
+  }
+  execute.mockResolvedValue([{
+    id: 'board', snapshot: JSON.stringify({ ...snapshot, sessionId: 'new-game' }),
+    publishedAt: new Date('2026-10-12T16:00:01Z'),
+  }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.queryByText('SillyEventhouse1234')).not.toBeInTheDocument();
+  expect(screen.queryByText('HappyLakehouse5678')).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Player 1' })).toBeInTheDocument();
+});
+
+it('does not show previous player names while the feed is inactive', async () => {
+  const { client } = fakeClient({
+    ...snapshot, active: false, players: { P1: { ...player, username: 'OldPlayer' }, P2: player },
+  });
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.queryByText('OldPlayer')).not.toBeInTheDocument();
+});
+
 it('hides missing metrics in legacy snapshots instead of leaving empty cards', async () => {
   const legacy = { score: null, combo: null, hits: 3, observedScore: null, lastVideoTimeMs: 100 };
   const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });

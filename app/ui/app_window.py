@@ -720,7 +720,7 @@ class App(tk.Tk):
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
         self._refresh_arrow_reference_thumbnails()
-        if region.kind == "score":
+        if region.kind in ("score", "combo"):
             self._refresh_score_calibration_status()
 
     def delete_region(self, index: int) -> None:
@@ -753,7 +753,8 @@ class App(tk.Tk):
         photo = self._make_thumbnail_photo(crop, max_width=96, max_height=64)
         self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo, len(references))
         self.video_tab.set_processing_status(
-            f"Captured '{state}' reference {len(references)} for {region.label} at the current frame."
+            f"Captured '{state}' reference {len(references)} for {region.label} at the current frame. "
+            "Save Layout to keep all references."
         )
 
     def clear_arrow_reference(self, region: Region, state: str) -> None:
@@ -798,7 +799,10 @@ class App(tk.Tk):
             return
         path = layout_store.save_layout(profile)
         self.video_tab.refresh_layout_names()
-        messagebox.showinfo("Layout saved", f"Saved layout '{name}' to:\n{path}")
+        messagebox.showinfo(
+            "Layout saved", f"Saved layout '{name}' to:\n{path}\n\n"
+            "Includes all arrow/game-end references and taught score/combo digits.",
+        )
 
     def save_layout_to_path(self, path: str) -> None:
         """Save the current regions to a caller-chosen file path (Save As...)."""
@@ -809,7 +813,10 @@ class App(tk.Tk):
         saved_path = layout_store.save_layout_to_path(profile, path)
         if os.path.dirname(os.path.abspath(saved_path)) == os.path.abspath(config.LAYOUTS_DIR):
             self.video_tab.refresh_layout_names()
-        messagebox.showinfo("Layout saved", f"Saved layout to:\n{saved_path}")
+        messagebox.showinfo(
+            "Layout saved", f"Saved layout to:\n{saved_path}\n\n"
+            "Includes all arrow/game-end references and taught score/combo digits.",
+        )
 
     def _apply_loaded_profile(self, load_fn) -> None:
         """Shared logic for loading a profile (by name or by path): resolution
@@ -863,7 +870,7 @@ class App(tk.Tk):
     def _refresh_score_calibration_status(self) -> None:
         statuses = []
         for region in self.regions:
-            if region.kind != "score":
+            if region.kind not in ("score", "combo"):
                 continue
             if (
                 region.digit_templates_reviewed
@@ -881,7 +888,7 @@ class App(tk.Tk):
                 mode = "OCR with digit references" if self.analysis.uses_score_templates(region) else "OCR"
                 statuses.append(f"{region.label}: {mode}; untaught digits {missing}")
         self.video_tab.set_calibration_status(
-            "; ".join(statuses) if statuses else "Score calibration: no score region"
+            "; ".join(statuses) if statuses else "Digit calibration: no score or combo region"
         )
 
     def set_combo_yellow_filter(self, region: Region, enabled: bool) -> None:
@@ -908,14 +915,14 @@ class App(tk.Tk):
 
     def teach_score(self, region: Region) -> None:
         if self._last_frame_bgr is None:
-            messagebox.showerror("No frame", "Open a video and display a clear score first.")
+            messagebox.showerror("No frame", f"Open a video or HDMI input and display a clear {region.kind} first.")
             return
         self._stop_playing()
         frame_h, frame_w = self._last_frame_bgr.shape[:2]
         x0, y0 = max(0, region.x), max(0, region.y)
         x1, y1 = min(frame_w, region.x + region.w), min(frame_h, region.y + region.h)
         if x1 <= x0 or y1 <= y0:
-            messagebox.showerror("Out of bounds", "The score region is outside the frame.")
+            messagebox.showerror("Out of bounds", f"The {region.kind} region is outside the frame.")
             return
         dialog = ScoreCalibrationDialog(self, region, self._last_frame_bgr[y0:y1, x0:x1])
         self.wait_window(dialog)
@@ -928,7 +935,7 @@ class App(tk.Tk):
         self._analysis_generation += 1
         self._refresh_score_calibration_status()
         self.video_tab.set_processing_status(
-            "Score samples learned. Advance/play to verify with OCR. Save Layout to keep them. Existing events and "
+            f"{region.kind.capitalize()} samples learned. Advance/play to verify with OCR. Save Layout to keep them. Existing events and "
             "accepted values are unchanged; New Session resets incorrect history."
         )
         if self.video_source is not None:
