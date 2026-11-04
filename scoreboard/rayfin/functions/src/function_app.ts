@@ -2,7 +2,7 @@ import {
   UserDataFunctions, UserThrownError, UserDataFunctionInternalError, type RayfinContext,
 } from '@microsoft/fabric-user-data-functions';
 import type { AppSchema } from '../../data/schema.js';
-import { registerPlayer, RegistrationError, type PlayerPass } from './registration.js';
+import { getRegistrationMode, registerPlayer, RegistrationError, type PlayerPass } from './registration.js';
 
 const udf = new UserDataFunctions();
 
@@ -28,3 +28,15 @@ udf.func('registerPlayer', async (
 udf.func('registerEasyPlayer', async (
   requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>,
 ): Promise<PlayerPass> => savePlayer(requestId, player, specialName, ctx, true), []);
+
+udf.func('getRegistrationMode', async (ctx: RayfinContext<AppSchema>): Promise<{
+  gameSessionId: string | null; excludeFromLeaderboard: boolean | null;
+}> => {
+  try {
+    return await getRegistrationMode(ctx.getDataClient());
+  } catch (error) {
+    console.error(JSON.stringify({ operation: 'getRegistrationMode', status: 'failed' }));
+    if (error instanceof RegistrationError) throw new UserThrownError(error.message);
+    throw new UserDataFunctionInternalError('Unable to check the session mode. Ask the organizer to check the connection.');
+  }
+}, []);

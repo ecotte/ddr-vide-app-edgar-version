@@ -151,11 +151,26 @@ slot and appears on the live scoreboard. It does not change Microsoft sign-in,
 OCR, scores, or game difficulty; the organizer selects the game difficulty separately.
 The saved pass confirms that easy-mode entries are not ranked.
 
-The authenticated `registerEasyPlayer` function stores `excludeFromLeaderboard: true`
-in `GamePlayerSession`; normal `registerPlayer` entries store `false`. The separate
-function keeps the normal request contract compatible with older kiosk clients.
-Retries retain the original mode and request ID; switching modes requires Start over.
-Historical rows without the new optional flag are treated as normal entries.
+The first registration reserves the game mode before saving its player pass.
+`registerEasyPlayer` requests easy mode; `registerPlayer` requests normal mode.
+Both functions then inherit the same immutable `GameSessionMode` record, keyed
+by the game UUID. SQL primary-key uniqueness resolves simultaneous opposing
+requests: one mode wins, and both players receive it. Neither update nor delete
+permission is granted on the lock. Special entries inherit it too.
+
+The kiosk polls the current mode once after each completed one-second interval,
+shows the locked mode, and hides the alternate easy-mode action. Server-side
+enforcement also covers stale screens and older kiosk clients. The saved pass
+always confirms the actual mode. Each player stores that mode in
+`GamePlayerSession.excludeFromLeaderboard`. Retries recover the saved pass
+without changing its mode. **Start over** clears only the local request;
+changing the game mode requires **New Session** in the desktop.
+
+A lock survives a failed player write so retries and the other kiosk cannot
+choose conflicting modes. Existing single-mode registrations seed the lock;
+historical rows without the exclusion flag count as normal. A pre-existing game
+with conflicting modes is rejected with a New Session instruction rather than
+rewriting registrations or already-queued events.
 
 The desktop relays this flag as `payload.exclude_from_leaderboard` in `user.register`
 events. A future leaderboard must join registrations to gameplay by

@@ -4,6 +4,11 @@ export { SPECIAL_NAMES, type SpecialName } from '../rayfin/functions/src/identit
 
 export type RegistrationRequest = AppFunctionsSchema['registerPlayer']['input'] & { excludeFromLeaderboard?: boolean };
 export type PlayerPass = AppFunctionsSchema['registerPlayer']['output'];
+export type RegistrationMode = AppFunctionsSchema['getRegistrationMode']['output'];
+
+export function getRegistrationMode(client: Client): Promise<RegistrationMode> {
+  return client.functions.getRegistrationMode.invoke(undefined);
+}
 
 export function registrationStation(search: string): { player?: 'P1' | 'P2'; error: string } {
   const flags = new URLSearchParams(search).getAll('player');

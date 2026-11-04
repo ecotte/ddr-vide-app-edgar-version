@@ -25,4 +25,8 @@ export type AppFunctionsSchema = {
     input: { requestId: string; player: string; specialName: string };
     output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean };
   };
+  getRegistrationMode: {
+    input: Record<string, never>;
+    output: { gameSessionId: null | string; excludeFromLeaderboard: null | false | true };
+  };
 };

@@ -115,9 +115,19 @@ for future validation; gameplay player assignment and PIN redemption are separat
 not yet implemented.
 
 The kiosk's secondary Easy mode action calls `registerEasyPlayer`, which uses
-the same authenticated registration and station reservation path but persists
-`excludeFromLeaderboard: true`. Normal registrations store false; historical
-null/missing flags also mean false. The relay preserves this as
+the same authenticated registration and station reservation path. Both registration
+functions claim an immutable `GameSessionMode` row whose primary key is the game
+UUID. The first claim chooses easy or normal; a concurrent duplicate-key loser
+reads and inherits the winner rather than saving a different player mode.
+The lock grants only organizer-scoped read/create permissions, not update/delete.
+Special entries and retries inherit the same mode; only a new game UUID resets it.
+Existing registrations seed the lock, and mixed historical modes require a new
+session rather than retagging events. A failed player write retains its mode lock.
+The kiosk polls `getRegistrationMode` for display, but registration functions
+enforce the invariant independently of kiosk state.
+
+Each registration persists the locked mode as `excludeFromLeaderboard`; historical
+null/missing flags count as normal. The relay preserves this as
 `user.register.payload.exclude_from_leaderboard`. Future leaderboard consumers
 must join by game session and player and exclude flagged entries. Live scoreboard
 participation and gameplay event calculations are unaffected.

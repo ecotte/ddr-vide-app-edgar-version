@@ -3,7 +3,7 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
 import type { GamePlayerSession } from '../../rayfin/data/GamePlayerSession';
 import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
-import { registerPlayer } from '../../rayfin/functions/src/registration';
+import { getRegistrationMode, registerPlayer } from '../../rayfin/functions/src/registration';
 import { ADJECTIVES, NOUNS, newIdentity } from '../../rayfin/functions/src/identity';
 import { registrationStation, saveRegistration } from '../registration';
 
@@ -47,7 +47,27 @@ function setup() {
   const create = vi.spyOn(client.data.GamePlayerSession, 'create').mockImplementation(async row => ({
     ...row, id: row.id ?? crypto.randomUUID(), pin: row.pin ?? undefined,
   }));
-  return { client, game, gameExecute, slotExecute, slotWhere, userExecute, find, create };
+  const modes = new Map<string, { id: string; excludeFromLeaderboard: boolean }>();
+  const modeQuery = client.data.GameSessionMode.select(['id', 'excludeFromLeaderboard']);
+  vi.spyOn(client.data.GameSessionMode, 'select').mockReturnValue(modeQuery);
+  const modeWhere = vi.spyOn(modeQuery, 'where').mockReturnValue(modeQuery);
+  vi.spyOn(modeQuery, 'first').mockReturnValue(modeQuery);
+  const modeExecute = vi.spyOn(modeQuery, 'execute').mockImplementation(async () => {
+    const filter = modeWhere.mock.lastCall?.[0].id;
+    const id = typeof filter === 'object' && filter !== null && 'eq' in filter ? filter.eq : filter;
+    if (typeof id !== 'string') throw new Error('Missing session mode ID');
+    const row = modes.get(id);
+    return row ? [row] : [];
+  });
+  const createMode = vi.spyOn(client.data.GameSessionMode, 'create').mockImplementation(async row => {
+    if (!row.id) throw new Error('Missing session mode ID');
+    if (modes.has(row.id)) throw new Error('SQL primary key constraint');
+    const saved = { id: row.id, excludeFromLeaderboard: row.excludeFromLeaderboard };
+    modes.set(row.id, saved);
+    return saved;
+  });
+  return { client, game, gameExecute, slotExecute, slotWhere, userExecute, find, create,
+    modes, createMode, modeExecute };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -105,7 +125,7 @@ it.each([false, true])('persists leaderboard exclusion %s without altering stati
   find.mockResolvedValue({ ...draft, id });
   gameExecute.mockResolvedValue([]);
   expect(await registerPlayer(client.data, id, 'P1', '', excluded)).toEqual(pass);
-  await expect(registerPlayer(client.data, id, 'P1', '', !excluded)).rejects.toThrow('different player');
+  expect(await registerPlayer(client.data, id, 'P1', '', !excluded)).toEqual(pass);
   expect(create).toHaveBeenCalledTimes(1);
 });
 it('rejects invalid parameters before accessing the database', async () => {
@@ -271,4 +291,97 @@ it('surfaces unrelated database errors without successful-looking fallbacks', as
   const { client, create } = setup();
   create.mockRejectedValue(new Error('Permission denied'));
   await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '')).rejects.toThrow('Permission denied');
+});
+
+it.each([false, true])('makes both players inherit the first session mode %s, including special entries', async firstMode => {
+  const { client, create, modes } = setup();
+  const first = await registerPlayer(client.data, crypto.randomUUID(), 'P1', '', firstMode);
+  const second = await registerPlayer(client.data, crypto.randomUUID(), 'P2', 'The Dancing Queen', !firstMode);
+  expect(first.excludeFromLeaderboard).toBe(firstMode);
+  expect(second.excludeFromLeaderboard).toBe(firstMode);
+  expect(create.mock.calls.map(([row]) => row.excludeFromLeaderboard)).toEqual([firstMode, firstMode]);
+  expect(modes.get(gameId)?.excludeFromLeaderboard).toBe(firstMode);
+  expect(second.pin).toBeNull();
+});
+
+it.each([false, true])('atomically picks one mode when opposing kiosks race (P1 requests %s)', async firstMode => {
+  const { client, create, modes, createMode } = setup();
+  const passes = await Promise.all([
+    registerPlayer(client.data, crypto.randomUUID(), 'P1', '', firstMode),
+    registerPlayer(client.data, crypto.randomUUID(), 'P2', '', !firstMode),
+  ]);
+  expect(createMode).toHaveBeenCalledTimes(2);
+  expect(modes.size).toBe(1);
+  const locked = modes.get(gameId)!.excludeFromLeaderboard;
+  expect(passes.map(pass => pass.excludeFromLeaderboard)).toEqual([locked, locked]);
+  expect(create.mock.calls.map(([row]) => row.excludeFromLeaderboard)).toEqual([locked, locked]);
+});
+
+it('keeps the mode after a lost lock response or failed player write and resets only for a new game', async () => {
+  const { client, game, gameExecute, create, modes, createMode } = setup();
+  createMode.mockImplementationOnce(async row => {
+    modes.set(gameId, { id: gameId, excludeFromLeaderboard: row.excludeFromLeaderboard });
+    throw new Error('Lost mode lock response');
+  });
+  create.mockRejectedValueOnce(new Error('Player write unavailable'));
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
+    .rejects.toThrow('Player write unavailable');
+  const recovered = await registerPlayer(client.data, crypto.randomUUID(), 'P2', '', false);
+  expect(recovered.excludeFromLeaderboard).toBe(true);
+  const nextId = crypto.randomUUID();
+  gameExecute.mockResolvedValue([{ ...game, id: nextId }]);
+  expect((await registerPlayer(client.data, crypto.randomUUID(), 'P1', '', false)).excludeFromLeaderboard).toBe(false);
+  expect(modes.get(gameId)?.excludeFromLeaderboard).toBe(true);
+  expect(modes.get(nextId)?.excludeFromLeaderboard).toBe(false);
+});
+
+it('does not register anyone when the mode lock fails without an existing winner', async () => {
+  const { client, createMode, create } = setup();
+  createMode.mockRejectedValue(new Error('Mode database unavailable'));
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
+    .rejects.toThrow('Mode database unavailable');
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('does not fall back to a requested mode when reading the database lock fails', async () => {
+  const { client, modeExecute, createMode, create } = setup();
+  modeExecute.mockRejectedValue(new Error('Mode lookup unavailable'));
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
+    .rejects.toThrow('Mode lookup unavailable');
+  expect(createMode).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+});
+
+it.each([false, true])('uses an existing pre-lock player mode %s rather than the second player preference', async excluded => {
+  const { client, slotExecute, slotWhere } = setup();
+  const old = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1' as const,
+    username: 'SillyEventhouse1234', registrationType: 'player' as const,
+    slotKey: `${gameId}:P1`, usernameKey: 'player:test', pinKey: 'pin:123456',
+    createdAt: new Date(), eventQueued: true, excludeFromLeaderboard: excluded };
+  slotExecute.mockImplementation(async () => slotWhere.mock.lastCall?.[0].gameSessionId ? [old] : []);
+  expect((await registerPlayer(client.data, crypto.randomUUID(), 'P2', '', !excluded))
+    .excludeFromLeaderboard).toBe(excluded);
+});
+
+it('rejects mixed pre-lock registrations rather than retagging already-relayed players', async () => {
+  const { client, slotExecute, slotWhere, createMode, create } = setup();
+  const old = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1' as const,
+    username: 'SillyEventhouse1234', registrationType: 'player' as const,
+    slotKey: `${gameId}:P1`, usernameKey: 'player:test', pinKey: 'pin:123456',
+    createdAt: new Date(), eventQueued: true };
+  slotExecute.mockImplementation(async () => slotWhere.mock.lastCall?.[0].gameSessionId
+    ? [{ ...old, excludeFromLeaderboard: true }, { ...old, excludeFromLeaderboard: false }] : []);
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P2', '', false))
+    .rejects.toThrow('conflicting player modes');
+  expect(createMode).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('reports unset, locked and inactive session modes without returning player data', async () => {
+  const { client, modes, gameExecute } = setup();
+  expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: gameId, excludeFromLeaderboard: null });
+  modes.set(gameId, { id: gameId, excludeFromLeaderboard: true });
+  expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: gameId, excludeFromLeaderboard: true });
+  gameExecute.mockResolvedValue([]);
+  expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: null, excludeFromLeaderboard: null });
 });
