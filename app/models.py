@@ -25,6 +25,9 @@ class Region:
     are never pre-supplied by the app - only what the user captures from
     their own footage. ``game_end`` regions use ``reference_images["ended"]``
     for a shared, game-wide end indicator.
+    Judgment regions use "perfect", "great", "good", and "miss" references;
+    legacy "idle" images are retained in layouts but ignored by recognition.
+    old "hit" references retain ungraded success behavior until tier calibration starts.
     """
 
     label: str
@@ -137,6 +140,31 @@ class LayoutProfile:
             source_height=int(d["source_height"]),
             regions=[Region.from_dict(r) for r in d.get("regions", [])],
         )
+
+
+def p1_reference_source(region: Region, regions: list[Region]) -> Optional[Region]:
+    """Resolve the matching P1 box without sharing geometry or tracking state."""
+    if region.player != "P2" or region.kind not in ("arrow", "judgment", "score", "combo"):
+        return region
+    key = f"P1:{region.kind}"
+    if region.kind == "arrow":
+        key += f":{region.direction}"
+    return next((candidate for candidate in regions if candidate.key() == key), None)
+
+
+def share_p1_references(regions: list[Region]) -> None:
+    for region in regions:
+        source = p1_reference_source(region, regions)
+        if source is region:
+            continue
+        region.reference_images = {
+            state: list(images) for state, images in source.reference_images.items()
+        } if source else {}
+        region.digit_templates = {
+            digit: list(images) for digit, images in source.digit_templates.items()
+        } if source else {}
+        region.digit_templates_reviewed = source.digit_templates_reviewed if source else False
+        region.score_template_version = source.score_template_version if source else 0
 
 
 @dataclass

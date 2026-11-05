@@ -60,6 +60,7 @@ SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow", "judgment", "game_end"]
 JUDGMENT_CORRELATION_WINDOW_MS = 150
+JUDGMENT_REARM_MS = 250
 NEW_SESSION_EVENT_TYPE = "new_session"
 SESSION_END_EVENT_TYPE = "session_end"
 DEFAULT_GAME_END_SIMILARITY_THRESHOLD = 0.95

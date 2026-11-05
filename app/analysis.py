@@ -12,13 +12,14 @@ Region kinds:
     since hit/miss flashes are often brief rather than steady).
   * "game_end" - a shared reference-matched end indicator that rotates
     game GUIDs once per confirmed appearance.
-  * "judgment" - per-player success/MISS reference pulses correlated with
+  * "judgment" - per-player Perfect/Great/Good/Miss reference pulses correlated with
     arrow activity; uncertain directions remain player-level outcomes.
 """
 from __future__ import annotations
 
 import math
 import threading
+import uuid
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Union
@@ -27,7 +28,7 @@ import numpy as np
 
 from app import config, image_utils
 from app.event_bus import EventBus
-from app.models import Event, Region
+from app.models import Event, Region, share_p1_references
 from app.ocr_engine import OcrEngine
 from app.recognition import (
     ArrowStateTracker, TemporalValueTracker, classify_arrow_state, classify_judgment_state, parse_digits,
@@ -81,16 +82,21 @@ class FrameAnalysisResult:
 
 
 class AnalysisSession:
-    def __init__(self, event_bus: EventBus, ocr_engine: Optional[OcrEngine] = None):
+    def __init__(
+        self, event_bus: EventBus, ocr_engine: Optional[OcrEngine] = None,
+        *, shared_player_references: bool = False,
+    ):
         self.event_bus = event_bus
         self.ocr_engine = ocr_engine or OcrEngine()
         self.regions: List[Region] = []
+        self.shared_player_references = shared_player_references
         self._trackers: Dict[str, Tracker] = {}
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._arrow_appearances: Dict[str, Optional[int]] = {}
         self._arrow_state_started: Dict[str, int] = {}
         self._last_arrow_frame: Dict[str, tuple[int, int]] = {}
         self._pending_judgments: List[JudgmentEvidence] = []
+        self._judgment_absent_since: Dict[str, int] = {}
         self._pending_lanes: List[LaneEvidence] = []
         self._last_correlation_frame: Optional[tuple[int, int]] = None
         self._score_templates: Dict[str, Dict[str, List[np.ndarray]]] = {}
@@ -127,6 +133,8 @@ class AnalysisSession:
         with self._score_lock, self._combo_lock, self._arrow_lock:
             self._generation += 1
             self.regions = list(regions)
+            if self.shared_player_references:
+                share_p1_references(self.regions)
             self._trackers = {}
             self._arrow_references = {}
             self._arrow_appearances.clear()
@@ -144,7 +152,9 @@ class AnalysisSession:
                         self.game_end_confirm_frames if r.kind == "game_end"
                         else self.arrow_min_confirm_frames
                     )
-                    self._trackers[r.key()] = ArrowStateTracker(confirm_frames)
+                    self._trackers[r.key()] = ArrowStateTracker(
+                        confirm_frames, require_idle=r.kind == "judgment",
+                    )
                     decoded = {}
                     for state, encoded_images in r.reference_images.items():
                         images = []
@@ -268,6 +278,8 @@ class AnalysisSession:
     def update_score_templates(self, region: Region) -> None:
         """Refresh calibration without resetting accepted values or event history."""
         with self._combo_lock if region.kind == "combo" else self._score_lock:
+            if self.shared_player_references:
+                share_p1_references(self.regions)
             decoded = {}
             for digit, examples in region.digit_templates.items():
                 images = []
@@ -280,6 +292,10 @@ class AnalysisSession:
             self._score_templates[region.key()] = decoded
             self._numeric_evidence.pop(region.key(), None)
             self._generation += 1
+            if self.shared_player_references and region.player == "P1":
+                for other in self.regions:
+                    if other.player == "P2" and other.kind == region.kind:
+                        self.update_score_templates(other)
 
     def set_combo_yellow_filter(self, region: Region, enabled: bool) -> None:
         """Change preprocessing without mixing evidence from the two modes."""
@@ -473,12 +489,14 @@ class AnalysisSession:
             new_events.extend(outcomes)
             for result in region_results:
                 if result.region.kind == "judgment":
-                    for event in outcomes:
-                        if event.player == result.region.player:
-                            direction = event.payload["direction"]
-                            result.validation_note = (
-                                f"Counted {event.payload['state']}: {direction or 'direction unknown'}."
-                            )
+                    player_outcomes = [event for event in outcomes if event.player == result.region.player]
+                    if player_outcomes:
+                        event = player_outcomes[-1]
+                        directions = event.payload["step_directions"]
+                        judgment = event.payload.get("judgment") or event.payload["state"]
+                        result.validation_note = (
+                            f"Counted {judgment.upper()}: {', '.join(directions) or 'direction unknown'}."
+                        )
 
         processing_ms = (time.perf_counter() - start_time) * 1000.0
         return FrameAnalysisResult(
@@ -685,6 +703,7 @@ class AnalysisSession:
 
     def _clear_correlation(self) -> None:
         self._pending_judgments.clear()
+        self._judgment_absent_since.clear()
         self._pending_lanes.clear()
         self._last_correlation_frame = None
 
@@ -693,8 +712,10 @@ class AnalysisSession:
         references = self._arrow_references.get(region.key(), {})
         previous = self._last_arrow_frame.get(region.key())
         error = None
-        if not references.get("hit") or not references.get("miss"):
-            error = "Capture success and MISS examples; add a blank example to reject background."
+        graded = any(references.get(state) for state in ("perfect", "great", "good"))
+        categories = ("perfect", "great", "good", "miss") if graded or not references.get("hit") else ("hit", "miss")
+        if not any(references.get(state) for state in categories):
+            error = "No judgment outcome references. Capture a Perfect, Great, Good, or Miss example on P1."
         elif crop.size == 0:
             error = "Empty judgment crop (region out of frame bounds?)"
         state, score = (
@@ -703,23 +724,41 @@ class AnalysisSession:
         )
         if previous != (frame_index, video_time_ms):
             self._last_arrow_frame[region.key()] = (frame_index, video_time_ms)
-            if tracker.status().pending_state != state:
+            observation = state
+            if state == "idle":
+                absent_since = self._judgment_absent_since.setdefault(region.key(), video_time_ms)
+                observation = None
+                if video_time_ms - absent_since >= config.JUDGMENT_REARM_MS:
+                    tracker.reset()
+            else:
+                self._judgment_absent_since.pop(region.key(), None)
+            if tracker.status().pending_state != observation:
                 self._arrow_state_started[region.key()] = video_time_ms
-            confirmed = tracker.observe(state)
-            if confirmed in ("hit", "miss") and self.recording_enabled:
+            confirmed = tracker.observe(observation)
+            if confirmed in ("perfect", "great", "good", "hit", "miss") and self.recording_enabled:
                 self._pending_judgments.append(JudgmentEvidence(
                     region, confirmed, self._arrow_state_started[region.key()], score,
                 ))
-        return RegionFrameResult(
-            region=region, crop=crop, arrow_state=state, confidence=score,
-            error=error, is_unreadable=error is not None,
-            validation_note=(
+        note = (
                 "Waiting for arrow correlation."
                 if any(item.region.key() == region.key() for item in self._pending_judgments)
-                else "Judgment unconfirmed; holding previous state. Capture blank examples to rearm."
+                else "Ambiguous judgment; holding previous state."
                 if state is None and error is None
-                else "Holding judgment; waiting for a new pulse." if state in ("hit", "miss") else None
-            ),
+                else "No judgment match; waiting for 250 ms of video time to rearm."
+                if state == "idle" and tracker.status().active_state is not None
+                else "Ready for the next judgment." if state == "idle"
+                else "Holding judgment; waiting for 250 ms without a match before counting again."
+                if state in ("perfect", "great", "good", "hit", "miss") else None
+        )
+        if error is None:
+            missing = [name.capitalize() for name in categories if not references.get(name)]
+            warnings = []
+            if missing:
+                warnings.append(f"Untaught judgments: {', '.join(missing)}; taught outcomes still count.")
+            note = " ".join([*warnings, *([note] if note else [])]) or None
+        return RegionFrameResult(
+            region=region, crop=crop, arrow_state=state, confidence=score,
+            error=error, is_unreadable=error is not None, validation_note=note,
         )
 
     def _correlate_judgments(self, frame_index, video_time_ms):
@@ -735,34 +774,50 @@ class AnalysisSession:
                 (index, lane) for index, lane in enumerate(self._pending_lanes)
                 if lane.region.player == judgment.region.player and abs(lane.onset - judgment.onset) <= window
             ]
-            unique = len(nearby) == 1 and sum(
-                other.region.player == judgment.region.player
-                and abs(other.onset - nearby[0][1].onset) <= window
-                for other in pending
-            ) == 1 and nearby[0][0] not in consumed
-            lane = nearby[0][1] if unique else None
-            consumed.update(index for index, _ in nearby)
-            timing = {}
-            if lane and judgment.state == "hit" and lane.appearance is not None and lane.onset > lane.appearance:
-                timing = {
-                    "appearance_video_time_ms": lane.appearance, "hit_video_time_ms": lane.onset,
-                    "response_time_ms": lane.onset - lane.appearance,
-                }
-            event = self.event_bus.make_event(
-                event_type=f"{'arrow' if lane else 'judgment'}_{judgment.state}",
-                payload={
-                    "field": "arrow" if lane else "judgment", "region_label": judgment.region.label,
-                    "direction": lane.region.direction if lane else None, "state": judgment.state,
-                    "evidence": "judgment_and_arrow" if lane else "judgment_only",
-                    "judgment_video_time_ms": judgment.onset,
-                    "correlation_window_ms": window, **timing,
-                },
-                frame_index=frame_index, video_time_ms=video_time_ms,
-                player=judgment.region.player,
-                confidence=min(judgment.confidence, lane.confidence) if lane else judgment.confidence,
+            unique = bool(nearby) and all(
+                index not in consumed and sum(
+                    other.region.player == judgment.region.player
+                    and abs(other.onset - lane.onset) <= window
+                    for other in pending
+                ) == 1
+                for index, lane in nearby
             )
-            self.event_bus.record(event)
-            events.append(event)
+            directions = [lane.region.direction for _, lane in nearby]
+            simultaneous = bool(nearby) and (
+                len(set(directions)) == len(directions)
+                and max(lane.onset for _, lane in nearby) - min(lane.onset for _, lane in nearby) <= window
+            )
+            lanes = [lane for _, lane in nearby] if unique and simultaneous else []
+            consumed.update(index for index, _ in nearby)
+            outcome = "miss" if judgment.state == "miss" else "hit"
+            judgment_id = str(uuid.uuid4())
+            step_directions = [lane.region.direction for lane in lanes]
+            for lane in lanes or [None]:
+                timing = {}
+                if lane and outcome == "hit" and lane.appearance is not None and lane.onset > lane.appearance:
+                    timing = {
+                        "appearance_video_time_ms": lane.appearance, "hit_video_time_ms": lane.onset,
+                        "response_time_ms": lane.onset - lane.appearance,
+                    }
+                event = self.event_bus.make_event(
+                    event_type=f"{'arrow' if lane else 'judgment'}_{outcome}",
+                    payload={
+                        "field": "arrow" if lane else "judgment", "region_label": judgment.region.label,
+                        "direction": lane.region.direction if lane else None, "state": outcome,
+                        **({"judgment": judgment.state} if judgment.state != "hit" else {}),
+                        "judgment_id": judgment_id,
+                        "step_directions": step_directions,
+                        "step_arrow_count": len(lanes),
+                        "evidence": "judgment_and_arrow" if lane else "judgment_only",
+                        "judgment_video_time_ms": judgment.onset,
+                        "correlation_window_ms": window, **timing,
+                    },
+                    frame_index=frame_index, video_time_ms=video_time_ms,
+                    player=judgment.region.player,
+                    confidence=min(judgment.confidence, lane.confidence) if lane else judgment.confidence,
+                )
+                self.event_bus.record(event)
+                events.append(event)
             self._pending_judgments.remove(judgment)
         self._pending_lanes = [
             lane for index, lane in enumerate(self._pending_lanes)

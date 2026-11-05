@@ -144,8 +144,12 @@ class EventsTab(ttk.Frame):
             prev = payload.get("previous_value")
             new = payload.get("new_value")
             return f"{prev if prev is not None else 'unknown'} -> {new}"
-        if payload.get("field") == "arrow":
-            detail = f"{payload.get('direction', '?')} - {payload.get('state', '?').upper()}"
+        if payload.get("field") in ("arrow", "judgment"):
+            judgment = payload.get("judgment") or payload.get("state", "?")
+            direction = payload.get("direction") or "Direction unknown"
+            detail = f"{direction} - {judgment.upper()}"
+            if payload.get("step_arrow_count", 0) > 1:
+                detail += f" | {payload['step_arrow_count']}-arrow step"
             if "response_time_ms" in payload:
                 detail += f" | {payload['response_time_ms']} ms response"
             return detail

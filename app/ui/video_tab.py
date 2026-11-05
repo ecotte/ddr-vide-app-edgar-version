@@ -581,7 +581,12 @@ class VideoTab(ttk.Frame):
         if r.kind in ("score", "combo"):
             ttk.Button(
                 row, text=f"Teach {r.kind}...", command=lambda reg=r: self.controller.teach_score(reg),
+                state="disabled" if r.player == "P2" else "normal",
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
+            if r.player == "P2":
+                ttk.Label(row, text="Uses P1 digit references. Teach on P1; keep crops similarly framed.").grid(
+                    row=10, column=0, sticky="w",
+                )
         yellow_filter_var = None
         fast_mode_var = None
         if r.kind == "combo":
@@ -649,27 +654,36 @@ class VideoTab(ttk.Frame):
         btns = ttk.Frame(row)
         btns.grid(row=6, column=0, sticky="w", pady=(4, 0))
         ttk.Button(
-            btns, text="Add Hit ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit")
+            btns, text="Add Hit ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=0, padx=2)
         ttk.Button(
-            btns, text="Clear Hit refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit")
+            btns, text="Clear Hit refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=1, padx=2)
         ttk.Button(
-            btns, text="Add Miss ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss")
+            btns, text="Add Miss ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=1, column=0, padx=2, pady=(4, 0))
         ttk.Button(
-            btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss")
+            btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=1, column=1, padx=2, pady=(4, 0))
         ttk.Button(
-            btns, text="Add Appearance", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "appeared")
+            btns, text="Add Appearance", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "appeared"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=2, column=0, padx=2, pady=(4, 0))
         ttk.Button(
-            btns, text="Clear Appearance", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "appeared")
+            btns, text="Clear Appearance", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "appeared"),
+            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=2, column=1, padx=2, pady=(4, 0))
         ttk.Label(
             row, text="Optional timing: capture a distinct arrow before its hit. "
             "The crop must show both appearance and outcome. Overlapping appearances are excluded.",
         ).grid(row=7, column=0, sticky="w", pady=(4, 0))
+        if r.player == "P2":
+            ttk.Label(row, text="Uses P1 references for this direction. Add/calibrate the P1 box first. "
+                      "Keep both crops similarly framed.").grid(row=8, column=0, sticky="w")
 
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
@@ -699,14 +713,18 @@ class VideoTab(ttk.Frame):
         thumb.grid(row=1, column=0, sticky="w", pady=4)
         state = tk.StringVar(value="state: -")
         confidence = tk.StringVar(value="similarity: -")
-        status = tk.StringVar(value="status: Capture success, MISS, and blank examples.")
+        status = tk.StringVar(value="status: Capture Perfect, Great, Good, and Miss examples.")
         for index, variable in enumerate((state, confidence, status), 2):
             ttk.Label(row, textvariable=variable).grid(row=index, column=0, sticky="w")
         data = {
             "kind": "judgment", "thumb_label": thumb, "state_var": state,
             "confidence_var": confidence, "status_var": status,
         }
-        for index, (name, title) in enumerate((("hit", "Success"), ("miss", "MISS"), ("idle", "Blank"))):
+        categories = (
+            ("perfect", "Perfect"), ("great", "Great"), ("good", "Good"),
+            ("miss", "Miss"),
+        )
+        for index, (name, title) in enumerate(categories):
             controls = ttk.Frame(row)
             controls.grid(row=5 + index, column=0, sticky="w", pady=4)
             reference = ttk.Label(controls, text="(none)")
@@ -714,18 +732,27 @@ class VideoTab(ttk.Frame):
             ttk.Button(
                 controls, text=f"Add {title} ref",
                 command=lambda reg=region, value=name: self.controller.capture_arrow_reference(reg, value),
+                state="disabled" if region.player == "P2" else "normal",
             ).grid(row=1, column=0, padx=2)
             ttk.Button(
                 controls, text=f"Clear {title} refs",
                 command=lambda reg=region, value=name: self.controller.clear_arrow_reference(reg, value),
+                state="disabled" if region.player == "P2" else "normal",
             ).grid(row=1, column=1, padx=2)
             data[f"{name}_ref_label"] = reference
         ttk.Label(
-            row, text="Capture every successful word (PERFECT, GREAT, GOOD...) as Success. "
-            "MISS is a failure. Blank means no judgment. New judgments count once; "
-            "unclear arrow directions count for the player only. Identical lingering "
-            "judgments need a visible blank between pulses; they are not counted repeatedly.",
-        ).grid(row=8, column=0, sticky="w")
+            row, text="Capture PERFECT, GREAT, and GOOD separately; all count as hits. "
+            "MISS counts as a miss. No Blank reference is needed. "
+            "Old Success references remain ungraded until any success tier is taught. "
+            "Each taught outcome can count immediately; untaught categories are not recognized. "
+            "Judgments count once, then rearm after 250 ms of video time without any "
+            "taught outcome matching. Changing words alone does not rearm. "
+            "Ambiguous strong matches hold the current state. Prolonged matching failures "
+            "can look like disappearance. Unclear directions count for the player only.",
+        ).grid(row=5 + len(categories), column=0, sticky="w")
+        if region.player == "P2":
+            ttk.Label(row, text="Uses P1 judgment references. Add/calibrate the P1 judgment box first. "
+                      "Keep both crops similarly framed.").grid(row=6 + len(categories), column=0, sticky="w")
         VideoTab._wrap_card_labels(row)
         self._region_rows[region.key()] = data
 
