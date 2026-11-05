@@ -68,16 +68,13 @@ DEFAULT_GAME_END_CONFIRM_FRAMES = 2
 
 PLAYER_CHOICES = ["P1", "P2", "Unknown"]
 
-# --- Arrow (receptor) hit/miss detection ----------------------------------
+# --- Arrow activity detection -------------------------------------------
 # One region per (player, direction) is compared against user-captured
-# reference snapshots ("hit", "miss", optional "appeared") rather than any built-in template -
-# this app has no built-in idea of what a hit/miss looks like for a given
-# note skin.
+# reference snapshots ("active", optional "appeared"). Only a matched player
+# judgment determines hit/miss; activity never implies an outcome.
 ARROW_DIRECTIONS = ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
-ARROW_STATES = ["hit", "miss", "appeared"]
+ARROW_STATES = ["active", "appeared"]
 ARROW_EVENT_TYPES = {
-    "hit": "arrow_hit",
-    "miss": "arrow_miss",
     "appeared": "arrow_appeared",
 }
 
@@ -88,7 +85,7 @@ ARROW_EVENT_TYPES = {
 DEFAULT_ARROW_SIMILARITY_THRESHOLD = 0.90
 
 # Consecutive frames a candidate arrow state must be observed before it is
-# confirmed and turned into an event. Real hit/miss flashes can be very
+# confirmed and correlated with a judgment. Activity flashes can be very
 # brief (sometimes a single frame), so this defaults low; raise it only if
 # single-frame noise is producing false events.
 DEFAULT_ARROW_MIN_CONFIRM_FRAMES = 1

@@ -170,9 +170,12 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
-- `arrow_hit` and `arrow_miss`: detected arrow-state transitions for legacy
-  arrow-only players, or judgment-correlated outcomes for calibrated players.
-- Optional per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
+- Arrow references identify activity using fresh `active` samples; old `hit`/`miss`
+  arrow images are ignored with a recalibration warning. Optional `appeared` samples
+  retain response timing. Without Active Arrow calibration no lane evidence is produced.
+- `arrow_hit` and `arrow_miss`: judgment-correlated outcomes only. Arrow activity
+  alone never determines success or failure, even without a judgment box.
+- Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
   at source-frame rate. Their new pulses determine outcome type, with arrow
   activity matched within +/-150 ms of source time. A 300 ms settling interval
   detects competing judgments. Ambiguous directions produce `judgment_hit` or
