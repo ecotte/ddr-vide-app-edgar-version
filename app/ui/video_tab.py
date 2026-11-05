@@ -271,7 +271,7 @@ class VideoTab(ttk.Frame):
         consistency_spin.grid(row=0, column=1, sticky="w")
         consistency_spin.bind("<Return>", lambda e: self._on_consistency_changed())
 
-        ttk.Label(analysis_box, text="Arrow similarity threshold:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Arrow/judgment similarity:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.arrow_threshold_var = tk.DoubleVar(value=config.DEFAULT_ARROW_SIMILARITY_THRESHOLD)
         arrow_threshold_spin = ttk.Spinbox(
             analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
@@ -280,7 +280,7 @@ class VideoTab(ttk.Frame):
         arrow_threshold_spin.grid(row=1, column=1, sticky="w", pady=(4, 0))
         arrow_threshold_spin.bind("<Return>", lambda e: self._on_arrow_threshold_changed())
 
-        ttk.Label(analysis_box, text="Arrow confirm frames:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Arrow/judgment confirm frames:").grid(row=1, column=2, sticky="w", pady=(4, 0))
         self.arrow_confirm_var = tk.IntVar(value=config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES)
         arrow_confirm_spin = ttk.Spinbox(
             analysis_box, from_=1, to=10, width=4, textvariable=self.arrow_confirm_var,
@@ -518,6 +518,7 @@ class VideoTab(ttk.Frame):
             ("arrow", direction): index + 3
             for index, direction in enumerate(config.ARROW_DIRECTIONS)
         })
+        paired_rows[("judgment", None)] = len(paired_rows) + 1
         next_row = len(paired_rows) + 1
         unknown = None
         if any(r.player == "Unknown" and r.kind != "game_end" for r in regions):
@@ -539,6 +540,8 @@ class VideoTab(ttk.Frame):
                 parent = self.recognition_container if grid_row is not None else unknown
                 if r.kind == "arrow":
                     self._build_arrow_row(r, parent, grid_row=grid_row)
+                elif r.kind == "judgment":
+                    self._build_judgment_row(r, parent, grid_row=grid_row)
                 else:
                     self._build_numeric_row(r, parent, grid_row=grid_row)
 
@@ -680,6 +683,52 @@ class VideoTab(ttk.Frame):
             "appeared_ref_label": appeared_ref_label,
         }
 
+    def _build_judgment_row(self, region, parent, *, grid_row=None) -> None:
+        row = ttk.Frame(parent, relief="groove", padding=4)
+        if grid_row is None:
+            row.pack(fill="x", pady=3)
+        else:
+            column = 0 if region.player == "P1" else 1
+            row.grid(row=grid_row, column=column, sticky="nsew", pady=3,
+                     padx=(0, 4) if column == 0 else (4, 0))
+        row.columnconfigure(0, weight=1)
+        ttk.Label(row, text=f"{region.label} ({region.player}/judgment)", font=("", 9, "bold")).grid(
+            row=0, column=0, sticky="w",
+        )
+        thumb = ttk.Label(row)
+        thumb.grid(row=1, column=0, sticky="w", pady=4)
+        state = tk.StringVar(value="state: -")
+        confidence = tk.StringVar(value="similarity: -")
+        status = tk.StringVar(value="status: Capture success, MISS, and blank examples.")
+        for index, variable in enumerate((state, confidence, status), 2):
+            ttk.Label(row, textvariable=variable).grid(row=index, column=0, sticky="w")
+        data = {
+            "kind": "judgment", "thumb_label": thumb, "state_var": state,
+            "confidence_var": confidence, "status_var": status,
+        }
+        for index, (name, title) in enumerate((("hit", "Success"), ("miss", "MISS"), ("idle", "Blank"))):
+            controls = ttk.Frame(row)
+            controls.grid(row=5 + index, column=0, sticky="w", pady=4)
+            reference = ttk.Label(controls, text="(none)")
+            reference.grid(row=0, column=0, columnspan=2, sticky="w")
+            ttk.Button(
+                controls, text=f"Add {title} ref",
+                command=lambda reg=region, value=name: self.controller.capture_arrow_reference(reg, value),
+            ).grid(row=1, column=0, padx=2)
+            ttk.Button(
+                controls, text=f"Clear {title} refs",
+                command=lambda reg=region, value=name: self.controller.clear_arrow_reference(reg, value),
+            ).grid(row=1, column=1, padx=2)
+            data[f"{name}_ref_label"] = reference
+        ttk.Label(
+            row, text="Capture every successful word (PERFECT, GREAT, GOOD...) as Success. "
+            "MISS is a failure. Blank means no judgment. New judgments count once; "
+            "unclear arrow directions count for the player only. Identical lingering "
+            "judgments need a visible blank between pulses; they are not counted repeatedly.",
+        ).grid(row=8, column=0, sticky="w")
+        VideoTab._wrap_card_labels(row)
+        self._region_rows[region.key()] = data
+
     def _build_game_end_row(self, region, parent) -> None:
         row = ttk.Frame(parent, padding=4)
         row.pack(fill="x")
@@ -736,7 +785,7 @@ class VideoTab(ttk.Frame):
         self, region_key: str, crop_photo, observed_state, confidence, status_text
     ) -> None:
         row = self._region_rows.get(region_key)
-        if row is None or row.get("kind") not in ("arrow", "game_end"):
+        if row is None or row.get("kind") not in ("arrow", "judgment", "game_end"):
             return
         if crop_photo is not None:
             self._region_thumb_refs[region_key] = crop_photo
@@ -749,7 +798,7 @@ class VideoTab(ttk.Frame):
 
     def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
-        if row is None or row.get("kind") not in ("arrow", "game_end"):
+        if row is None or row.get("kind") not in ("arrow", "judgment", "game_end"):
             return
         label_key = f"{state}_ref_label"
         label = row[label_key]

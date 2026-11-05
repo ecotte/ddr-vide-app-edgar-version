@@ -12,6 +12,8 @@ Region kinds:
     since hit/miss flashes are often brief rather than steady).
   * "game_end" - a shared reference-matched end indicator that rotates
     game GUIDs once per confirmed appearance.
+  * "judgment" - per-player success/MISS reference pulses correlated with
+    arrow activity; uncertain directions remain player-level outcomes.
 """
 from __future__ import annotations
 
@@ -27,9 +29,27 @@ from app import config, image_utils
 from app.event_bus import EventBus
 from app.models import Event, Region
 from app.ocr_engine import OcrEngine
-from app.recognition import ArrowStateTracker, TemporalValueTracker, classify_arrow_state, parse_digits
+from app.recognition import (
+    ArrowStateTracker, TemporalValueTracker, classify_arrow_state, classify_judgment_state, parse_digits,
+)
 
 Tracker = Union[TemporalValueTracker, ArrowStateTracker]
+
+
+@dataclass
+class JudgmentEvidence:
+    region: Region
+    state: str
+    onset: int
+    confidence: float
+
+
+@dataclass
+class LaneEvidence:
+    region: Region
+    onset: int
+    confidence: float
+    appearance: Optional[int]
 
 
 @dataclass
@@ -70,6 +90,9 @@ class AnalysisSession:
         self._arrow_appearances: Dict[str, Optional[int]] = {}
         self._arrow_state_started: Dict[str, int] = {}
         self._last_arrow_frame: Dict[str, tuple[int, int]] = {}
+        self._pending_judgments: List[JudgmentEvidence] = []
+        self._pending_lanes: List[LaneEvidence] = []
+        self._last_correlation_frame: Optional[tuple[int, int]] = None
         self._score_templates: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
         self._numeric_evidence: Dict[str, tuple[int, int, int]] = {}
@@ -109,13 +132,14 @@ class AnalysisSession:
             self._arrow_appearances.clear()
             self._arrow_state_started.clear()
             self._last_arrow_frame.clear()
+            self._clear_correlation()
             self._score_templates = {}
             self._last_numeric_accept_time_ms = {}
             self._numeric_evidence = {}
             self._last_numeric_frame = {}
             self._last_observed_score = {}
             for r in self.regions:
-                if r.kind in ("arrow", "game_end"):
+                if r.kind in ("arrow", "judgment", "game_end"):
                     confirm_frames = (
                         self.game_end_confirm_frames if r.kind == "game_end"
                         else self.arrow_min_confirm_frames
@@ -150,7 +174,7 @@ class AnalysisSession:
             self.arrow_min_confirm_frames = n
             for region in self.regions:
                 tracker = self._trackers[region.key()]
-                if region.kind == "arrow" and isinstance(tracker, ArrowStateTracker):
+                if region.kind in ("arrow", "judgment") and isinstance(tracker, ArrowStateTracker):
                     tracker.min_confirm_frames = n
 
     def set_game_end_settings(self, threshold: float, confirm_frames: int) -> None:
@@ -178,11 +202,13 @@ class AnalysisSession:
             self._arrow_appearances.clear()
             self._arrow_state_started.clear()
             self._last_arrow_frame.clear()
+            self._clear_correlation()
 
     def set_recording_enabled(self, enabled: bool) -> None:
         with self._arrow_lock:
             self.recording_enabled = enabled
             self._arrow_appearances.clear()
+            self._clear_correlation()
 
     def new_session(
         self, frame_index: Optional[int] = None, video_time_ms: Optional[int] = None,
@@ -211,9 +237,10 @@ class AnalysisSession:
             self._generation += 1
             self.is_running = False
             self._arrow_appearances.clear()
+            self._clear_correlation()
 
     def tracker_for(self, region: Region) -> Tracker:
-        if region.kind in ("arrow", "game_end"):
+        if region.kind in ("arrow", "judgment", "game_end"):
             lock = self._arrow_lock
         elif region.kind == "score":
             lock = self._score_lock
@@ -232,7 +259,7 @@ class AnalysisSession:
         with self._combo_lock if region.kind == "combo" else self._score_lock:
             return (
                 region.digit_templates_reviewed
-                and region.score_template_version == config.SCORE_TEMPLATE_VERSION
+                and region.score_template_version == config.DIGIT_TEMPLATE_VERSIONS[region.kind]
                 and any(
                     self._score_templates.get(region.key(), {}).values()
                 )
@@ -342,7 +369,7 @@ class AnalysisSession:
         self, frame: np.ndarray, frame_index: int, video_time_ms: int
     ) -> Optional[FrameAnalysisResult]:
         with self._arrow_lock:
-            regions = [region for region in self.regions if region.kind == "arrow"]
+            regions = [region for region in self.regions if region.kind in ("arrow", "judgment")]
             return self._process_frame(frame, frame_index, video_time_ms, regions)
 
     def process_game_end_frame(
@@ -415,18 +442,43 @@ class AnalysisSession:
             return FrameAnalysisResult([], new_events, 0)
 
         frame_h, frame_w = frame.shape[:2]
+        correlating = any(region.kind in ("arrow", "judgment") for region in regions)
+        if correlating:
+            previous = self._last_correlation_frame
+            if previous and (frame_index < previous[0] or video_time_ms < previous[1]):
+                self._clear_correlation()
+                for region in regions:
+                    if region.kind in ("arrow", "judgment"):
+                        self._trackers[region.key()].reset()
+                self._arrow_appearances.clear()
+                self._last_arrow_frame.clear()
+            self._last_correlation_frame = (frame_index, video_time_ms)
 
         for region in regions:
             crop = _safe_crop(frame, region, frame_w, frame_h)
             if region.kind == "arrow":
                 result, event = self._process_arrow_region(region, crop, frame_index, video_time_ms)
                 events = [event] if event is not None else []
+            elif region.kind == "judgment":
+                result = self._process_judgment_region(region, crop, frame_index, video_time_ms)
+                events = []
             else:
                 result, events = self._process_numeric_region(region, crop, frame_index, video_time_ms)
             result.frame_index = frame_index
             result.video_time_ms = video_time_ms
             region_results.append(result)
             new_events.extend(events)
+        if correlating:
+            outcomes = self._correlate_judgments(frame_index, video_time_ms)
+            new_events.extend(outcomes)
+            for result in region_results:
+                if result.region.kind == "judgment":
+                    for event in outcomes:
+                        if event.player == result.region.player:
+                            direction = event.payload["direction"]
+                            result.validation_note = (
+                                f"Counted {event.payload['state']}: {direction or 'direction unknown'}."
+                            )
 
         processing_ms = (time.perf_counter() - start_time) * 1000.0
         return FrameAnalysisResult(
@@ -458,6 +510,7 @@ class AnalysisSession:
         if self.uses_score_templates(region) and ocr_result.error is None:
             template_result = self.ocr_engine.recognize_score_from_templates(
                 crop, self._score_templates.get(region.key(), {}),
+                **({"kind": "combo"} if region.kind == "combo" else {}),
             )
             template_verified = (
                 template_result.error is None
@@ -630,6 +683,93 @@ class AnalysisSession:
         )
         return result, events
 
+    def _clear_correlation(self) -> None:
+        self._pending_judgments.clear()
+        self._pending_lanes.clear()
+        self._last_correlation_frame = None
+
+    def _process_judgment_region(self, region, crop, frame_index, video_time_ms):
+        tracker = self._trackers[region.key()]
+        references = self._arrow_references.get(region.key(), {})
+        previous = self._last_arrow_frame.get(region.key())
+        error = None
+        if not references.get("hit") or not references.get("miss"):
+            error = "Capture success and MISS examples; add a blank example to reject background."
+        elif crop.size == 0:
+            error = "Empty judgment crop (region out of frame bounds?)"
+        state, score = (
+            classify_judgment_state(crop, references, self.arrow_similarity_threshold)
+            if error is None else (None, 0.0)
+        )
+        if previous != (frame_index, video_time_ms):
+            self._last_arrow_frame[region.key()] = (frame_index, video_time_ms)
+            if tracker.status().pending_state != state:
+                self._arrow_state_started[region.key()] = video_time_ms
+            confirmed = tracker.observe(state)
+            if confirmed in ("hit", "miss") and self.recording_enabled:
+                self._pending_judgments.append(JudgmentEvidence(
+                    region, confirmed, self._arrow_state_started[region.key()], score,
+                ))
+        return RegionFrameResult(
+            region=region, crop=crop, arrow_state=state, confidence=score,
+            error=error, is_unreadable=error is not None,
+            validation_note=(
+                "Waiting for arrow correlation."
+                if any(item.region.key() == region.key() for item in self._pending_judgments)
+                else "Judgment unconfirmed; holding previous state. Capture blank examples to rearm."
+                if state is None and error is None
+                else "Holding judgment; waiting for a new pulse." if state in ("hit", "miss") else None
+            ),
+        )
+
+    def _correlate_judgments(self, frame_index, video_time_ms):
+        window = config.JUDGMENT_CORRELATION_WINDOW_MS
+        events = []
+        pending = list(self._pending_judgments)
+        consumed = set()
+        for judgment in pending:
+            # Wait for both sides of the matching window, including competing judgments.
+            if video_time_ms < judgment.onset + 2 * window:
+                continue
+            nearby = [
+                (index, lane) for index, lane in enumerate(self._pending_lanes)
+                if lane.region.player == judgment.region.player and abs(lane.onset - judgment.onset) <= window
+            ]
+            unique = len(nearby) == 1 and sum(
+                other.region.player == judgment.region.player
+                and abs(other.onset - nearby[0][1].onset) <= window
+                for other in pending
+            ) == 1 and nearby[0][0] not in consumed
+            lane = nearby[0][1] if unique else None
+            consumed.update(index for index, _ in nearby)
+            timing = {}
+            if lane and judgment.state == "hit" and lane.appearance is not None and lane.onset > lane.appearance:
+                timing = {
+                    "appearance_video_time_ms": lane.appearance, "hit_video_time_ms": lane.onset,
+                    "response_time_ms": lane.onset - lane.appearance,
+                }
+            event = self.event_bus.make_event(
+                event_type=f"{'arrow' if lane else 'judgment'}_{judgment.state}",
+                payload={
+                    "field": "arrow" if lane else "judgment", "region_label": judgment.region.label,
+                    "direction": lane.region.direction if lane else None, "state": judgment.state,
+                    "evidence": "judgment_and_arrow" if lane else "judgment_only",
+                    "judgment_video_time_ms": judgment.onset,
+                    "correlation_window_ms": window, **timing,
+                },
+                frame_index=frame_index, video_time_ms=video_time_ms,
+                player=judgment.region.player,
+                confidence=min(judgment.confidence, lane.confidence) if lane else judgment.confidence,
+            )
+            self.event_bus.record(event)
+            events.append(event)
+            self._pending_judgments.remove(judgment)
+        self._pending_lanes = [
+            lane for index, lane in enumerate(self._pending_lanes)
+            if index not in consumed and video_time_ms - lane.onset <= 3 * window
+        ]
+        return events
+
     def _process_arrow_region(self, region, crop, frame_index, video_time_ms):
         key = region.key()
         tracker: ArrowStateTracker = self._trackers[key]
@@ -675,6 +815,12 @@ class AnalysisSession:
                 self._arrow_appearances[key] = onset if key not in self._arrow_appearances else None
             else:
                 appearance = self._arrow_appearances.pop(key, None)
+                if any(r.kind == "judgment" and r.player == region.player for r in self.regions):
+                    self._pending_lanes.append(LaneEvidence(region, onset, score, appearance))
+                    return RegionFrameResult(
+                        region=region, confidence=score, arrow_state=state, crop=crop,
+                        validation_note="Arrow activity observed; waiting for a matching player judgment.",
+                    ), None
                 if confirmed == "hit" and appearance is not None and onset > appearance:
                     timing = {
                         "appearance_video_time_ms": appearance,

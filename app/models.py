@@ -29,7 +29,7 @@ class Region:
 
     label: str
     player: str  # one of config.PLAYER_CHOICES, e.g. "P1", "P2", "Unknown"
-    kind: str    # "score", "combo", "arrow", or "game_end"
+    kind: str    # "score", "combo", "arrow", "judgment", or "game_end"
     x: int
     y: int
     w: int

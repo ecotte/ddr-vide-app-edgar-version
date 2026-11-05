@@ -24,6 +24,10 @@ def segmented(monkeypatch):
         "app.ocr_engine._extract_score_glyphs",
         lambda _: (np.zeros((44, 315), dtype=np.uint8), [], glyphs),
     )
+    monkeypatch.setattr(
+        "app.ocr_engine._extract_combo_glyphs",
+        lambda _: (np.zeros((44, 315), dtype=np.uint8), [], glyphs),
+    )
     return glyphs
 
 
@@ -50,7 +54,7 @@ def _region(reviewed=False, kind="score"):
         label=kind.capitalize(), player="P1", kind=kind, x=0, y=0, w=315, h=44,
         digit_templates={digit: [encoded] for digit in "0123456789"},
         digit_templates_reviewed=reviewed,
-        score_template_version=config.SCORE_TEMPLATE_VERSION,
+        score_template_version=config.DIGIT_TEMPLATE_VERSIONS[kind],
     )
 
 
@@ -241,7 +245,7 @@ def test_reviewed_samples_survive_save_load_and_rescale(tmp_path, kind):
     loaded = layout_store.load_layout_from_path(path)
     scaled = layout_store.rescale_profile(loaded, 640, 360)
     assert scaled.regions[0].digit_templates_reviewed
-    assert scaled.regions[0].score_template_version == config.SCORE_TEMPLATE_VERSION
+    assert scaled.regions[0].score_template_version == config.DIGIT_TEMPLATE_VERSIONS[kind]
     assert scaled.regions[0].digit_templates == profile.regions[0].digit_templates
 
 
@@ -262,9 +266,11 @@ def test_dialog_has_single_score_input_and_replaces_auto_samples(root, segmented
     original = region.to_dict()
     dialog = ScoreCalibrationDialog(root, region, np.zeros((44, 315, 3), dtype=np.uint8))
     assert dialog.title() == f"Teach {kind} - {region.label}"
-    dialog.score.set("391,650")
+    if kind == "combo":
+        segmented.pop()
+    dialog.score.set("39165" if kind == "combo" else "391,650")
     dialog._confirm()
-    assert set(dialog.result) == set("391650")
+    assert set(dialog.result) == set("39165" if kind == "combo" else "391650")
     assert region.to_dict() == original
 
 
@@ -332,7 +338,7 @@ def test_combo_references_verify_ocr_but_still_require_repeated_low_confidence_e
     monkeypatch.setattr(session.ocr_engine, "recognize_digits", recognize)
     monkeypatch.setattr(
         session.ocr_engine, "recognize_score_from_templates",
-        lambda crop, templates: OcrResult("65", 0.99),
+        lambda crop, templates, **kwargs: OcrResult("65", 0.99),
     )
     session.start()
     frame = np.zeros((44, 315, 3), dtype=np.uint8)
@@ -362,7 +368,7 @@ def test_combo_templates_neither_replace_ocr_nor_veto_confident_ocr(
     )
     monkeypatch.setattr(
         session.ocr_engine, "recognize_score_from_templates",
-        lambda crop, templates: OcrResult(template_text, 0.99),
+        lambda crop, templates, **kwargs: OcrResult(template_text, 0.99),
     )
     session.start()
     result = session.process_numeric_frame(

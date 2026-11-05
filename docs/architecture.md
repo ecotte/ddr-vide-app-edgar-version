@@ -166,7 +166,18 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
-- `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
+- `arrow_hit` and `arrow_miss`: detected arrow-state transitions for legacy
+  arrow-only players, or uniquely judgment-correlated outcomes for calibrated players.
+- Optional per-player `judgment` regions compare success/MISS/blank reference images
+  at source-frame rate. Their new pulses determine outcome type, with unique arrow
+  activity matched within +/-150 ms of source time. A 300 ms settling interval
+  detects competing judgments. Ambiguous directions produce `judgment_hit` or
+  `judgment_miss` with `direction: null`, never a guessed lane. A lingering judgment
+  cannot validate repeated arrows; there is no per-frame recounting. Pending
+  evidence is cleared on seek, stop, recording/layout/source changes and new games.
+  Player totals and pace include directionless outcomes; lane counts/titles and
+  response timing exclude them. Desktop snapshots carry `unassignedHits` and
+  `unassignedMisses` for the viewer. Calibration references serialize inside layouts.
 - Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
   crop as its outcome. Unique subsequent hits carry source-time appearance,
   hit-onset, and response-duration fields; misses and ambiguous pairings do not.

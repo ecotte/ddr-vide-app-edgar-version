@@ -90,6 +90,36 @@ def test_sharing_is_opt_in_and_does_not_replace_fabric_sink(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_unknown_direction_judgments_count_for_player_but_not_lane_or_response_metrics():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    fabric = []
+    bus.set_live_sink(board.record)
+    bus.set_delivery_sink(fabric.append)
+    board.start(bus.session_id)
+    try:
+        hit = event(bus, "judgment_hit", direction=None)
+        bus.record(hit)
+        bus.record(hit)
+        bus.record(event(bus, "judgment_miss", direction=None))
+        p1 = board.snapshot()["players"]["P1"]
+        assert p1["hits"] == p1["unassignedHits"] == 1
+        assert p1["misses"] == p1["unassignedMisses"] == 1
+        assert sum(p1["hitsByDirection"].values()) == 0
+        assert p1["responseSamples"] == 0
+        assert p1["hitPace"] == .2
+        assert board.snapshot()["players"]["P2"]["hits"] == 0
+        assert [row.event_type for row in fabric].count("judgment_hit") == 2
+        bus.record(event(bus, "judgment_hit", direction="Center"))
+        assert "invalid arrow direction" in board.status()
+        assert board.snapshot()["players"]["P1"]["hits"] == 1
+        bus.new_session()
+        assert board.snapshot()["players"]["P1"]["unassignedHits"] == 0
+        assert board.snapshot()["players"]["P1"]["unassignedMisses"] == 0
+    finally:
+        board.stop()
+
+
 def test_calibrated_game_end_resets_scoreboard_to_the_next_guid():
     import numpy as np
 

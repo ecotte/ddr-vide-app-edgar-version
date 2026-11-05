@@ -108,6 +108,20 @@ it('shows per-player response averages, sourced comparisons, cumulative percenta
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
 });
 
+it('explains that unknown-direction judgments count in player totals but not arrow or timing metrics', async () => {
+  const { client } = fakeClient({
+    ...snapshot, players: { P1: { ...player, unassignedHits: 3, unassignedMisses: 2 }, P2: player },
+  });
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.getByLabelText('Player 1 unknown-direction outcomes')).toHaveTextContent(
+    'Direction unknown: 3 hits, 2 misses.',
+  );
+  expect(screen.getByLabelText('Player 1 unknown-direction outcomes')).toHaveTextContent(
+    'Included in player totals, not arrow counts or response timing.',
+  );
+  expect(screen.queryByLabelText('Player 2 unknown-direction outcomes')).not.toBeInTheDocument();
+});
+
 it('shows check-in names under the correct player labels with gender-neutral dancing icons', async () => {
   const { client, execute } = fakeClient({
     ...snapshot, players: {

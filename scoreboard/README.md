@@ -273,6 +273,14 @@ Connection/publish errors appear in the desktop Events tab.
 - Cards without data are omitted, including score/combo, response timing,
   animal comparisons, percentages, pace, directional breakdown, and titles.
   A real zero (for example 0% after detected misses) is not missing data.
+- Optional desktop `judgment` regions correlate each player's captured success/MISS
+  images with arrow activity. Unique directions remain `arrow_hit` / `arrow_miss`.
+  Uncertain directions produce `judgment_hit` / `judgment_miss` with null direction,
+  counted once per observed judgment in player totals, percentage and hit pace.
+  `unassignedHits` / `unassignedMisses` expose these counts separately; the viewer
+  explains why they are absent from directional counts and response timing.
+  Arrow balance and lane titles use direction-assigned hits only. Legacy snapshots
+  default the new counters to zero, and arrow-only layouts keep their original behavior.
 - The SDK worker rejects revisions older than its last acknowledged revision.
 
 There is no distributed multiple-publisher mechanism: this app uses one

@@ -34,6 +34,12 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
     </>}
     {player?.combo != null && <div className="combo"><span>COMBO</span><strong>{player.combo}</strong></div>}
     {player && <div className="total-hits"><span>TOTAL HITS</span><strong>{player.hits.toLocaleString()}</strong></div>}
+    {player && ((player.unassignedHits ?? 0) > 0 || (player.unassignedMisses ?? 0) > 0)
+      && <p className="observation" aria-label={`${name} unknown-direction outcomes`}>
+        Direction unknown: {(player.unassignedHits ?? 0).toLocaleString()} hits,
+        {' '}{(player.unassignedMisses ?? 0).toLocaleString()} misses.
+        Included in player totals, not arrow counts or response timing.
+      </p>}
     {directions && player && player.hits > 0 && <div className="counts" aria-label={`${name} hits by arrow`}>
       {DIRECTIONS.map(direction => <div key={direction}>
         <span className="arrow-icon" aria-hidden="true">{{
@@ -93,7 +99,7 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
         </div>
         <strong>{balance ? `${balance[direction].toFixed(1)}%` : '--'}</strong>
       </div>)}
-      <p>{balance ? 'Share of detected hits this session, not accuracy.' : 'Waiting for directional hits.'}</p>
+      <p>{balance ? 'Share of direction-assigned hits this session, not accuracy.' : 'Waiting for directional hits.'}</p>
     </section>}
     <div className="player-notes">
     {!waiting && state?.observedScore != null && state.observedScore !== state.score

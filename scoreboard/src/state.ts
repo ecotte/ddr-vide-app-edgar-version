@@ -7,6 +7,8 @@ export interface PlayerState {
   score: number | null;
   combo: number | null;
   hits: number;
+  unassignedHits?: number;
+  unassignedMisses?: number;
   misses?: number | null;
   hitsByDirection?: Record<Direction, number> | null;
   hitPace?: number | null;
@@ -40,6 +42,16 @@ function isPlayer(value: unknown): value is PlayerState {
     ))
     && numberOrNull(value.observedScore) && numberOrNull(value.lastVideoTimeMs)
     && typeof value.hits === 'number' && numberOrNull(value.hits)
+    && (value.unassignedHits === undefined || (
+      typeof value.unassignedHits === 'number' && numberOrNull(value.unassignedHits)
+      && value.unassignedHits <= value.hits
+    ))
+    && (value.unassignedMisses === undefined || (
+      typeof value.unassignedMisses === 'number' && numberOrNull(value.unassignedMisses)
+      && (value.unassignedMisses === 0 || (
+        typeof value.misses === 'number' && value.unassignedMisses <= value.misses
+      ))
+    ))
     && (value.misses == null || numberOrNull(value.misses))
     && (value.responseSamples === undefined || (
       typeof value.responseSamples === 'number' && numberOrNull(value.responseSamples)
@@ -77,6 +89,8 @@ function cleanPlayer(player: PlayerState): PlayerState {
   return {
     username: player.username ?? null,
     score: player.score, combo: player.combo, hits: player.hits,
+    unassignedHits: player.unassignedHits ?? 0,
+    unassignedMisses: player.unassignedMisses ?? 0,
     misses: player.misses ?? null,
     hitPace: player.hitPace ?? null,
     averageResponseTimeMs: player.averageResponseTimeMs ?? null,

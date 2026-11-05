@@ -238,7 +238,7 @@ def test_ui_save_and_load_embeds_all_references_and_digit_samples(tmp_path, monk
             regions.append(Region(
                 kind, player, kind, 0, 0, 100, 40,
                 digit_templates={"1": [digit]}, digit_templates_reviewed=True,
-                score_template_version=config.SCORE_TEMPLATE_VERSION,
+                score_template_version=config.DIGIT_TEMPLATE_VERSIONS[kind],
             ))
         for direction in config.ARROW_DIRECTIONS:
             regions.append(Region(

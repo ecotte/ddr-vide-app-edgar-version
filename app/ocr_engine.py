@@ -191,6 +191,8 @@ class OcrEngine:
         self,
         crop_bgr: np.ndarray,
         templates: dict[str, list[np.ndarray]],
+        *,
+        kind: str = "score",
     ) -> OcrResult:
         if crop_bgr is None or crop_bgr.size == 0:
             return OcrResult(
@@ -198,7 +200,9 @@ class OcrEngine:
                 confidence=None,
                 error="Empty crop (region out of frame bounds?)",
             )
-        _, _, glyphs = _extract_score_glyphs(crop_bgr)
+        _, _, glyphs = (
+            _extract_combo_glyphs(crop_bgr) if kind == "combo" else _extract_score_glyphs(crop_bgr)
+        )
         if not glyphs:
             return OcrResult(raw_text="", confidence=None, error=None)
 
@@ -302,8 +306,72 @@ def _extract_score_glyphs(
     return gray, boxes, glyphs
 
 
+def _extract_combo_glyphs(
+    crop_bgr: np.ndarray,
+) -> tuple[np.ndarray, list[list[int]], list[np.ndarray]]:
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    original_height, original_width = gray.shape
+    if original_height < 128:
+        gray = cv2.resize(
+            gray, (max(1, round(original_width * 128 / original_height)), 128),
+            interpolation=cv2.INTER_CUBIC,
+        )
+    height, width = gray.shape
+    mask = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 5,
+    )
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    candidates = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if (
+            h >= max(8, height * 0.35) and 3 <= w <= h * 1.8
+            and x > 0 and y > 0 and x + w < width and y + h < height
+        ):
+            candidates.append((x, y, w, h))
+    rows = []
+    for anchor in candidates:
+        aligned = [
+            box for box in candidates
+            if abs(box[3] - anchor[3]) <= anchor[3] * 0.2
+            and abs(box[1] + box[3] - anchor[1] - anchor[3]) <= anchor[3] * 0.2
+        ]
+        selected = []
+        # Outer and inner digit contours overlap; keep one box, never a zero's hole.
+        for box in sorted(aligned, key=lambda box: box[2] * box[3], reverse=True):
+            if not any(
+                min(box[0] + box[2], other[0] + other[2]) - max(box[0], other[0])
+                > min(box[2], other[2]) * 0.5 for other in selected
+            ):
+                selected.append(box)
+        rows.append(selected)
+    row = max(rows, key=lambda boxes: (len(boxes), sum(box[3] for box in boxes)), default=[])
+    boxes = [
+        [round(x * original_width / width), round((x + w) * original_width / width),
+         round(y * original_height / height), round((y + h) * original_height / height)]
+        for x, y, w, h in sorted(row)
+    ]
+    mask = cv2.resize(mask, (original_width, original_height), interpolation=cv2.INTER_NEAREST)
+    return mask, boxes, _combo_glyphs_from_boxes(mask, boxes)
+
+
+def _combo_glyphs_from_boxes(mask: np.ndarray, boxes: list[list[int]]) -> list[np.ndarray]:
+    glyphs = []
+    previous_right = 0
+    for left, right, top, bottom in boxes:
+        if not (previous_right <= left < right <= mask.shape[1] and 0 <= top < bottom <= mask.shape[0]):
+            raise ValueError("Digit boxes must be inside the image, non-overlapping, and ordered left to right.")
+        ink = mask[top:bottom, left:right]
+        if not np.any(ink):
+            raise ValueError("A digit box contains no outline. Adjust it around a visible digit.")
+        glyphs.append(_normalize_score_glyph(ink))
+        previous_right = right
+    return glyphs
+
+
 def score_templates_from_label(
-    crop_bgr: np.ndarray, score: str,
+    crop_bgr: np.ndarray, score: str, *, kind: str = "score",
+    boxes: list[list[int]] | None = None,
 ) -> list[tuple[str, np.ndarray]]:
     text = score.strip()
     if not re.fullmatch(r"[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+", text):
@@ -311,7 +379,14 @@ def score_templates_from_label(
     digits = text.replace(",", "")
     if crop_bgr is None or crop_bgr.size == 0:
         raise ValueError("No number image is available. Display a clear number frame first.")
-    _, _, glyphs = _extract_score_glyphs(crop_bgr)
+    if kind == "combo":
+        mask, _, glyphs = _extract_combo_glyphs(crop_bgr)
+        if boxes is not None:
+            glyphs = _combo_glyphs_from_boxes(mask, boxes)
+        if len(digits) > config.FIELD_MAX_DIGITS["combo"]:
+            raise ValueError("A combo can contain at most five digits.")
+    else:
+        _, _, glyphs = _extract_score_glyphs(crop_bgr)
     if not glyphs:
         raise ValueError("No digit shapes found. Try a clearer frame or a tighter number region.")
     if len(digits) != len(glyphs):

@@ -41,6 +41,7 @@ SCORE_EVIDENCE_MIN_CONFIDENCE = 0.30
 NUMERIC_CONFIRMATION_SAMPLES = 2
 NUMERIC_CONFIRMATION_WINDOW_MS = 2000
 SCORE_TEMPLATE_VERSION = 1
+DIGIT_TEMPLATE_VERSIONS = {"score": SCORE_TEMPLATE_VERSION, "combo": 2}
 
 # Combo digits may be completely hidden by passing arrows. OCR output from
 # those frames must not replace a previously trusted combo with an impossible
@@ -57,7 +58,8 @@ FIELD_EVENT_TYPES = {
 }
 SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
-REGION_KINDS = ["score", "combo", "arrow", "game_end"]
+REGION_KINDS = ["score", "combo", "arrow", "judgment", "game_end"]
+JUDGMENT_CORRELATION_WINDOW_MS = 150
 NEW_SESSION_EVENT_TYPE = "new_session"
 SESSION_END_EVENT_TYPE = "session_end"
 DEFAULT_GAME_END_SIMILARITY_THRESHOLD = 0.95

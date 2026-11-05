@@ -637,10 +637,10 @@ class App(tk.Tk):
         self.video_tab.redraw_region_overlays(self.regions)
 
     def _update_recognition_row(self, rr: RegionFrameResult) -> None:
-        if rr.region.kind in ("arrow", "game_end"):
+        if rr.region.kind in ("arrow", "judgment", "game_end"):
             now = time.perf_counter()
             display_state = (
-                self.analysis.generation, rr.arrow_state, rr.error, rr.is_unreadable,
+                self.analysis.generation, rr.arrow_state, rr.error, rr.is_unreadable, rr.validation_note,
             )
             previous = self._arrow_display_state.get(rr.region.key())
             if previous is not None and previous[1] == display_state and now - previous[0] < 0.1:
@@ -649,7 +649,7 @@ class App(tk.Tk):
             rr.crop, self._recognition_photos.get(rr.region.key()),
         )
         self._recognition_photos[rr.region.key()] = photo
-        if rr.region.kind in ("arrow", "game_end"):
+        if rr.region.kind in ("arrow", "judgment", "game_end"):
             tracker_status: ArrowTrackerStatus = self.analysis.tracker_for(rr.region).status()
             status_text = self._format_arrow_status(rr, tracker_status)
             self.video_tab.update_arrow_recognition_row(
@@ -698,6 +698,8 @@ class App(tk.Tk):
     def _format_arrow_status(rr: RegionFrameResult, ts: ArrowTrackerStatus) -> str:
         if rr.error:
             return rr.error
+        if rr.validation_note:
+            return rr.validation_note
         if rr.is_unreadable:
             return "unreadable this frame (region out of frame bounds?)"
         if ts.pending_state is not None and ts.pending_state != ts.active_state and ts.pending_count > 0:
@@ -874,7 +876,7 @@ class App(tk.Tk):
                 continue
             if (
                 region.digit_templates_reviewed
-                and region.score_template_version != config.SCORE_TEMPLATE_VERSION
+                and region.score_template_version != config.DIGIT_TEMPLATE_VERSIONS[region.kind]
             ):
                 statuses.append(f"{region.label}: OCR active; outdated templates ignored")
                 continue
@@ -930,7 +932,7 @@ class App(tk.Tk):
             return
         region.digit_templates = dialog.result
         region.digit_templates_reviewed = True
-        region.score_template_version = config.SCORE_TEMPLATE_VERSION
+        region.score_template_version = config.DIGIT_TEMPLATE_VERSIONS[region.kind]
         self.analysis.update_score_templates(region)
         self._analysis_generation += 1
         self._refresh_score_calibration_status()
@@ -960,7 +962,7 @@ class App(tk.Tk):
         without waiting for a new
         frame to be processed."""
         for region in self.regions:
-            if region.kind not in ("arrow", "game_end"):
+            if region.kind not in ("arrow", "judgment", "game_end"):
                 continue
             for state, encoded_images in region.reference_images.items():
                 if not encoded_images:
@@ -986,7 +988,7 @@ class App(tk.Tk):
                 return
             if not self.regions:
                 messagebox.showwarning(
-                    "No regions", "Add at least one region (score, combo, arrow, or game_end) before starting analysis."
+                    "No regions", "Add at least one region (score, combo, arrow, judgment, or game_end) before starting analysis."
                 )
                 return
             self.analysis.start()
