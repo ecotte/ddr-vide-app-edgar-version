@@ -3,7 +3,7 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
 import { syncRegistrations, withPlayerNames } from '../../scripts/registrations';
 
-it('closes the previous game and relays at most 25 rows across current and historical registration tables without PINs', async () => {
+it('closes the previous game and selects PINs for normal registration relay with a shared 25-row limit', async () => {
   const client = new RayfinClient<AppSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
@@ -18,7 +18,7 @@ it('closes the previous game and relays at most 25 rows across current and histo
   vi.spyOn(users, 'where').mockReturnValue(users);
   vi.spyOn(users, 'orderBy').mockReturnValue(users);
   vi.spyOn(users, 'first').mockReturnValue(users);
-  vi.spyOn(users, 'execute').mockResolvedValue([]);
+  const executeUsers = vi.spyOn(users, 'execute').mockResolvedValue([]);
   const specials = client.data.SpecialSession.select(['id']);
   vi.spyOn(client.data.SpecialSession, 'select').mockReturnValue(specials);
   vi.spyOn(specials, 'where').mockReturnValue(specials);
@@ -33,7 +33,9 @@ it('closes the previous game and relays at most 25 rows across current and histo
   const row = { id: crypto.randomUUID(), gameSessionId: current, player: 'P1' as const,
     slotKey: `${current}:P1`, username: 'YaelTheChampion', usernameKey: 'special:test', pinKey: 'special:test',
     registrationType: 'special' as const, createdAt: now, eventQueued: false, excludeFromLeaderboard: true };
-  vi.spyOn(slots, 'execute').mockResolvedValue(Array.from({ length: 25 }, () => ({ ...row, id: crypto.randomUUID() })));
+  const executeSlots = vi.spyOn(slots, 'execute').mockResolvedValue(
+    Array.from({ length: 25 }, () => ({ ...row, id: crypto.randomUUID() })),
+  );
   const updateSlot = vi.spyOn(client.data.GamePlayerSession, 'update').mockResolvedValue(row);
   const player = { score: null, combo: null, hits: 0, observedScore: null, lastVideoTimeMs: null };
   const snapshot = { active: true, sessionId: current, revision: 1, players: { P1: player, P2: player } };
@@ -44,11 +46,22 @@ it('closes the previous game and relays at most 25 rows across current and histo
   expect(rows[0]).toMatchObject({
     player: 'P1', relaySource: 'slot', registrationType: 'special', excludeFromLeaderboard: true,
   });
-  expect(selectUsers).toHaveBeenCalledWith(['id', 'gameSessionId', 'player', 'username', 'createdAt']);
+  expect(selectUsers).toHaveBeenCalledWith(['id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt']);
   expect(selectSlots).toHaveBeenCalledWith([
-    'id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
+    'id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
   ]);
   expect(first).toHaveBeenCalledWith(25);
+  executeUsers.mockResolvedValue([{
+    id: crypto.randomUUID(), gameSessionId: current, player: 'P1',
+    username: 'HappyLakehouse1234', pin: '001234', createdAt: now, eventQueued: false,
+  }]);
+  executeSlots.mockResolvedValue([{
+    ...row, registrationType: 'player', username: 'HappyLakehouse5678', pin: '005678',
+  }]);
+  const normalRows = await syncRegistrations(client, snapshot, [], [], [], current);
+  expect(normalRows).toHaveLength(2);
+  expect(normalRows[0]).toMatchObject({ registrationType: 'player', pin: '001234' });
+  expect(normalRows[1]).toMatchObject({ registrationType: 'player', pin: '005678', relaySource: 'slot' });
   await expect(syncRegistrations(client, snapshot, [], [], ['bad'])).rejects.toThrow('Invalid registration acknowledgment');
   vi.restoreAllMocks();
 });
@@ -69,7 +82,7 @@ it('publishes only current-game check-in names, including already-relayed and sp
     createdAt: new Date(), eventQueued: true,
   };
   const execute = vi.spyOn(query, 'execute').mockResolvedValue([
-    { ...row, player: 'P2', username: 'HappyLakehouse5678' },
+    { ...row, player: 'P2', username: 'HappyLakehouse5678', pin: '005678' },
     { ...row, player: 'P1', username: 'YaelTheChampion' },
   ]);
   const player = { score: 1200, combo: 65, hits: 20, observedScore: null, lastVideoTimeMs: 1000 };

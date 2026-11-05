@@ -49,12 +49,12 @@ export async function syncRegistrations(
     }, { lastSeenAt: now, active: snapshot.active });
   }
   const [players, specials, slots] = await Promise.all([
-    client.data.UserSession.select(['id', 'gameSessionId', 'player', 'username', 'createdAt'])
+    client.data.UserSession.select(['id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt'])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
     client.data.SpecialSession.select(['id', 'gameSessionId', 'player', 'username', 'createdAt'])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
     client.data.GamePlayerSession.select([
-      'id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
+      'id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
     ])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
   ]);

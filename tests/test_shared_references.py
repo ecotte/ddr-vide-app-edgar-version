@@ -86,23 +86,28 @@ def test_teaching_p1_updates_both_numeric_caches_without_resetting_trackers(kind
 
 def test_p2_recognizes_p1_reference_on_its_own_differently_sized_crop():
     p1 = Region("P1", "P1", "arrow", 0, 0, 20, 20, direction="Center",
-                reference_images={"hit": [encoded(255)]})
+                reference_images={"active": [encoded(255)]})
     p2 = Region("P2", "P2", "arrow", 20, 0, 30, 30, direction="Center",
                 reference_images={"hit": [encoded(0)]})
+    j1 = Region("Judgment", "P1", "judgment", 50, 0, 20, 20,
+                reference_images={"perfect": [encoded(255)]})
+    j2 = Region("Judgment", "P2", "judgment", 70, 0, 20, 20)
     bus = EventBus()
     session = AnalysisSession(bus, shared_player_references=True)
-    session.set_regions([p1, p2])
+    session.set_regions([p1, p2, j1, j2])
     session.start()
-    pixels = np.full((30, 50, 3), 128, dtype=np.uint8)
-    pixels[:, 20:] = 255
+    pixels = np.full((30, 90, 3), 128, dtype=np.uint8)
+    pixels[:, 20:50] = 255
+    pixels[:, 70:] = 255
     session.process_arrow_frame(pixels, 1, 100)
+    session.process_arrow_frame(pixels, 2, 400)
     hits = [e for e in bus.events if e.event_type == "arrow_hit"]
     assert len(hits) == 1 and hits[0].player == "P2"
     assert hits[0].payload["direction"] == "Center"
 
 
 @pytest.mark.parametrize("method,args", [
-    ("capture_arrow_reference", ("hit",)), ("clear_arrow_reference", ("hit",)),
+    ("capture_arrow_reference", ("active",)), ("clear_arrow_reference", ("active",)),
     ("teach_score", ()),
 ])
 def test_p2_calibration_actions_cannot_modify_shared_p1(method, args):
@@ -125,11 +130,11 @@ def test_p1_capture_and_clear_refresh_p2_cache_and_previews():
         _last_frame_bgr=np.full((20, 40, 3), 255, dtype=np.uint8),
         video_tab=Mock(), _refresh_arrow_reference_thumbnails=Mock(),
     )
-    App.capture_arrow_reference(app, p1, "hit")
+    App.capture_arrow_reference(app, p1, "active")
     assert p2.reference_images == p1.reference_images
-    assert "hit" in session._arrow_references[p2.key()]
+    assert "active" in session._arrow_references[p2.key()]
     app._refresh_arrow_reference_thumbnails.assert_called_once()
-    App.clear_arrow_reference(app, p1, "hit")
+    App.clear_arrow_reference(app, p1, "active")
     assert not p1.reference_images and not p2.reference_images
     assert not session._arrow_references[p2.key()]
-    app.video_tab.set_arrow_reference_thumbnail.assert_any_call(p2.key(), "hit", None, 0)
+    app.video_tab.set_arrow_reference_thumbnail.assert_any_call(p2.key(), "active", None, 0)

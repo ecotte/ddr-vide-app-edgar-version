@@ -634,19 +634,20 @@ class VideoTab(ttk.Frame):
 
         state_var = tk.StringVar(value="state: -")
         confidence_var = tk.StringVar(value="similarity: -")
-        status_var = tk.StringVar(value="status: -")
+        status_var = tk.StringVar(value=(
+            "status: Activity only; outcomes require a matching judgment."
+            if r.reference_images.get("active") else
+            "status: Capture a fresh Active Arrow reference on P1. Old Hit/Miss refs are ignored."
+        ))
         ttk.Label(row, textvariable=state_var).grid(row=2, column=0, sticky="w")
         ttk.Label(row, textvariable=confidence_var).grid(row=3, column=0, sticky="w")
         ttk.Label(row, textvariable=status_var).grid(row=4, column=0, sticky="w")
 
         refs = ttk.Frame(row)
         refs.grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Label(refs, text="Hit ref:").grid(row=0, column=0, sticky="w")
-        hit_ref_label = ttk.Label(refs, text="(none)")
-        hit_ref_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Label(refs, text="Miss ref:").grid(row=0, column=1, sticky="w")
-        miss_ref_label = ttk.Label(refs, text="(none)")
-        miss_ref_label.grid(row=1, column=1, sticky="w")
+        ttk.Label(refs, text="Active Arrow ref:").grid(row=0, column=0, sticky="w")
+        active_ref_label = ttk.Label(refs, text="(none)")
+        active_ref_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
         ttk.Label(refs, text="Appearance ref:").grid(row=2, column=0, sticky="w")
         appeared_ref_label = ttk.Label(refs, text="(none)")
         appeared_ref_label.grid(row=3, column=0, columnspan=2, sticky="w")
@@ -654,21 +655,13 @@ class VideoTab(ttk.Frame):
         btns = ttk.Frame(row)
         btns.grid(row=6, column=0, sticky="w", pady=(4, 0))
         ttk.Button(
-            btns, text="Add Hit ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "hit"),
+            btns, text="Add Active Arrow ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "active"),
             state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=0, padx=2)
         ttk.Button(
-            btns, text="Clear Hit refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "hit"),
+            btns, text="Clear Active Arrow refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "active"),
             state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=1, padx=2)
-        ttk.Button(
-            btns, text="Add Miss ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "miss"),
-            state="disabled" if r.player == "P2" else "normal",
-        ).grid(row=1, column=0, padx=2, pady=(4, 0))
-        ttk.Button(
-            btns, text="Clear Miss refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "miss"),
-            state="disabled" if r.player == "P2" else "normal",
-        ).grid(row=1, column=1, padx=2, pady=(4, 0))
         ttk.Button(
             btns, text="Add Appearance", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "appeared"),
             state="disabled" if r.player == "P2" else "normal",
@@ -678,8 +671,10 @@ class VideoTab(ttk.Frame):
             state="disabled" if r.player == "P2" else "normal",
         ).grid(row=2, column=1, padx=2, pady=(4, 0))
         ttk.Label(
-            row, text="Optional timing: capture a distinct arrow before its hit. "
-            "The crop must show both appearance and outcome. Overlapping appearances are excluded.",
+            row, text="Capture this arrow while active, not its always-visible idle receptor. "
+            "The judgment box alone decides Perfect/Great/Good/Miss. Old Hit/Miss refs are ignored. "
+            "Optional timing: capture a distinct earlier Appearance; the crop must show both "
+            "appearance and activity. Overlapping appearances are excluded.",
         ).grid(row=7, column=0, sticky="w", pady=(4, 0))
         if r.player == "P2":
             ttk.Label(row, text="Uses P1 references for this direction. Add/calibrate the P1 box first. "
@@ -692,8 +687,7 @@ class VideoTab(ttk.Frame):
             "state_var": state_var,
             "confidence_var": confidence_var,
             "status_var": status_var,
-            "hit_ref_label": hit_ref_label,
-            "miss_ref_label": miss_ref_label,
+            "active_ref_label": active_ref_label,
             "appeared_ref_label": appeared_ref_label,
         }
 

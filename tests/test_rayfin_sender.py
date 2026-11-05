@@ -81,6 +81,7 @@ REGISTRATION = {
     "id": "045bc1ea-322c-4ae7-80e1-06e725893e8e",
     "gameSessionId": "c7510905-589f-4d05-bd14-cd718e288a49",
     "username": "SillyEventhouse1234",
+    "pin": "001234",
     "createdAt": "2026-10-29T08:00:00Z",
 }
 
@@ -99,11 +100,12 @@ def test_registration_ack_only_after_durable_enqueue(monkeypatch, tmp_path):
         assert event.event_type == "user.register"
         assert event.event_id == REGISTRATION["id"]
         assert event.session_id == REGISTRATION["gameSessionId"]
-        assert "pin" not in event.payload
+        assert event.payload["pin"] == "001234"
         sender.publish({"revision": 4})
         requests = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
         assert "acknowledgedRegistrations" not in requests[0]
         assert requests[1]["acknowledgedRegistrations"] == [REGISTRATION["id"]]
+        assert "001234" not in process.stdin.getvalue()
     finally:
         sender.close()
 
@@ -126,7 +128,7 @@ def test_registration_enqueue_failure_leaves_sql_pending(monkeypatch, tmp_path):
 
 
 def test_special_registration_acknowledgment_uses_separate_sql_entity(monkeypatch, tmp_path):
-    row = {**REGISTRATION, "username": "YaelTheChampion", "registrationType": "special"}
+    row = {**REGISTRATION, "username": "YaelTheChampion", "registrationType": "special", "pin": None}
     process, _ = fake_process(monkeypatch, tmp_path, [
         {"status": "ready"},
         {"status": "published", "revision": 3, "registrations": [row]},
@@ -159,5 +161,26 @@ def test_current_player_slots_are_acknowledged_only_after_durable_enqueue(monkey
         request = json.loads(process.stdin.getvalue().splitlines()[1])
         assert request["acknowledgedGamePlayerRegistrations"] == [row["id"]]
         assert "acknowledgedRegistrations" not in request
+    finally:
+        sender.close()
+
+
+def test_invalid_pin_is_not_acknowledged_or_exposed(monkeypatch, tmp_path):
+    row = {**REGISTRATION, "pin": "bad-pin"}
+    process, _ = fake_process(monkeypatch, tmp_path, [
+        {"status": "ready"},
+        {"status": "published", "revision": 3, "registrations": [row]},
+        {"status": "published", "revision": 4, "registrations": []},
+    ])
+    sink = Mock()
+    sender = RayfinSender(registration_sink=sink)
+    try:
+        with pytest.raises(ScoreboardPublishError) as error:
+            sender.publish({"revision": 3})
+        assert "bad-pin" not in str(error.value)
+        sink.assert_not_called()
+        sender.publish({"revision": 4})
+        requests = [json.loads(line) for line in process.stdin.getvalue().splitlines()]
+        assert all("acknowledgedRegistrations" not in request for request in requests)
     finally:
         sender.close()

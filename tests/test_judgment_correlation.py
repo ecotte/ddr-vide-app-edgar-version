@@ -30,8 +30,10 @@ def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=F
                 direction, player, "arrow", len(regions) * 20, 0, 20, 20,
                 direction=direction,
                 reference_images={
-                    state: [image_utils.encode_crop_to_base64_png(image(state))]
-                    for state in ("hit", "miss", "appeared")
+                    "active": [
+                        image_utils.encode_crop_to_base64_png(image(state)) for state in ("hit", "miss")
+                    ],
+                    "appeared": [image_utils.encode_crop_to_base64_png(image("appeared"))],
                 },
             ))
         if player in judgments:
@@ -94,13 +96,12 @@ def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(out
     assert session._pending_judgments == []
 
 
-def test_player_judgments_never_validate_other_player_arrows_and_legacy_players_still_work():
+def test_player_judgments_never_validate_other_player_arrows_or_infer_arrow_only_outcomes():
     _, bus, _, frame = setup(players=("P1", "P2"), judgments=("P1",))
     frame(100, **{"P1:judgment": "miss", "P2:arrow:Up-Right": "hit"})
-    assert [event.event_type for event in outcomes(bus)] == ["arrow_hit"]
+    assert outcomes(bus) == []
     frame(400)
-    p2, p1 = outcomes(bus)
-    assert (p2.player, p2.event_type) == ("P2", "arrow_hit")
+    p1, = outcomes(bus)
     assert (p1.player, p1.event_type, p1.payload["direction"]) == ("P1", "judgment_miss", None)
 
 

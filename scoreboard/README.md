@@ -114,15 +114,24 @@ The event uses the user-session UUID as `event_id`, the game GUID as `session_id
 `event_type: "user.register"`, `source_mode: "registration"`, `sequence: 0`,
 `player: "P1"` / `"P2"` (historical unassigned records can still be null), and null frame/video-time fields.
 Payload contains `user_session_id`,
-`game_session_id`, and `username`. Sequence is not a gameplay sequence; use
-event ID for identity. **PINs stay in organizer-only SQL and the photo screen**;
-they are not copied into telemetry. A PIN-checking/claim-redemption flow is not
+`game_session_id`, and `username`, plus `pin` for normal registrations.
+`pin` is a six-digit string so leading zeroes survive. Special no-PIN registrations
+omit it. Sequence is not a gameplay sequence; use event ID for identity.
+**PINs are now also stored in the local durable outbox and Eventhouse event payload.**
+Restrict local outbox and Eventhouse access to trusted organizers; SQL permissions
+do not protect the Eventhouse copy. Public scoreboard snapshots and logs omit PINs.
+A PIN-checking/claim-redemption flow is not
 included. The PIN is a workshop claim code, not strong account authentication.
 
 Registration entities restrict access to the authorized publisher account;
 ordinary scoreboard viewers cannot read registrations or PINs. Apply the new
 schema and frontend together with `npx rayfin up` before using the kiosk, and
 rebuild the desktop worker with `npm run build:publisher`.
+
+For the PIN relay change, rebuild the worker and restart desktop sharing.
+No database schema or Eventhouse mapping change is needed: the existing `payload`
+column is dynamic. Only newly relayed registrations include the PIN; already queued
+or acknowledged registrations are not automatically backfilled.
 
 ### Booth easter eggs
 

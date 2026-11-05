@@ -110,7 +110,11 @@ Python writes their `user.register` envelopes into the same durable Eventstream
 outbox as gameplay. Only a successful queue write is acknowledged back to SQL
 on the next cycle. `eventQueued` means queued, not Eventhouse-ingested.
 Failures retain SQL rows for retry; duplicate deliveries use the same event ID.
-PINs never enter event telemetry. Players photograph the saved name/PIN screen
+Normal registrations include their six-digit string PIN in `payload.pin`;
+special no-PIN registrations omit it. The PIN is stored in the local outbox and
+Eventhouse, so restrict both to trusted organizers. Public scoreboard snapshots
+and logs still exclude PINs. Already relayed registrations are not backfilled.
+Players photograph the saved name/PIN screen
 for future validation; gameplay player assignment and PIN redemption are separate,
 not yet implemented.
 
@@ -166,9 +170,12 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
-- `arrow_hit` and `arrow_miss`: detected arrow-state transitions for legacy
-  arrow-only players, or judgment-correlated outcomes for calibrated players.
-- Optional per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
+- Arrow references identify activity using fresh `active` samples; old `hit`/`miss`
+  arrow images are ignored with a recalibration warning. Optional `appeared` samples
+  retain response timing. Without Active Arrow calibration no lane evidence is produced.
+- `arrow_hit` and `arrow_miss`: judgment-correlated outcomes only. Arrow activity
+  alone never determines success or failure, even without a judgment box.
+- Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
   at source-frame rate. Their new pulses determine outcome type, with arrow
   activity matched within +/-150 ms of source time. A 300 ms settling interval
   detects competing judgments. Ambiguous directions produce `judgment_hit` or

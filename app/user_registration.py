@@ -12,6 +12,7 @@ def registration_event(row: dict) -> Event:
         session_id = str(UUID(row["gameSessionId"]))
         username = row["username"]
         registration_type = row.get("registrationType", "player")
+        pin = row.get("pin")
         excluded = row.get("excludeFromLeaderboard")
         if excluded is None:
             excluded = False
@@ -22,8 +23,12 @@ def registration_event(row: dict) -> Event:
             raise ValueError
         timestamp = row["createdAt"]
         if registration_type == "special":
+            if pin is not None:
+                raise ValueError
             valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen")
         elif registration_type == "player":
+            if not isinstance(pin, str) or re.fullmatch(r"[0-9]{6}", pin) is None:
+                raise ValueError
             valid_name = isinstance(username, str) and re.fullmatch(
                 r"[A-Za-z][a-z]+(?:[A-Z][a-z]+)?[0-9]{4}", username,
             )
@@ -45,6 +50,7 @@ def registration_event(row: dict) -> Event:
         payload={
             "user_session_id": event_id, "game_session_id": session_id,
             "username": username, "registration_type": registration_type,
+            **({"pin": pin} if registration_type == "player" else {}),
             "exclude_from_leaderboard": excluded,
         },
     )

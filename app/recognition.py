@@ -124,7 +124,7 @@ def parse_digits(raw_text: str, max_digits: Optional[int] = None) -> Optional[in
 class ArrowTrackerStatus:
     """A snapshot of arrow tracker state, useful for UI display."""
 
-    active_state: Optional[str]        # "hit", "miss", "appeared", or None (idle)
+    active_state: Optional[str]        # activity/appearance/judgment state, or None (idle)
     pending_state: Optional[str]
     pending_count: int
     required_count: int
@@ -135,14 +135,14 @@ class ArrowStateTracker:
     """Edge-triggered detector for a single arrow lane's calibrated states.
 
     Unlike TemporalValueTracker (which debounces a *stable* value like a
-    score), a hit/miss flash at an arrow receptor is often only visible for
+    score), an activity flash at an arrow receptor is often only visible for
     a frame or two. So instead of "accept once a value holds steady", this
     tracker fires an event once when the classified state *changes away
     from idle* (or changes from one active state directly to another), and
     suppresses repeats while that same state persists across frames - i.e.
     a debounced edge/pulse detector, not a stability filter.
 
-    ``observe(state)`` takes "hit", "miss", "appeared", or "idle" (never invented here -
+    ``observe(state)`` takes "active", "appeared", or "idle" for arrow boxes (never invented here -
     see app.recognition.classify_arrow_state, which returns "idle" when no
     captured reference matches closely enough). An unreadable frame is
     represented by passing ``None``, which - as with TemporalValueTracker -
@@ -177,7 +177,7 @@ class ArrowStateTracker:
         self._last_was_unreadable = False
 
     def observe(self, state: Optional[str]) -> Optional[str]:
-        """Feed one frame's classified state ("hit"/"miss"/"appeared"/"idle"/None).
+        """Feed one frame's classified arrow or judgment state (or None if unreadable).
 
         Returns the newly confirmed non-idle state if this
         observation just triggered a new event, else None.
@@ -216,9 +216,9 @@ def classify_arrow_state(
     reference_images: dict,
     threshold: float,
 ):
-    """Classify a live arrow-lane crop against captured hit/miss/appearance
+    """Classify a live arrow-lane crop against captured activity/appearance
     references. Returns (state, confidence):
-      * state is "hit", "miss", or "appeared" if the best-matching reference's
+      * state is "active" or "appeared" if the best-matching reference's
         similarity is >= threshold,
       * otherwise "idle" (no confident match - the honest default, not a
         guess),
@@ -232,7 +232,7 @@ def classify_arrow_state(
 
     best_state = None
     best_score = 0.0
-    for state_name in ("hit", "miss", "appeared"):
+    for state_name in ("active", "appeared"):
         references = reference_images.get(state_name, [])
         if not isinstance(references, (list, tuple)):
             references = [references]

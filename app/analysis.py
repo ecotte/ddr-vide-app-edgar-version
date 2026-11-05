@@ -9,7 +9,8 @@ Region kinds:
     steady for N frames before being accepted).
   * "arrow" - image-similarity classification against user-captured
     reference snapshots + ArrowStateTracker (an edge-triggered detector,
-    since hit/miss flashes are often brief rather than steady).
+    since activity flashes are often brief rather than steady). Outcomes
+    require a matching player judgment; activity alone cannot emit hits/misses.
   * "game_end" - a shared reference-matched end indicator that rotates
     game GUIDs once per confirmed appearance.
   * "judgment" - per-player Perfect/Great/Good/Miss reference pulses correlated with
@@ -62,7 +63,7 @@ class RegionFrameResult:
     validation_note: Optional[str] = None  # numeric reading pending or rejected by acceptance rules
     candidate_value: Optional[int] = None  # score/combo only
     accepted_value: Optional[int] = None   # score/combo only
-    arrow_state: Optional[str] = None      # image match: "hit" / "miss" / "appeared" / "ended" / "idle"
+    arrow_state: Optional[str] = None      # activity, appearance, judgment tier, ended, or idle
     is_unreadable: bool = False
     crop: Optional[np.ndarray] = None  # kept only for UI preview, not required for logic
     needs_confirmation: bool = False
@@ -848,9 +849,19 @@ class AnalysisSession:
             )
             return result, None
 
-        note = None
-        if not references:
-            note = "No arrow references captured yet for this lane - see the Capture buttons."
+        if not references.get("active"):
+            tracker.observe(None)
+            self._arrow_appearances.pop(key, None)
+            return RegionFrameResult(
+                region=region, crop=crop, arrow_state=None, is_unreadable=True,
+                error="Capture a fresh Active Arrow reference on P1 for this direction. "
+                "Old Hit/Miss references are ignored.",
+            ), None
+
+        has_judgment = any(r.kind == "judgment" and r.player == region.player for r in self.regions)
+        note = None if has_judgment else (
+            f"Add and calibrate a judgment box for {region.player}. Arrow activity alone cannot count hits or misses."
+        )
 
         state, score = classify_arrow_state(crop, references, self.arrow_similarity_threshold)
         if previous_frame == (frame_index, video_time_ms):
@@ -864,24 +875,19 @@ class AnalysisSession:
         event = None
         if confirmed is not None and self.recording_enabled:
             onset = self._arrow_state_started[key]
-            timing = {}
             if confirmed == "appeared":
                 # More than one appearance before an outcome has no unique hit pairing.
                 self._arrow_appearances[key] = onset if key not in self._arrow_appearances else None
             else:
                 appearance = self._arrow_appearances.pop(key, None)
-                if any(r.kind == "judgment" and r.player == region.player for r in self.regions):
+                if has_judgment:
                     self._pending_lanes.append(LaneEvidence(region, onset, score, appearance))
-                    return RegionFrameResult(
-                        region=region, confidence=score, arrow_state=state, crop=crop,
-                        validation_note="Arrow activity observed; waiting for a matching player judgment.",
-                    ), None
-                if confirmed == "hit" and appearance is not None and onset > appearance:
-                    timing = {
-                        "appearance_video_time_ms": appearance,
-                        "hit_video_time_ms": onset,
-                        "response_time_ms": onset - appearance,
-                    }
+                return RegionFrameResult(
+                    region=region, confidence=score, arrow_state=state, crop=crop,
+                    error=note,
+                    validation_note="Arrow activity observed; waiting for a matching player judgment."
+                    if has_judgment else None,
+                ), None
             event_type = config.ARROW_EVENT_TYPES[confirmed]
             player = None if region.player == "Unknown" else region.player
             event = self.event_bus.make_event(
@@ -891,7 +897,6 @@ class AnalysisSession:
                     "region_label": region.label,
                     "direction": region.direction,
                     "state": confirmed,
-                    **timing,
                 },
                 frame_index=frame_index,
                 video_time_ms=video_time_ms,

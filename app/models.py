@@ -20,8 +20,9 @@ class Region:
 
     ``direction`` is only used when ``kind == "arrow"`` and is one of config.ARROW_DIRECTIONS
     ("Up-Right"/"Up-Left"/"Down-Right"/"Down-Left"/"Center"), and ``reference_images`` holds
-    user-captured example crops (base64 PNG) grouped by state name ("hit",
-    "miss", optional "appeared") that the arrow classifier compares live frames against. These
+    user-captured example crops (base64 PNG) grouped by state name ("active",
+    optional "appeared") that the arrow classifier compares live frames against.
+    Legacy arrow "hit"/"miss" images are ignored and require fresh activity calibration. These
     are never pre-supplied by the app - only what the user captures from
     their own footage. ``game_end`` regions use ``reference_images["ended"]``
     for a shared, game-wide end indicator.
