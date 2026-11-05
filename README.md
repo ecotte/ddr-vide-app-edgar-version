@@ -30,8 +30,11 @@ The same Rayfin app includes a shared-device **Player check-in kiosk** at
 expires); players generate a Fabric-themed name and unique six-digit PIN without
 their own Microsoft accounts. They photograph the saved identity screen.
 Registrations link to the current game in Rayfin SQL and are relayed through
-the desktop's durable Eventstream outbox as `user.register`; PINs stay out of
-telemetry. See the [kiosk setup and delivery rules](scoreboard/README.md#player-registration-kiosk).
+the desktop's durable Eventstream outbox as `user.register`, including the six-digit
+PIN in `payload.pin` for normal registrations. PINs remain excluded from the public
+scoreboard and logs, but are readable by users with access to raw Eventhouse events
+and by anyone who can read the local outbox. Restrict those permissions accordingly.
+See the [kiosk setup and delivery rules](scoreboard/README.md#player-registration-kiosk).
 Station URLs require `?player=1#register` or `?player=2#register`. Each game has
 one registration slot per player, including special entries. In the desktop,
 **New Session** emits `session_end` for the announced old game before emitting

@@ -110,7 +110,11 @@ Python writes their `user.register` envelopes into the same durable Eventstream
 outbox as gameplay. Only a successful queue write is acknowledged back to SQL
 on the next cycle. `eventQueued` means queued, not Eventhouse-ingested.
 Failures retain SQL rows for retry; duplicate deliveries use the same event ID.
-PINs never enter event telemetry. Players photograph the saved name/PIN screen
+Normal registrations include their six-digit string PIN in `payload.pin`;
+special no-PIN registrations omit it. The PIN is stored in the local outbox and
+Eventhouse, so restrict both to trusted organizers. Public scoreboard snapshots
+and logs still exclude PINs. Already relayed registrations are not backfilled.
+Players photograph the saved name/PIN screen
 for future validation; gameplay player assignment and PIN redemption are separate,
 not yet implemented.
 
