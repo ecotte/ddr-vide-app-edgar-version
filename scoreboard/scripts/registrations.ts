@@ -2,6 +2,21 @@ import type { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../rayfin/data/schema.js';
 import type { BoardSnapshot } from '../src/state.js';
 
+export async function withPlayerNames(
+  client: RayfinClient<AppSchema>, snapshot: BoardSnapshot,
+): Promise<BoardSnapshot> {
+  const players: BoardSnapshot['players'] = {
+    P1: { ...snapshot.players.P1, username: null },
+    P2: { ...snapshot.players.P2, username: null },
+  };
+  if (snapshot.sessionId) {
+    const rows = await client.data.GamePlayerSession.select(['player', 'username'])
+      .where({ gameSessionId: { eq: snapshot.sessionId } }).first(2).execute();
+    for (const row of rows) players[row.player].username = row.username;
+  }
+  return { ...snapshot, players };
+}
+
 export async function syncRegistrations(
   client: RayfinClient<AppSchema>, snapshot: BoardSnapshot, acknowledged: unknown, acknowledgedSpecial: unknown = [],
   acknowledgedSlots: unknown = [], previousSessionId?: string,
@@ -38,7 +53,9 @@ export async function syncRegistrations(
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
     client.data.SpecialSession.select(['id', 'gameSessionId', 'player', 'username', 'createdAt'])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
-    client.data.GamePlayerSession.select(['id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType'])
+    client.data.GamePlayerSession.select([
+      'id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
+    ])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
   ]);
   return [

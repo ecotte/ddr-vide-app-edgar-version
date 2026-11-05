@@ -13,6 +13,7 @@ from app.rayfin_sender import (
 def _player():
     return {
         "score": None, "combo": None, "hits": 0, "misses": 0,
+        "unassignedHits": 0, "unassignedMisses": 0,
         "hitsByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
         "hitPace": 0.0,
         "averageResponseTimeMs": None, "responseSamples": 0,
@@ -130,18 +131,29 @@ class LiveScoreboard:
                     (event.player, "observedScore"), -1,
                 ) < event.sequence:
                     player["observedScore"] = None
-            elif event.event_type in ("arrow_hit", "arrow_miss"):
+            elif event.event_type in ("arrow_hit", "arrow_miss", "judgment_hit", "judgment_miss"):
                 direction = event.payload.get("direction")
-                if direction not in player["hitsByDirection"]:
+                unassigned = event.event_type.startswith("judgment_")
+                if (unassigned and direction is not None) or (
+                    not unassigned and direction not in player["hitsByDirection"]
+                ):
                     self._error = "Live scoreboard: invalid arrow direction in outcome event."
                     return
-                if event.event_type == "arrow_miss":
+                if event.event_type.endswith("_miss"):
                     player["misses"] += 1
+                    if unassigned:
+                        player["unassignedMisses"] += 1
                     self._state["revision"] += 1
                     return
                 player["hits"] += 1
-                player["hitsByDirection"][direction] += 1
+                if unassigned:
+                    player["unassignedHits"] += 1
+                else:
+                    player["hitsByDirection"][direction] += 1
                 response = event.payload.get("response_time_ms")
+                if unassigned and response is not None:
+                    self._error = "Live scoreboard: directionless judgment timing excluded from average."
+                    response = None
                 if response is not None:
                     appearance = event.payload.get("appearance_video_time_ms")
                     hit = event.payload.get("hit_video_time_ms")

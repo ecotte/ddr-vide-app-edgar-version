@@ -6,7 +6,7 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import { signInWithEntraToken } from '@microsoft/rayfin-auth-provider-fabric';
 import type { AppSchema } from '../rayfin/data/schema.js';
 import { BOARD_ID, parseSnapshot } from '../src/state.js';
-import { syncRegistrations } from './registrations.js';
+import { syncRegistrations, withPlayerNames } from './registrations.js';
 
 const prefix = '__DDR_SCOREBOARD__';
 const report = (status: string, revision?: number, registrations?: unknown) => {
@@ -52,7 +52,8 @@ async function main() {
           report('invalid');
           continue;
         }
-        const body = { snapshot: JSON.stringify(snapshot), publishedAt: new Date() };
+        const namedSnapshot = await withPlayerNames(client, snapshot);
+        const body = { snapshot: JSON.stringify(namedSnapshot), publishedAt: new Date() };
         await client.data.LiveBoard.upsert(
           { id: BOARD_ID }, { id: BOARD_ID, ...body }, body,
         );

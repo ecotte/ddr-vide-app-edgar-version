@@ -4,19 +4,22 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
 import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import RegistrationKiosk from '../RegistrationKiosk';
-import { saveRegistration, type PlayerPass } from '../registration';
+import { getRegistrationMode, saveRegistration, type PlayerPass } from '../registration';
 
 vi.mock('../registration', async importOriginal => ({
   ...await importOriginal<typeof import('../registration')>(),
   saveRegistration: vi.fn(),
+  getRegistrationMode: vi.fn(),
 }));
 const pass: PlayerPass = {
   id: 'user', gameSessionId: 'game', player: 'P1', username: 'SillyEventhouse1234',
   pin: '123456', registrationType: 'player',
+  excludeFromLeaderboard: false,
 };
 beforeEach(() => {
   window.history.replaceState(null, '', '/?player=1#register');
   vi.mocked(saveRegistration).mockResolvedValue(pass);
+  vi.mocked(getRegistrationMode).mockResolvedValue({ gameSessionId: 'game', excludeFromLeaderboard: null });
 });
 afterEach(() => { cleanup(); vi.resetAllMocks(); });
 function client() {
@@ -49,6 +52,66 @@ it('retains the request ID after a failure so retry cannot create a duplicate', 
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
   expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
   expect(screen.getByText(pass.username)).toBeInTheDocument();
+});
+
+it('offers a discreet easy-mode action below normal registration and retains its mode on retry', async () => {
+  vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Connection interrupted'))
+    .mockResolvedValueOnce({ ...pass, excludeFromLeaderboard: true });
+  render(<RegistrationKiosk client={client()} />);
+  const normal = screen.getByRole('button', { name: 'Register me' });
+  const easy = screen.getByRole('button', { name: 'Easy mode (not ranked)' });
+  expect(normal.nextElementSibling).toBe(easy);
+  expect(easy).toHaveClass('booth-easy-mode');
+  expect(easy).not.toHaveClass('booth-primary');
+  await act(async () => { fireEvent.click(easy); });
+  const request = vi.mocked(saveRegistration).mock.calls[0][1];
+  expect(request).toMatchObject({ player: 'P1', specialName: '', excludeFromLeaderboard: true });
+  expect(screen.queryByRole('button', { name: 'Easy mode (not ranked)' })).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
+  expect(screen.getByText(/Easy mode: shown on the live scoreboard/)).toBeInTheDocument();
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /Next player/ }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[2][1]).toMatchObject({ excludeFromLeaderboard: false });
+  expect(vi.mocked(saveRegistration).mock.calls[2][1].requestId).not.toBe(request.requestId);
+});
+
+it.each([false, true])('shows and automatically inherits locked session mode %s', async excluded => {
+  vi.mocked(getRegistrationMode).mockResolvedValue({ gameSessionId: 'game', excludeFromLeaderboard: excluded });
+  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, excludeFromLeaderboard: excluded });
+  await act(async () => { render(<RegistrationKiosk client={client()} />); });
+  expect(screen.getByRole('status')).toHaveTextContent(
+    excluded ? 'This session is in easy mode (not ranked)' : 'This session is in normal mode',
+  );
+  expect(screen.queryByRole('button', { name: 'Easy mode (not ranked)' })).not.toBeInTheDocument();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[0][1].excludeFromLeaderboard).toBe(excluded);
+  expect(screen.getByText(excluded ? /Easy mode: shown/ : /Normal mode: this session/)).toBeInTheDocument();
+});
+
+it('refreshes mode for a new game and does not carry the old game mode across sessions', async () => {
+  vi.useFakeTimers();
+  try {
+    vi.mocked(getRegistrationMode).mockResolvedValueOnce({ gameSessionId: 'game', excludeFromLeaderboard: true })
+      .mockResolvedValue({ gameSessionId: 'new-game', excludeFromLeaderboard: null });
+    await act(async () => { render(<RegistrationKiosk client={client()} />); });
+    expect(screen.queryByRole('button', { name: 'Easy mode (not ranked)' })).not.toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(screen.getByRole('button', { name: 'Easy mode (not ranked)' })).toBeInTheDocument();
+    expect(screen.queryByText(/This session is in easy mode/)).not.toBeInTheDocument();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('surfaces session-mode lookup failures but still lets the server enforce registration mode', async () => {
+  vi.mocked(getRegistrationMode).mockRejectedValue(new Error('Session mode unavailable'));
+  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, excludeFromLeaderboard: true });
+  await act(async () => { render(<RegistrationKiosk client={client()} />); });
+  expect(screen.getByRole('alert')).toHaveTextContent('Session mode unavailable');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  expect(screen.getByText(/Easy mode: shown on the live scoreboard/)).toBeInTheDocument();
 });
 it('shows progress and prevents concurrent clicks while its single server request is pending', async () => {
   let resolve!: (value: PlayerPass) => void;
@@ -136,6 +199,7 @@ it.each(['/', '/?player=3#register'])('blocks missing or invalid station URLs %s
   render(<RegistrationKiosk client={client()} />);
   expect(screen.getByRole('alert')).toHaveTextContent(/station/i);
   expect(screen.getByRole('button', { name: 'Register me' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Easy mode (not ranked)' })).toBeDisabled();
   expect(saveRegistration).not.toHaveBeenCalled();
 });
 it('does not activate on interleaved or expired corner taps', () => {

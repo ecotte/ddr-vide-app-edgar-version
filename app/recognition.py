@@ -241,3 +241,23 @@ def classify_arrow_state(
     if best_state is not None and best_score >= threshold:
         return best_state, best_score
     return "idle", best_score
+
+
+def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
+    """Match taught judgment words; close competing outcomes remain unconfirmed."""
+    from app import image_utils
+
+    ranked = sorted(
+        (
+            (max(image_utils.similarity(crop_bgr, image) for image in references), state)
+            for state in ("hit", "miss", "idle")
+            if (references := reference_images.get(state, []))
+        ),
+        reverse=True,
+    )
+    if not ranked:
+        return None, 0.0
+    score, state = ranked[0]
+    if score < threshold or (len(ranked) > 1 and score - ranked[1][0] < 0.02):
+        return None, score
+    return state, score

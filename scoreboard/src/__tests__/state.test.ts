@@ -1,12 +1,41 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { arrowBalance, parseSnapshot, poll } from '../state';
 
-const player = { score: null, combo: 3, hits: 0, misses: 0,
+const player = { username: null, score: null, combo: 3, hits: 0, misses: 0, unassignedHits: 0, unassignedMisses: 0,
   hitsByDirection: { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 },
   hitPace: 0, averageResponseTimeMs: null, responseSamples: 0, observedScore: 4, lastVideoTimeMs: 10 };
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: { P1: player, P2: player } };
 
 describe('scoreboard state', () => {
+  it('preserves unknown-direction outcomes while older snapshots default to zero', () => {
+    const updated = { ...player, hits: 3, misses: 2, unassignedHits: 2, unassignedMisses: 1 };
+    expect(parseSnapshot({ ...snapshot, players: { P1: updated, P2: player } }).players.P1).toEqual(updated);
+    const legacy = { ...player, unassignedHits: undefined, unassignedMisses: undefined };
+    const parsed = parseSnapshot({ ...snapshot, players: { P1: legacy, P2: legacy } });
+    expect(parsed.players.P1.unassignedHits).toBe(0);
+    expect(parsed.players.P1.unassignedMisses).toBe(0);
+  });
+  it.each([
+    { unassignedHits: -1 }, { unassignedHits: 1 }, { unassignedHits: null },
+    { unassignedMisses: 1 }, { unassignedMisses: '1' },
+  ])('rejects invalid unknown-direction counts %j', invalid => {
+    expect(() => parseSnapshot({
+      ...snapshot, players: { P1: { ...player, ...invalid }, P2: player },
+    })).toThrow();
+  });
+  it('preserves check-in names and accepts snapshots from older publishers', () => {
+    expect(parseSnapshot({
+      ...snapshot, players: { P1: { ...player, username: 'SillyEventhouse1234' }, P2: player },
+    }).players.P1.username).toBe('SillyEventhouse1234');
+    expect(parseSnapshot({
+      ...snapshot, players: { P1: { ...player, username: undefined }, P2: player },
+    }).players.P1.username).toBeNull();
+  });
+  it.each([123, '', '   ', 'x'.repeat(81)])('rejects invalid player names %s', username => {
+    expect(() => parseSnapshot({
+      ...snapshot, players: { P1: { ...player, username }, P2: player },
+    })).toThrow('Invalid scoreboard data');
+  });
   it('retains accepted and observed values separately', () => {
     expect(parseSnapshot(snapshot).players.P1).toEqual(player);
   });

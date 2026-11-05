@@ -158,18 +158,26 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 )
                 assert tab._region_rows[region.key()]["source_var"].get() == "OCR frame: 123 | 2050 ms"
         root.update()
-        columns = tab.recognition_container.winfo_children()
-        assert [col["text"] for col in columns] == ["Player 1", "Player 2", "Unknown player"]
-        assert columns[0].grid_info()["column"] == 0
-        assert columns[1].grid_info()["column"] == 1
-        assert columns[2].grid_info()["columnspan"] == 2
-        assert abs(columns[0].winfo_width() - columns[1].winfo_width()) <= 1
-        assert columns[1].winfo_x() + columns[1].winfo_width() <= tab.recognition_container.winfo_width()
+        headers = [w for w in tab.recognition_container.winfo_children() if isinstance(w, ttk.Label)]
+        unknown, = [w for w in tab.recognition_container.winfo_children() if isinstance(w, ttk.LabelFrame)]
+        assert [header["text"] for header in headers] == ["Player 1", "Player 2"]
+        assert headers[0].grid_info()["column"] == 0
+        assert headers[1].grid_info()["column"] == 1
+        assert unknown["text"] == "Unknown player"
+        assert unknown.grid_info()["columnspan"] == 2
         for region in regions:
             row_data = tab._region_rows[region.key()]
             card = row_data["thumb_label"].master
-            expected_column = columns[("P1", "P2", "Unknown").index(region.player)]
-            assert card.master is expected_column
+            expected_parent = unknown if region.player == "Unknown" else tab.recognition_container
+            assert card.master is expected_parent
+            if region.player in ("P1", "P2"):
+                assert card.grid_info()["column"] == ("P1", "P2").index(region.player)
+                assert card.winfo_x() + card.winfo_width() <= tab.recognition_container.winfo_width()
+                if region.player == "P1":
+                    counterpart = tab._region_rows[region.key().replace("P1:", "P2:", 1)]["thumb_label"].master
+                    assert card.winfo_y() == counterpart.winfo_y()
+                    assert card.winfo_height() == counterpart.winfo_height()
+                    assert abs(card.winfo_width() - counterpart.winfo_width()) <= 1
             assert row_data["thumb_label"].grid_info()["row"] == 1
             for child in card.winfo_children():
                 assert child.winfo_x() + child.winfo_width() <= card.winfo_width()
@@ -178,6 +186,10 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 button.invoke()
                 controller.teach_score.assert_called_with(region)
             elif region.kind == "combo":
+                teach, = [w for w in card.winfo_children() if isinstance(w, ttk.Button)]
+                assert teach["text"] == "Teach combo..."
+                teach.invoke()
+                controller.teach_score.assert_called_with(region)
                 checkbox, = [
                     w for w in card.winfo_children()
                     if isinstance(w, ttk.Checkbutton) and w["text"] == "Yellow-digit filter"
@@ -207,8 +219,47 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 controller.clear_arrow_reference.assert_called_with(region, "appeared")
         tab.refresh_region_list([regions[0]])
         root.update()
-        assert len(tab.recognition_container.winfo_children()) == 2
+        assert len(tab.recognition_container.winfo_children()) == 3
         assert list(tab._region_rows) == ["P1:score"]
+    finally:
+        root.destroy()
+
+
+def test_matching_regions_stay_aligned_with_missing_regions_shuffled_order_and_unequal_content(tk_root):
+    root = tk.Toplevel(tk_root)
+    root.geometry("1200x900")
+    tab = VideoTab(root, Mock())
+    tab.pack(fill="both", expand=True)
+    regions = [
+        Region("P2 left", "P2", "arrow", 0, 0, 100, 100, direction="Up-Left"),
+        Region("P1 score", "P1", "score", 0, 0, 374, 57),
+        Region("P2 right", "P2", "arrow", 0, 0, 100, 100, direction="Up-Right"),
+        Region("P1 combo", "P1", "combo", 0, 0, 392, 180),
+        Region("P1 right", "P1", "arrow", 0, 0, 100, 100, direction="Up-Right"),
+        Region("P2 score", "P2", "score", 0, 0, 374, 57),
+        Region("P1 left", "P1", "arrow", 0, 0, 100, 100, direction="Up-Left"),
+        Region("Game over", "Unknown", "game_end", 0, 0, 100, 100),
+    ]
+    try:
+        tab.refresh_region_list(regions)
+        tab._region_rows["P1:score"]["status_var"].set("Long status\n" * 8)
+        photo = App._make_thumbnail_photo(np.zeros((96, 100, 3), dtype=np.uint8))
+        tab.set_arrow_reference_thumbnail("P2:arrow:Up-Right", "appeared", photo, 7)
+        root.update()
+        cards = {key: data["thumb_label"].master for key, data in tab._region_rows.items()}
+        for suffix in ("score", "arrow:Up-Right", "arrow:Up-Left"):
+            p1, p2 = cards[f"P1:{suffix}"], cards[f"P2:{suffix}"]
+            assert p1.grid_info()["row"] == p2.grid_info()["row"]
+            assert p1.winfo_y() == p2.winfo_y()
+            assert p1.winfo_height() == p2.winfo_height()
+        assert cards["P1:combo"].winfo_y() < cards["P2:arrow:Up-Right"].winfo_y()
+        assert cards["P2:arrow:Up-Right"].winfo_y() < cards["P2:arrow:Up-Left"].winfo_y()
+        assert cards["game_end"].master.grid_info()["columnspan"] == 2
+        assert cards["game_end"].master.winfo_y() > cards["P1:arrow:Up-Left"].winfo_y()
+        tab.refresh_region_list([regions[2], regions[4]])
+        root.update()
+        assert set(tab._region_rows) == {"P1:arrow:Up-Right", "P2:arrow:Up-Right"}
+        assert len(tab.recognition_container.winfo_children()) == 4
     finally:
         root.destroy()
 

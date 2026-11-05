@@ -1,9 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Client } from './client';
 import {
-  SPECIAL_NAMES, registrationStation, saveRegistration, type SpecialName, type RegistrationRequest, type PlayerPass,
+  SPECIAL_NAMES, getRegistrationMode, registrationStation, saveRegistration,
+  type SpecialName, type RegistrationRequest, type PlayerPass, type RegistrationMode,
 } from './registration';
 import BoothShell from './BoothShell';
+import { poll } from './state';
 
 type Registration = { kind: 'player' | 'special'; data: PlayerPass };
 type Corner = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
@@ -18,7 +20,25 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   const [error, setError] = useState('');
   const [progress, setProgress] = useState('');
   const [station] = useState(() => registrationStation(window.location.search));
-  async function register(specialName?: SpecialName) {
+  const [mode, setMode] = useState<RegistrationMode | null>(null);
+  const [modeError, setModeError] = useState('');
+  useEffect(() => {
+    if (station.error || saved) return;
+    let disposed = false;
+    const stop = poll(async () => {
+      try {
+        const current = await getRegistrationMode(client);
+        if (!disposed) { setMode(current); setModeError(''); }
+      } catch (e) {
+        if (!disposed) {
+          setMode(null);
+          setModeError(e instanceof Error ? e.message : 'Unable to check the session mode.');
+        }
+      }
+    });
+    return () => { disposed = true; stop(); };
+  }, [client, station.error, saved]);
+  async function register(specialName?: SpecialName, easyMode = false) {
     if (station.error || !station.player) { setError(station.error); return; }
     if (busy.current) return;
     busy.current = true;
@@ -30,9 +50,13 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           && draft.current.specialName !== specialName) {
         throw new Error('Retry the current registration, or choose Start over before changing players.');
       }
+      if (easyMode && draft.current && !draft.current.excludeFromLeaderboard) {
+        throw new Error('Retry the current registration, or choose Start over before changing modes.');
+      }
       if (!draft.current) {
         draft.current = {
           requestId: crypto.randomUUID(), player: station.player, specialName: specialName ?? '',
+          excludeFromLeaderboard: mode?.excludeFromLeaderboard ?? easyMode,
         };
       }
       const data = await saveRegistration(client, draft.current);
@@ -125,6 +149,12 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           : <p className="booth-champion-note">Special entry. No PIN needed.</p>}
       </div>
       <p className="booth-game-session">Game session ID: <code>{saved.data.gameSessionId}</code></p>
+      {saved.data.excludeFromLeaderboard && <p className="booth-card-note">
+        Easy mode: shown on the live scoreboard, excluded from leaderboard rankings.
+      </p>}
+      {!saved.data.excludeFromLeaderboard && <p className="booth-card-note">
+        Normal mode: this session is eligible for leaderboard rankings.
+      </p>}
       <div className="booth-photo-prompt">
         <svg className="booth-camera-icon" width="32" height="32" viewBox="0 0 24 24"
           fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true" focusable="false">
@@ -143,11 +173,20 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
       <p className="booth-overline">PLAYER CHECK-IN</p>
       <h2 id="check-in-title">Ready to play?</h2>
       <p>Get your Fabric player name and PIN, then snap your pass.</p>
+      {mode?.excludeFromLeaderboard != null && <p className="booth-card-note" role="status">
+        This session is in {mode.excludeFromLeaderboard ? 'easy mode (not ranked)' : 'normal mode'}.
+        Both players use the same mode. Start a new session to change it.
+      </p>}
       <button className="booth-primary" disabled={saving || Boolean(station.error)} onClick={() => { void register(); }}>
         {saving ? 'Registering...' : draft.current ? 'Retry registration' : 'Register me'}
         <span aria-hidden="true">&#8594;</span>
       </button>
+      {!draft.current && mode?.excludeFromLeaderboard == null && <button className="booth-easy-mode"
+        disabled={saving || Boolean(station.error)} onClick={() => { void register(undefined, true); }}>
+        Easy mode <span>(not ranked)</span>
+      </button>}
       {saving && <p role="status" className="booth-card-note">{progress}</p>}
+      {modeError && <p role="alert" className="error">{modeError} Registration will verify the mode on the server.</p>}
       {(station.error || error) && <p role="alert" className="error">{station.error || error}</p>}
       {error && <button className="booth-secondary" onClick={next}>Next player / Start over</button>}
     </section>}

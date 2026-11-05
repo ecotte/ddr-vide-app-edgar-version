@@ -1,12 +1,13 @@
 import { expect, it, vi } from 'vitest';
 import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
-import { syncRegistrations } from '../../scripts/registrations';
+import { syncRegistrations, withPlayerNames } from '../../scripts/registrations';
 
 it('closes the previous game and relays at most 25 rows across current and historical registration tables without PINs', async () => {
   const client = new RayfinClient<AppSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
+
   const current = crypto.randomUUID(), previous = crypto.randomUUID();
   const now = new Date();
   const game = { id: current, startedAt: now, lastSeenAt: now, active: true };
@@ -31,7 +32,7 @@ it('closes the previous game and relays at most 25 rows across current and histo
   const first = vi.spyOn(slots, 'first').mockReturnValue(slots);
   const row = { id: crypto.randomUUID(), gameSessionId: current, player: 'P1' as const,
     slotKey: `${current}:P1`, username: 'YaelTheChampion', usernameKey: 'special:test', pinKey: 'special:test',
-    registrationType: 'special' as const, createdAt: now, eventQueued: false };
+    registrationType: 'special' as const, createdAt: now, eventQueued: false, excludeFromLeaderboard: true };
   vi.spyOn(slots, 'execute').mockResolvedValue(Array.from({ length: 25 }, () => ({ ...row, id: crypto.randomUUID() })));
   const updateSlot = vi.spyOn(client.data.GamePlayerSession, 'update').mockResolvedValue(row);
   const player = { score: null, combo: null, hits: 0, observedScore: null, lastVideoTimeMs: null };
@@ -40,10 +41,58 @@ it('closes the previous game and relays at most 25 rows across current and histo
   expect(updateGame).toHaveBeenCalledWith({ id: previous }, { active: false, endedAt: expect.any(Date) });
   expect(updateSlot).toHaveBeenCalledWith({ id: row.id }, { eventQueued: true });
   expect(rows).toHaveLength(25);
-  expect(rows[0]).toMatchObject({ player: 'P1', relaySource: 'slot', registrationType: 'special' });
+  expect(rows[0]).toMatchObject({
+    player: 'P1', relaySource: 'slot', registrationType: 'special', excludeFromLeaderboard: true,
+  });
   expect(selectUsers).toHaveBeenCalledWith(['id', 'gameSessionId', 'player', 'username', 'createdAt']);
-  expect(selectSlots).toHaveBeenCalledWith(['id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType']);
+  expect(selectSlots).toHaveBeenCalledWith([
+    'id', 'gameSessionId', 'player', 'username', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
+  ]);
   expect(first).toHaveBeenCalledWith(25);
   await expect(syncRegistrations(client, snapshot, [], [], ['bad'])).rejects.toThrow('Invalid registration acknowledgment');
+  vi.restoreAllMocks();
+});
+
+it('publishes only current-game check-in names, including already-relayed and special players, without PINs', async () => {
+  const client = new RayfinClient<AppSchema>({
+    baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
+  });
+  const sessionId = crypto.randomUUID();
+  const nextId = crypto.randomUUID();
+  const query = client.data.GamePlayerSession.select(['player', 'username']);
+  const select = vi.spyOn(client.data.GamePlayerSession, 'select').mockReturnValue(query);
+  const where = vi.spyOn(query, 'where').mockReturnValue(query);
+  const first = vi.spyOn(query, 'first').mockReturnValue(query);
+  const row = {
+    id: crypto.randomUUID(), gameSessionId: sessionId, slotKey: `${sessionId}:P1`,
+    usernameKey: 'special:test', pinKey: 'special:test', registrationType: 'special' as const,
+    createdAt: new Date(), eventQueued: true,
+  };
+  const execute = vi.spyOn(query, 'execute').mockResolvedValue([
+    { ...row, player: 'P2', username: 'HappyLakehouse5678' },
+    { ...row, player: 'P1', username: 'YaelTheChampion' },
+  ]);
+  const player = { score: 1200, combo: 65, hits: 20, observedScore: null, lastVideoTimeMs: 1000 };
+  const snapshot = { active: true, sessionId, revision: 1, players: { P1: player, P2: player } };
+  const named = await withPlayerNames(client, snapshot);
+  expect(select).toHaveBeenCalledWith(['player', 'username']);
+  expect(where).toHaveBeenCalledWith({ gameSessionId: { eq: sessionId } });
+  expect(first).toHaveBeenCalledWith(2);
+  expect(named.players.P1).toEqual({ ...player, username: 'YaelTheChampion' });
+  expect(named.players.P2).toEqual({ ...player, username: 'HappyLakehouse5678' });
+  expect(snapshot.players.P1).not.toHaveProperty('username');
+  execute.mockResolvedValue([{ ...row, player: 'P2', username: 'HappyLakehouse5678' }]);
+  const singlePlayer = await withPlayerNames(client, named);
+  expect(singlePlayer.players.P1.username).toBeNull();
+  expect(singlePlayer.players.P2.username).toBe('HappyLakehouse5678');
+  execute.mockResolvedValue([]);
+  const next = await withPlayerNames(client, { ...named, sessionId: nextId });
+  expect(where).toHaveBeenLastCalledWith({ gameSessionId: { eq: nextId } });
+  expect(next.players.P1.username).toBeNull();
+  expect(next.players.P2.username).toBeNull();
+  await withPlayerNames(client, { ...snapshot, sessionId: '' });
+  expect(execute).toHaveBeenCalledTimes(3);
+  execute.mockRejectedValue(new Error('Name lookup failed'));
+  await expect(withPlayerNames(client, snapshot)).rejects.toThrow('Name lookup failed');
   vi.restoreAllMocks();
 });

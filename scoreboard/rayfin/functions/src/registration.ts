@@ -13,6 +13,7 @@ export interface PlayerPass {
   username: string;
   pin: string | null;
   registrationType: 'player' | 'special';
+  excludeFromLeaderboard: boolean;
 }
 
 function playerPass(row: GamePlayerSession): PlayerPass {
@@ -20,6 +21,7 @@ function playerPass(row: GamePlayerSession): PlayerPass {
     id: row.id, gameSessionId: row.gameSessionId, player: row.player, username: row.username,
     pin: row.registrationType === 'special' ? null : row.pin ?? null,
     registrationType: row.registrationType,
+    excludeFromLeaderboard: row.excludeFromLeaderboard ?? false,
   };
 }
 
@@ -48,11 +50,60 @@ async function verifyLiveGame(data: RegistrationData, game: GameSession | undefi
   throw new RegistrationError('The desktop is not updating this game. Check Share live scoreboard and its connection status, then retry.');
 }
 
+async function sessionMode(data: RegistrationData, gameId: string): Promise<boolean | null> {
+  const [locked] = await data.GameSessionMode.select(['id', 'excludeFromLeaderboard'])
+    .where({ id: { eq: gameId } }).first(1).execute();
+  const [players, historical, specials] = await Promise.all([
+    data.GamePlayerSession.select(['id', 'excludeFromLeaderboard'])
+      .where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+    data.UserSession.select(['id']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+    data.SpecialSession.select(['id']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+  ]);
+  const modes = new Set([
+    ...players.map(row => row.excludeFromLeaderboard ?? false),
+    ...historical.map(() => false), ...specials.map(() => false),
+    ...(locked ? [locked.excludeFromLeaderboard] : []),
+  ]);
+  if (modes.size > 1) {
+    throw new RegistrationError('This game has conflicting player modes. Ask the organizer to start a new session.');
+  }
+  return locked?.excludeFromLeaderboard ?? (modes.size ? modes.has(true) : null);
+}
+
+async function lockSessionMode(data: RegistrationData, gameId: string, requested: boolean): Promise<boolean> {
+  const existing = await sessionMode(data, gameId);
+  const selected = existing ?? requested;
+  try {
+    // The game UUID is the primary key: concurrent kiosks cannot create two mode locks.
+    const created = await data.GameSessionMode.create({ id: gameId, excludeFromLeaderboard: selected });
+    if (created.id !== gameId) throw new Error('Session mode write returned an unexpected ID.');
+    return selected;
+  } catch (error) {
+    const [locked] = await data.GameSessionMode.select(['id', 'excludeFromLeaderboard'])
+      .where({ id: { eq: gameId } }).first(1).execute();
+    if (!locked) throw error;
+    if (existing !== null && locked.excludeFromLeaderboard !== existing) {
+      throw new RegistrationError('This game has conflicting player modes. Ask the organizer to start a new session.');
+    }
+    return locked.excludeFromLeaderboard;
+  }
+}
+
+export async function getRegistrationMode(data: RegistrationData): Promise<{
+  gameSessionId: string | null; excludeFromLeaderboard: boolean | null;
+}> {
+  const [game] = await data.GameSession.select(['id', 'startedAt', 'active', 'endedAt'])
+    .orderBy({ startedAt: 'desc' }).first(1).execute();
+  if (!game?.active || game.endedAt != null) return { gameSessionId: null, excludeFromLeaderboard: null };
+  return { gameSessionId: game.id, excludeFromLeaderboard: await sessionMode(data, game.id) };
+}
+
 export async function registerPlayer(
   data: RegistrationData, requestId: string, player: string, specialName: string,
+  excludeFromLeaderboard = false,
 ): Promise<PlayerPass> {
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId)
-      || (player !== 'P1' && player !== 'P2')
+      || (player !== 'P1' && player !== 'P2') || typeof excludeFromLeaderboard !== 'boolean'
       || (specialName !== '' && !SPECIAL_NAMES.some(name => name === specialName))) {
     throw new RegistrationError('Invalid player registration request.');
   }
@@ -67,7 +118,7 @@ export async function registerPlayer(
   };
   const findSaved = async () => {
     const [row] = await data.GamePlayerSession
-      .select(['id', 'gameSessionId', 'player', 'username', 'pin', 'registrationType'])
+      .select(['id', 'gameSessionId', 'player', 'username', 'pin', 'registrationType', 'excludeFromLeaderboard'])
       .where({ id: { eq: requestId } }).first(1).execute();
     return row;
   };
@@ -106,6 +157,7 @@ export async function registerPlayer(
     throw new RegistrationError('This game has registrations from before station limits. Ask the organizer to start a new session.');
   }
   if (legacy.length === 2 || legacy.some(row => row.player === player) || slotOccupied) throw full();
+  const sessionExcluded = await lockSessionMode(data, game.id, excludeFromLeaderboard);
 
   for (let attempt = 0; attempt < 10; attempt++) {
     const identity = attempt === 0 ? firstIdentity : specialName ? { username: specialName, pin: undefined } : newIdentity();
@@ -116,6 +168,7 @@ export async function registerPlayer(
       pinKey: specialName ? `special:${requestId}` : `pin:${pin}`,
       ...(pin ? { pin } : {}),
       registrationType: specialName ? 'special' : 'player', createdAt: new Date(), eventQueued: false,
+      excludeFromLeaderboard: sessionExcluded,
     };
     const identityTaken = async () => {
       const [pins, names, oldPins, oldNames] = await Promise.all([

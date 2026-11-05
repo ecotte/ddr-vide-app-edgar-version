@@ -222,6 +222,67 @@ def test_load_layout_from_path_missing_file_raises_file_not_found(tmp_path):
 
 
 @pytest.mark.parametrize("by_path", [False, True])
+def test_ui_save_and_load_embeds_all_references_and_digit_samples(tmp_path, monkeypatch, by_path):
+    import numpy as np
+
+    from app import image_utils
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.ui.app_window import App
+
+    reference = image_utils.encode_crop_to_base64_png(np.full((40, 40, 3), 200, dtype=np.uint8))
+    digit = image_utils.encode_crop_to_base64_png(np.full((32, 24), 255, dtype=np.uint8))
+    regions = []
+    for player in ("P1", "P2"):
+        for kind in ("score", "combo"):
+            regions.append(Region(
+                kind, player, kind, 0, 0, 100, 40,
+                digit_templates={"1": [digit]}, digit_templates_reviewed=True,
+                score_template_version=config.DIGIT_TEMPLATE_VERSIONS[kind],
+            ))
+        for direction in config.ARROW_DIRECTIONS:
+            regions.append(Region(
+                direction, player, "arrow", 0, 0, 40, 40, direction=direction,
+                reference_images={state: [reference, reference] for state in config.ARROW_STATES},
+            ))
+    regions.append(Region(
+        "Results", "Unknown", "game_end", 0, 0, 40, 40,
+        reference_images={"ended": [reference]},
+    ))
+    confirmation = Mock()
+    monkeypatch.setattr("app.ui.app_window.messagebox.showinfo", confirmation)
+    controller = SimpleNamespace(
+        video_source=SimpleNamespace(width=1920, height=1080), regions=regions,
+        video_tab=Mock(), analysis=AnalysisSession(EventBus()), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    controller._build_current_profile = MethodType(App._build_current_profile, controller)
+    controller._apply_loaded_profile = MethodType(App._apply_loaded_profile, controller)
+    path = str(tmp_path / "portable" / "all_references.json")
+    if by_path:
+        App.save_layout_to_path(controller, path)
+    else:
+        App.save_layout(controller, "all_references")
+        path = str(tmp_path / "all_references.json")
+    assert "Includes all" in confirmation.call_args.args[1]
+    saved = layout_store.load_layout_from_path(path)
+    assert [region.to_dict() for region in saved.regions] == [region.to_dict() for region in regions]
+    assert list((tmp_path / "portable" if by_path else tmp_path).iterdir()) == [
+        tmp_path / "portable" / "all_references.json" if by_path else tmp_path / "all_references.json"
+    ]
+    controller.regions = []
+    App.load_layout_from_path(controller, path)
+    for region in controller.regions:
+        if region.kind in ("score", "combo"):
+            assert controller.analysis.uses_score_templates(region)
+        elif region.kind == "arrow":
+            assert set(controller.analysis._arrow_references[region.key()]) == set(config.ARROW_STATES)
+        else:
+            assert len(controller.analysis._arrow_references[region.key()]["ended"]) == 1
+    controller._refresh_arrow_reference_thumbnails.assert_called_once()
+
+
+@pytest.mark.parametrize("by_path", [False, True])
 @pytest.mark.parametrize("rescale", [False, True])
 @pytest.mark.parametrize("legacy_arrows", [False, True])
 def test_ui_load_preserves_supported_regions_and_warns_before_recalibration(

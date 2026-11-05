@@ -114,6 +114,24 @@ PINs never enter event telemetry. Players photograph the saved name/PIN screen
 for future validation; gameplay player assignment and PIN redemption are separate,
 not yet implemented.
 
+The kiosk's secondary Easy mode action calls `registerEasyPlayer`, which uses
+the same authenticated registration and station reservation path. Both registration
+functions claim an immutable `GameSessionMode` row whose primary key is the game
+UUID. The first claim chooses easy or normal; a concurrent duplicate-key loser
+reads and inherits the winner rather than saving a different player mode.
+The lock grants only organizer-scoped read/create permissions, not update/delete.
+Special entries and retries inherit the same mode; only a new game UUID resets it.
+Existing registrations seed the lock, and mixed historical modes require a new
+session rather than retagging events. A failed player write retains its mode lock.
+The kiosk polls `getRegistrationMode` for display, but registration functions
+enforce the invariant independently of kiosk state.
+
+Each registration persists the locked mode as `excludeFromLeaderboard`; historical
+null/missing flags count as normal. The relay preserves this as
+`user.register.payload.exclude_from_leaderboard`. Future leaderboard consumers
+must join by game session and player and exclude flagged entries. Live scoreboard
+participation and gameplay event calculations are unaffected.
+
 This adds a SQL registration path, not an Eventhouse query connector. Both
 **Share live scoreboard** and **Connect to Fabric** must be configured for
 end-to-end registration delivery. The earlier overview diagram shows gameplay
@@ -148,7 +166,18 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
-- `arrow_hit` and `arrow_miss`: detected arrow-state transitions.
+- `arrow_hit` and `arrow_miss`: detected arrow-state transitions for legacy
+  arrow-only players, or uniquely judgment-correlated outcomes for calibrated players.
+- Optional per-player `judgment` regions compare success/MISS/blank reference images
+  at source-frame rate. Their new pulses determine outcome type, with unique arrow
+  activity matched within +/-150 ms of source time. A 300 ms settling interval
+  detects competing judgments. Ambiguous directions produce `judgment_hit` or
+  `judgment_miss` with `direction: null`, never a guessed lane. A lingering judgment
+  cannot validate repeated arrows; there is no per-frame recounting. Pending
+  evidence is cleared on seek, stop, recording/layout/source changes and new games.
+  Player totals and pace include directionless outcomes; lane counts/titles and
+  response timing exclude them. Desktop snapshots carry `unassignedHits` and
+  `unassignedMisses` for the viewer. Calibration references serialize inside layouts.
 - Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
   crop as its outcome. Unique subsequent hits carry source-time appearance,
   hit-onset, and response-duration fields; misses and ambiguous pairings do not.

@@ -95,6 +95,9 @@ class RegionDialog(tk.Toplevel):
         if not label:
             self.error_var.set("Label cannot be empty.")
             return
+        if kind == "judgment" and player not in ("P1", "P2"):
+            self.error_var.set("Choose P1 or P2 for a judgment region.")
+            return
         key = f"{player}:{kind}:{direction}" if kind == "arrow" else f"{player}:{kind}"
         if kind == "game_end":
             key = "game_end"

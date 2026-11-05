@@ -54,8 +54,9 @@ machine only when you explicitly enable one of the publishing options.
 
 Both sources share region calibration, OCR-based score/combo recognition,
 reference-based arrow and game-end detection, GUID game sessions, event export,
-and optional Fabric/live-scoreboard publishing. Judgment-text recognition
-remains future work - see "Later milestones" at the end of this document.
+and optional Fabric/live-scoreboard publishing. Optional per-player judgment
+regions match your captured success/MISS images and correlate them with arrow
+activity. General judgment-text OCR remains future work.
 
 ---
 
@@ -66,19 +67,22 @@ remains future work - see "Later milestones" at the end of this document.
 - Select **HDMI input**, choose a named HDMI-to-USB capture device such as **Hagibis**, and analyze its live frames without recording a video file.
 - Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per direction - Up-Right/Up-Left/Down-Right/Down-Left/Center - per player), plus a shared `game_end` indicator.
 - Save/load named layout profiles (JSON files under `layouts/`), tied to a specific source resolution, with an explicit warning (never a silent guess) if you load a layout onto a differently-sized video. If you continue, regions are fitted with one uniform scale and centered so different aspect ratios do not distort them. Arrow-lane reference snapshots (see below) travel with the layout and are resized by the same scale.
+- **Save Layout** and **Save Layout As...** embed all captured arrow hit/miss/appearance and game-end references, plus taught score/combo digit samples, in the same JSON file. Load that file to restore them; no separate reference files are needed. Save again after teaching or changing references.
+- Recognition cards pair P1 and P2 on shared rows: score, combo, then matching arrow directions. Different preview sizes, wrapped status text, missing regions, and drawing order do not shift unrelated cards beside one another.
 - Run OCR (EasyOCR, CPU) on each `score`/`combo` region once you click **Start Analysis**. Recognition runs on a single-threaded background worker without blocking source-rate playback. After each job it immediately processes the newest available frame, using a retained neighboring frame only when a result actually needs confirmation. It never builds an unbounded backlog.
-- Teach score-digit references with one input: pause on a clear score, click **Teach score...**, and enter all visible digits. References support background OCR verification; they never emit score events on their own. Advance/play to analyze new frames after teaching. Save the layout to retain the samples.
+- Teach score or combo digit references with one input: pause on a clear number, click **Teach score...** or **Teach combo...** in its region card, and enter all visible digits (including leading zeros). Draw the region tightly around the digits, excluding the COMBO label and arrows. References support background OCR verification; they never emit numeric events on their own. Combo yellow-digit and fast-live settings still apply, and low-confidence readings still need repeated evidence. Advance/play to analyze new frames after teaching. Save the layout to retain each region's samples.
+- Combo teaching detects dark digit outlines on bright/detailed backgrounds separately from score digits. If automatic boxes are wrong, choose **Draw digit boxes manually** and drag one tight, non-overlapping box around each digit from left to right; a crosshair and live green rectangle show the box while dragging. Enter all digits, then **Learn**. **Use automatic boxes** restores detection. Live template verification uses the same combo outline preprocessing. Older score-style combo templates need reteaching; score templates remain valid. Manual boxes label teaching samples only, not fixed live positions, so changing combo lengths remains supported.
 - For `arrow` regions: let you capture multiple "Hit" and/or "Miss" example snapshots directly from the video (pause on a frame that clearly shows that state, click "Add Hit ref"/"Add Miss ref"), then compare every later frame's crop against all those examples using generic image similarity - never a built-in assumption about what a hit or miss looks like for your skin.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo (a value is only "accepted" after N consecutive matching frames) and a separate edge-triggered debouncer for arrows (a hit/miss flash is reported once per pulse, since it's often brief rather than steady) - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
-- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` events in a table, with gameplay recording on/off and clear-table controls.
+- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` / `judgment_hit` / `judgment_miss` events in a table, with gameplay recording on/off and clear-table controls.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
 **Does not do (by design, for this milestone):**
 - No live rewind, seeking, or audio capture. An HDMI output port on a laptop is not a capture input; use a Windows-compatible HDMI-to-USB capture device.
-- No judgment-tier text recognition (e.g. "Marvelous"/"Great"/"Miss" as printed text), life gauge, or "final results" recognition. Arrow hit/miss is detected from the arrow receptor's appearance, not from reading judgment text.
+- No general judgment-word OCR or automatic judgment-tier interpretation, life gauge, or "final results" recognition. Optional judgment regions match user-captured images, not arbitrary words. Without a judgment region, arrow detection keeps its original receptor-only behavior.
 - No tracking of individual falling notes as they travel down the track - only the fixed receptor region per lane.
 - No automatic network publishing: you must explicitly connect in the Events tab. Kiosk registrations have stable user-session IDs, but assigning registrations to P1/P2 gameplay and redeeming PINs are not implemented yet.
 - No claim that OCR or arrow-similarity readings are accurate. See section 7 for real numbers measured against a real clip.
@@ -362,6 +366,42 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **A frame is classified "idle"** whenever its similarity to your best-matching reference falls below the **Arrow similarity threshold** - "idle" is the honest default, not a third guess.
 - **Because a real hit/miss flash is often only visible for a few frames**, the arrow tracker is edge-triggered rather than a stability filter: it fires one `arrow_hit`/`arrow_miss` event the moment the classified state changes away from idle (or changes directly from one active state to another), and stays quiet while that same state persists, so a multi-frame flash still only produces one event.
 - **"Arrow confirm frames"** (default 1) can require a state to be seen for more than one frame before it's confirmed, if single-frame noise is producing false events - but raising it risks missing genuinely brief flashes, the same trade-off as consistency frames above.
+
+**Correlating arrow activity with PERFECT / MISS:**
+
+1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
+2. Pause on a successful result and choose **Add Success ref**. Add examples for each successful word/appearance (PERFECT, GREAT, GOOD, etc.). They all mean hit; no built-in text OCR or color interpretation is used.
+3. Capture **Add MISS ref** on a clear MISS, and **Add Blank ref** when no word is present. Success and MISS examples are required; blank examples help reject the background. Multiple examples per category are retained.
+4. Keep each arrow's reference calibration too. **Save Layout** includes judgment regions and all their examples.
+
+For players with a judgment region, receptor flashes alone no longer count outcomes.
+A new confirmed judgment determines hit versus miss. A uniquely matching arrow
+activity within **150 ms before or after** that judgment assigns its direction,
+even if the receptor's own hit/miss classification disagrees. Correlation waits
+**300 ms of source-video time** to check for competing judgments; confirmation
+frames and frame delivery can add delay. Processing order and wall-clock speed
+do not change the source-time window.
+
+If no arrow, multiple arrows, or competing judgments make the direction uncertain,
+one `judgment_hit` / `judgment_miss` event is recorded for that player with
+`direction: null`, rather than guessing or counting every arrow. These outcomes
+contribute to player totals, hit percentage and hit pace, but not directional
+counts, lane-based titles or response-time samples. Unambiguous outcomes keep
+the existing `arrow_hit` / `arrow_miss` types, with judgment evidence in their payload.
+Each player's word only validates that player's arrow activity.
+
+A lingering word counts once, not once per frame or receptor flash.
+Consecutive same-category judgments without a detectable blank/rearm between them
+cannot be separated reliably and may be undercounted. Simultaneous arrows count
+one observed judgment, not an inferred number of notes. This is calibrated image
+evidence, not a complete chart/note tracker. Close competing or unrecognized
+judgment matches hold the previous state rather than inventing a blank that
+could recount a lingering word; teach blank examples to rearm repeated successes.
+Pending correlations are cleared on seek, source/layout changes, stop, recording
+changes and New Session; paused/ending footage cannot finalize a pending window
+without advancing video time. Missing judgment references show a calibration
+warning and block receptor-only outcomes for that player. Players without a
+judgment region retain legacy behavior.
 - **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
 
 **Both:**
@@ -584,7 +624,7 @@ Run them with `run_tests.ps1`. All 64 tests currently pass.
 These are described only so scope is clear - none of this exists in the
 code yet:
 
-- Recognizing displayed judgment **text** (e.g. "Marvelous!!!" as printed on screen, as opposed to the receptor-flash hit/miss detection this milestone adds) and visible bonuses.
+- General OCR of displayed judgment **text** and visible bonuses beyond the optional user-captured judgment image references.
 - Tracking individual falling notes as they travel down the track (not just the fixed receptor), including observed color, without assuming what a color means musically.
 - Treating consecutive identical judgments as potentially separate events, and leaving uncertain note-to-judgment associations unresolved rather than guessing.
 - Player registration events and stable player UIDs linking sessions across plays.

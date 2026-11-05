@@ -18,7 +18,15 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
   const comparison = response == null ? null : animalComparison(response);
   const directions = player?.hitsByDirection;
   return <section className={`player ${name === 'Player 2' ? 'pink' : ''}`}>
-    <h2>{name}<span className="player-corner" aria-hidden="true">{name === 'Player 2' ? '\u2198' : '\u2197'}</span></h2>
+    <h2><span className="player-identity">{name}
+      {player?.username && <span className="player-name">{player.username}</span>}
+    </span><span className="player-corner" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="32" height="32" fill="none" stroke="currentColor"
+        strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="18" cy="5" r="2.5" fill="currentColor" stroke="none" />
+        <path d="m17 11-4 9 7 3 4 6M13 20l-5 8M17 11l-7 3-5-4M17 11l6 3 4-6" />
+      </svg>
+    </span></h2>
     {!player && <p className="observation">Waiting for players</p>}
     {player?.score != null && <>
       <div className="score-label">ACCEPTED SCORE</div>
@@ -26,6 +34,12 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
     </>}
     {player?.combo != null && <div className="combo"><span>COMBO</span><strong>{player.combo}</strong></div>}
     {player && <div className="total-hits"><span>TOTAL HITS</span><strong>{player.hits.toLocaleString()}</strong></div>}
+    {player && ((player.unassignedHits ?? 0) > 0 || (player.unassignedMisses ?? 0) > 0)
+      && <p className="observation" aria-label={`${name} unknown-direction outcomes`}>
+        Direction unknown: {(player.unassignedHits ?? 0).toLocaleString()} hits,
+        {' '}{(player.unassignedMisses ?? 0).toLocaleString()} misses.
+        Included in player totals, not arrow counts or response timing.
+      </p>}
     {directions && player && player.hits > 0 && <div className="counts" aria-label={`${name} hits by arrow`}>
       {DIRECTIONS.map(direction => <div key={direction}>
         <span className="arrow-icon" aria-hidden="true">{{
@@ -85,7 +99,7 @@ function Player({ name, state, waiting }: { name: string; state?: PlayerState; w
         </div>
         <strong>{balance ? `${balance[direction].toFixed(1)}%` : '--'}</strong>
       </div>)}
-      <p>{balance ? 'Share of detected hits this session, not accuracy.' : 'Waiting for directional hits.'}</p>
+      <p>{balance ? 'Share of direction-assigned hits this session, not accuracy.' : 'Waiting for directional hits.'}</p>
     </section>}
     <div className="player-notes">
     {!waiting && state?.observedScore != null && state.observedScore !== state.score
