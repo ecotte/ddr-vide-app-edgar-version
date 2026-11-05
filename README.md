@@ -55,7 +55,7 @@ machine only when you explicitly enable one of the publishing options.
 Both sources share region calibration, OCR-based score/combo recognition,
 reference-based arrow and game-end detection, GUID game sessions, event export,
 and optional Fabric/live-scoreboard publishing. Optional per-player judgment
-regions match your captured success/MISS images and correlate them with arrow
+regions match your captured Perfect/Great/Good/Miss images and correlate them with arrow
 activity. General judgment-text OCR remains future work.
 
 ---
@@ -367,40 +367,78 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **Because a real hit/miss flash is often only visible for a few frames**, the arrow tracker is edge-triggered rather than a stability filter: it fires one `arrow_hit`/`arrow_miss` event the moment the classified state changes away from idle (or changes directly from one active state to another), and stays quiet while that same state persists, so a multi-frame flash still only produces one event.
 - **"Arrow confirm frames"** (default 1) can require a state to be seen for more than one frame before it's confirmed, if single-frame noise is producing false events - but raising it risks missing genuinely brief flashes, the same trade-off as consistency frames above.
 
-**Correlating arrow activity with PERFECT / MISS:**
+**Correlating arrow activity with Perfect / Great / Good / Miss:**
+
+**Shared calibration:** P1 is the reference source for both players in the desktop app.
+Arrow images are shared by direction; judgment images and score/combo digit templates
+are shared by region kind. Capture, clear, or teach references on P1; P2 controls are
+read-only and its reference previews update automatically. Each player keeps separate
+screen coordinates, tracking, events, and combo preprocessing settings. Keep corresponding
+crops tightly and similarly framed: different padding/aspect ratios can reduce accuracy.
+Missing P1 boxes leave P2 without references (numeric OCR still runs); create/calibrate
+the matching P1 box first. Loading an older layout replaces its P2 references in memory
+with P1's, and Save Layout persists those copies. Existing files are unchanged until saved.
 
 1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
-2. Pause on a successful result and choose **Add Success ref**. Add examples for each successful word/appearance (PERFECT, GREAT, GOOD, etc.). They all mean hit; no built-in text OCR or color interpretation is used.
-3. Capture **Add MISS ref** on a clear MISS, and **Add Blank ref** when no word is present. Success and MISS examples are required; blank examples help reject the background. Multiple examples per category are retained.
-4. Keep each arrow's reference calibration too. **Save Layout** includes judgment regions and all their examples.
+2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. No built-in text OCR or color interpretation is used.
+3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 250 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
+4. Keep each P1 arrow's reference calibration too. P2 uses the matching P1 references
+   with its own screen boxes. **Save Layout** includes judgment regions and all their examples.
 
 For players with a judgment region, receptor flashes alone no longer count outcomes.
-A new confirmed judgment determines hit versus miss. A uniquely matching arrow
+A new confirmed judgment determines hit versus miss. Matching arrow
 activity within **150 ms before or after** that judgment assigns its direction,
 even if the receptor's own hit/miss classification disagrees. Correlation waits
 **300 ms of source-video time** to check for competing judgments; confirmation
 frames and frame delivery can add delay. Processing order and wall-clock speed
 do not change the source-time window.
 
-If no arrow, multiple arrows, or competing judgments make the direction uncertain,
+For simultaneous steps, the same judgment applies to every matched arrow.
+Each distinct direction emits one `arrow_hit` or `arrow_miss`, with its full
+judgment word. Arrow onsets must be within 150 ms of each other and each must
+match only this judgment. The events have separate `event_id` values and a shared
+`payload.judgment_id`, `step_directions`, and `step_arrow_count`. Two arrows with
+PERFECT therefore count as two hits but one judgment. Deduplicate deliveries by
+`event_id`; count distinct `payload.judgment_id` for judgment totals.
+Response timing remains per arrow when its appearance is uniquely known.
+
+If no arrow, repeated activity in one direction, widely spaced arrows, or competing judgments make the direction uncertain,
 one `judgment_hit` / `judgment_miss` event is recorded for that player with
 `direction: null`, rather than guessing or counting every arrow. These outcomes
 contribute to player totals, hit percentage and hit pace, but not directional
 counts, lane-based titles or response-time samples. Unambiguous outcomes keep
 the existing `arrow_hit` / `arrow_miss` types, with judgment evidence in their payload.
+Unassigned outcomes have `step_arrow_count: 0` and empty `step_directions`;
+this means the arrow count is unknown, not that no step occurred.
 Each player's word only validates that player's arrow activity.
+The payload's `judgment` field preserves `perfect`, `great`, `good`, or `miss`, while
+`state` and event types remain hit/miss-compatible for existing dashboards.
+The Events table's Detail column and the judgment card's counted status show the
+full judgment word (PERFECT, GREAT, GOOD, or MISS), with its direction when known.
+Legacy ungraded events still show HIT/MISS; no judgment tier is invented.
+Old layouts with Success (`hit`) references still count ungraded hits, without
+inventing a tier. Once Perfect, Great, or Good references are added, the old
+Success references are ignored; only the explicitly taught categories are matched.
 
-A lingering word counts once, not once per frame or receptor flash.
-Consecutive same-category judgments without a detectable blank/rearm between them
+A lingering word counts once, not once per frame or receptor flash. At least
+250 ms of source-video time with no taught outcome matching is required before
+any next judgment, even if the word changes category. Short matching gaps do not
+rearm; ambiguous strong matches hold the latch and restart the no-match interval.
+Pausing or repeatedly processing one frame cannot advance that interval.
+A matching failure lasting 250 ms can look like disappearance and cause a recount;
+keep crops tight and teach representative examples for the changing background.
+Consecutive judgments without a detectable no-match/rearm interval between them
 cannot be separated reliably and may be undercounted. Simultaneous arrows count
-one observed judgment, not an inferred number of notes. This is calibrated image
+once per matched direction for that judgment, not once per displayed frame. This is calibrated image
 evidence, not a complete chart/note tracker. Close competing or unrecognized
-judgment matches hold the previous state rather than inventing a blank that
-could recount a lingering word; teach blank examples to rearm repeated successes.
+judgment matches hold the previous state during short gaps rather than immediately
+recounting a lingering word.
 Pending correlations are cleared on seek, source/layout changes, stop, recording
 changes and New Session; paused/ending footage cannot finalize a pending window
-without advancing video time. Missing judgment references show a calibration
-warning and block receptor-only outcomes for that player. Players without a
+without advancing video time. With no judgment outcome references, a calibration
+error blocks outcomes for that player. Partial calibration recognizes taught
+categories and warns about missing ones. Receptor flashes never substitute for
+an unrecognized judgment. Players without a
 judgment region retain legacy behavior.
 - **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
 

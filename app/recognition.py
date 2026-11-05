@@ -147,12 +147,15 @@ class ArrowStateTracker:
     captured reference matches closely enough). An unreadable frame is
     represented by passing ``None``, which - as with TemporalValueTracker -
     never resets tracking state and never fires an event by itself.
+    Judgment boxes also pass "perfect", "great", and "good"; ``require_idle=True`` blocks
+    all subsequent outcomes until a confirmed idle, even if the word changes.
     """
 
-    def __init__(self, min_confirm_frames: int = 1):
+    def __init__(self, min_confirm_frames: int = 1, *, require_idle: bool = False):
         if min_confirm_frames < 1:
             raise ValueError("min_confirm_frames must be >= 1")
         self.min_confirm_frames = min_confirm_frames
+        self.require_idle = require_idle
         self._active_state: Optional[str] = None
         self._pending_state: Optional[str] = None
         self._pending_count: int = 0
@@ -196,6 +199,9 @@ class ArrowStateTracker:
         confirmed_state = self._pending_state
         if confirmed_state == "idle":
             self._active_state = None
+            return None
+
+        if self.require_idle and self._active_state is not None:
             return None
 
         if confirmed_state != self._active_state:
@@ -244,13 +250,17 @@ def classify_arrow_state(
 
 
 def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
-    """Match taught judgment words; close competing outcomes remain unconfirmed."""
+    """Return idle for no outcome match, but None for ambiguous strong matches."""
     from app import image_utils
 
     ranked = sorted(
         (
             (max(image_utils.similarity(crop_bgr, image) for image in references), state)
-            for state in ("hit", "miss", "idle")
+            for state in (
+                ("perfect", "great", "good", "miss")
+                if any(reference_images.get(tier) for tier in ("perfect", "great", "good"))
+                else ("hit", "miss")
+            )
             if (references := reference_images.get(state, []))
         ),
         reverse=True,
@@ -258,6 +268,8 @@ def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
     if not ranked:
         return None, 0.0
     score, state = ranked[0]
-    if score < threshold or (len(ranked) > 1 and score - ranked[1][0] < 0.02):
+    if score < threshold:
+        return "idle", score
+    if len(ranked) > 1 and score - ranked[1][0] < 0.02:
         return None, score
     return state, score

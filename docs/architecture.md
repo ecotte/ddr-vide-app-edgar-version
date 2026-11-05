@@ -167,17 +167,38 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - `arrow_hit` and `arrow_miss`: detected arrow-state transitions for legacy
-  arrow-only players, or uniquely judgment-correlated outcomes for calibrated players.
-- Optional per-player `judgment` regions compare success/MISS/blank reference images
-  at source-frame rate. Their new pulses determine outcome type, with unique arrow
+  arrow-only players, or judgment-correlated outcomes for calibrated players.
+- Optional per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
+  at source-frame rate. Their new pulses determine outcome type, with arrow
   activity matched within +/-150 ms of source time. A 300 ms settling interval
   detects competing judgments. Ambiguous directions produce `judgment_hit` or
   `judgment_miss` with `direction: null`, never a guessed lane. A lingering judgment
-  cannot validate repeated arrows; there is no per-frame recounting. Pending
+  cannot validate repeated arrows; 250 ms of source-video time without an outcome
+  match must rearm the box before any next judgment, including a different word.
+  Ambiguous strong matches and crop/calibration errors restart that interval. Pending
   evidence is cleared on seek, stop, recording/layout/source changes and new games.
+  Perfect, Great, and Good emit hit outcomes, retaining their tier in `payload.judgment`;
+  Miss retains the miss outcome. Legacy Success references remain ungraded until
+  tier calibration starts. Legacy Blank references are ignored; no background
+  snapshot is required. Sustained matching failures can look like disappearance.
+  Partial calibration recognizes taught outcomes without requiring all four
+  categories. Missing categories show actionable warnings;
+  no outcome references is a blocking calibration error.
+  Simultaneous distinct directions receive the same judgment, emitting one arrow
+  outcome per direction. All onsets must span at most 150 ms and each lane must
+  uniquely match this judgment; repeated directions or competing judgments remain
+  unassigned. Each event has its own ID for delivery deduplication plus a shared
+  `payload.judgment_id`, `step_directions`, and `step_arrow_count` for step grouping.
+  Existing arrow totals count each arrow; distinct judgment IDs count judged steps.
   Player totals and pace include directionless outcomes; lane counts/titles and
   response timing exclude them. Desktop snapshots carry `unassignedHits` and
   `unassignedMisses` for the viewer. Calibration references serialize inside layouts.
+  The desktop enables P1-owned calibration: matching P2 regions receive P1 image
+  references and digit templates (including review/version metadata). Arrow matching
+  is by direction; other kinds match by kind. Geometry, trackers and per-player
+  preprocessing remain independent. Adding/removing/loading regions and recalibration
+  refresh the shared copies; missing P1 regions clear P2 references instead of reusing
+  stale player-specific calibration.
 - Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
   crop as its outcome. Unique subsequent hits carry source-time appearance,
   hit-onset, and response-duration fields; misses and ambiguous pairings do not.

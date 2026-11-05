@@ -21,7 +21,7 @@ from app.live_scoreboard import LiveScoreboard
 from app.live_video_source import CaptureDevice, LiveVideoSource, list_capture_devices
 from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
-from app.models import LayoutProfile, Region
+from app.models import LayoutProfile, Region, p1_reference_source
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.rayfin_sender import RayfinSender
@@ -49,7 +49,9 @@ class App(tk.Tk):
         self.event_bus.set_live_sink(self.live_scoreboard.record)
         self._publishing_enabled = False
         self._publisher_poll_after_id = None
-        self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
+        self.analysis = AnalysisSession(
+            self.event_bus, self.ocr_engine, shared_player_references=True,
+        )
 
         self.video_source: Optional[VideoSource | LiveVideoSource] = None
         self._pending_live_source: Optional[LiveVideoSource] = None
@@ -733,10 +735,14 @@ class App(tk.Tk):
             self.video_tab.refresh_region_list(self.regions)
             self.video_tab.redraw_region_overlays(self.regions)
             self._refresh_arrow_reference_thumbnails()
+            self._refresh_score_calibration_status()
 
     # ------------------------------------------------------------------
     # Image calibration (arrow states and the shared game-end indicator)
     def capture_arrow_reference(self, region: Region, state: str) -> None:
+        if p1_reference_source(region, self.regions) is not region:
+            messagebox.showinfo("Shared P1 references", "Capture references on the matching P1 box; P2 uses them automatically.")
+            return
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", "Open a video and display a frame first.")
             return
@@ -752,19 +758,25 @@ class App(tk.Tk):
         self._analysis_generation += 1
         self.analysis.set_regions(self.regions)  # reload decoded references, resets tracking
 
-        photo = self._make_thumbnail_photo(crop, max_width=96, max_height=64)
-        self.video_tab.set_arrow_reference_thumbnail(region.key(), state, photo, len(references))
+        self._refresh_arrow_reference_thumbnails()
         self.video_tab.set_processing_status(
             f"Captured '{state}' reference {len(references)} for {region.label} at the current frame. "
+            "Matching P2 boxes use P1 references automatically. "
             "Save Layout to keep all references."
         )
 
     def clear_arrow_reference(self, region: Region, state: str) -> None:
+        if p1_reference_source(region, self.regions) is not region:
+            messagebox.showinfo("Shared P1 references", "Clear references on the matching P1 box; P2 uses them automatically.")
+            return
         if state in region.reference_images:
             del region.reference_images[state]
             self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
         self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None, 0)
+        for other in self.regions:
+            if other is not region and p1_reference_source(other, self.regions) is region:
+                self.video_tab.set_arrow_reference_thumbnail(other.key(), state, None, 0)
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         self.analysis.set_arrow_similarity_threshold(value)
@@ -874,6 +886,9 @@ class App(tk.Tk):
         for region in self.regions:
             if region.kind not in ("score", "combo"):
                 continue
+            if p1_reference_source(region, self.regions) is None:
+                statuses.append(f"{region.label} ({region.player}): no matching P1 box; OCR without digit references")
+                continue
             if (
                 region.digit_templates_reviewed
                 and region.score_template_version != config.DIGIT_TEMPLATE_VERSIONS[region.kind]
@@ -916,6 +931,9 @@ class App(tk.Tk):
             self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
 
     def teach_score(self, region: Region) -> None:
+        if p1_reference_source(region, self.regions) is not region:
+            messagebox.showinfo("Shared P1 references", "Teach digits on the matching P1 box; P2 uses them automatically.")
+            return
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", f"Open a video or HDMI input and display a clear {region.kind} first.")
             return
