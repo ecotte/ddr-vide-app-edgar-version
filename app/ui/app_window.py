@@ -21,7 +21,7 @@ from app.live_scoreboard import LiveScoreboard
 from app.live_video_source import CaptureDevice, LiveVideoSource, list_capture_devices
 from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
-from app.models import LayoutProfile, Region, p1_reference_source
+from app.models import LayoutProfile, Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.rayfin_sender import RayfinSender
@@ -29,7 +29,7 @@ from app.ui.events_tab import EventsTab
 from app.ui.region_dialog import RegionDialog
 from app.ui.score_calibration_dialog import ScoreCalibrationDialog
 from app.ui.theme import apply_dark_theme
-from app.ui.video_tab import VideoTab, fit_display_size, next_playback_delay_ms
+from app.ui.video_tab import ReferenceGalleryDialog, VideoTab, fit_display_size, next_playback_delay_ms
 from app.video_source import VideoSource
 
 
@@ -49,9 +49,7 @@ class App(tk.Tk):
         self.event_bus.set_live_sink(self.live_scoreboard.record)
         self._publishing_enabled = False
         self._publisher_poll_after_id = None
-        self.analysis = AnalysisSession(
-            self.event_bus, self.ocr_engine, shared_player_references=True,
-        )
+        self.analysis = AnalysisSession(self.event_bus, self.ocr_engine)
 
         self.video_source: Optional[VideoSource | LiveVideoSource] = None
         self._pending_live_source: Optional[LiveVideoSource] = None
@@ -76,6 +74,8 @@ class App(tk.Tk):
         self._final_numeric_frame = None
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
+        self._pending_seek_frame = None
+        self._seek_poll_after_id: Optional[str] = None
         self._dropped_analysis_frames = 0
         self._recognition_photos = {}
         self._arrow_display_state = {}
@@ -219,6 +219,7 @@ class App(tk.Tk):
                 self.video_tab.set_error_status(str(exc))
                 return False
         self.video_source = None
+        self._pending_seek_frame = None
         self._last_frame_position = None
         self._last_frame_bgr = None
         self.video_tab.set_hdmi_connected(False)
@@ -454,13 +455,33 @@ class App(tk.Tk):
     def _process_and_update(self, frame_bgr, frame_index: int, video_time_ms: int, is_seek: bool) -> None:
         if is_seek:
             self._analysis_generation += 1
-            self.analysis.reset_tracking()
+            self._confirmation_frame = None
+            self._latest_numeric_frame = None
+            self._final_numeric_frame = None
+            if self.analysis.try_reset_tracking():
+                self._pending_seek_frame = None
+            else:
+                self._pending_seek_frame = (
+                    frame_bgr, frame_index, video_time_ms, self.video_source, self._analysis_generation,
+                )
+                if self._seek_poll_after_id is None:
+                    self._seek_poll_after_id = self.after(10, self._retry_pending_seek)
+        elif self._pending_seek_frame is not None:
+            self._pending_seek_frame = (
+                frame_bgr, frame_index, video_time_ms, self.video_source, self._analysis_generation,
+            )
 
         self._last_frame_bgr = frame_bgr  # available for arrow reference capture regardless of analysis state
         self._last_frame_position = (frame_index, video_time_ms)
         self.live_scoreboard.advance_video(video_time_ms, is_seek=is_seek)
         self._display_current_frame(frame_bgr)
         self.video_tab.set_frame_position(frame_index, self.video_source.frame_count, video_time_ms)
+
+        if self._pending_seek_frame is not None:
+            self.video_tab.set_processing_status(
+                "Preview moved. Waiting for the current OCR pass before resuming analysis."
+            )
+            return
 
         if any(region.kind == "game_end" for region in self.regions):
             boundary = self.analysis.process_game_end_frame(frame_bgr, frame_index, video_time_ms)
@@ -484,11 +505,26 @@ class App(tk.Tk):
         self._apply_analysis_result(arrow_result, skipped_frames=0)
         self._submit_numeric_analysis(frame_bgr, frame_index, video_time_ms)
 
+    def _retry_pending_seek(self) -> None:
+        self._seek_poll_after_id = None
+        pending = self._pending_seek_frame
+        if pending is None:
+            return
+        frame, index, timestamp, source, generation = pending
+        if source is not self.video_source or generation != self._analysis_generation:
+            self._pending_seek_frame = None
+            return
+        if not self.analysis.try_reset_tracking():
+            self._seek_poll_after_id = self.after(10, self._retry_pending_seek)
+            return
+        self._pending_seek_frame = None
+        self._process_and_update(frame, index, timestamp, is_seek=False)
+
     def _submit_numeric_analysis(
         self, frame_bgr, frame_index: int, video_time_ms: int, *, confirmation: bool = False,
         region_keys: Optional[frozenset[str]] = None,
     ) -> None:
-        if not self.analysis.is_running:
+        if not self.analysis.is_running or self._pending_seek_frame is not None:
             return
         if not any(
             region.kind in ("score", "combo")
@@ -718,6 +754,16 @@ class App(tk.Tk):
             return
         label, player, kind, direction = dialog.result
         region = Region(label=label, player=player, kind=kind, x=x, y=y, w=w, h=h, direction=direction)
+        if self.video_source is None:
+            messagebox.showerror("No source", "Open a video or HDMI input before drawing regions.")
+            return
+        try:
+            matched = layout_store.match_player_region_sizes(
+                [*self.regions, region], self.video_source.width, self.video_source.height,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Cannot match box sizes", str(exc))
+            return
         self.regions.append(region)
         self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
@@ -726,6 +772,63 @@ class App(tk.Tk):
         self._refresh_arrow_reference_thumbnails()
         if region.kind in ("score", "combo"):
             self._refresh_score_calibration_status()
+        if matched:
+            self.video_tab.set_processing_status(
+                "Matching P2 boxes resized to P1 dimensions. Check crop alignment and references; "
+                "Save Layout to keep the changes."
+            )
+
+    def match_player_region_sizes(self) -> None:
+        if self.video_source is None:
+            messagebox.showerror("No source", "Open a video or HDMI input before matching box sizes.")
+            return
+        try:
+            matched = layout_store.match_player_region_sizes(
+                self.regions, self.video_source.width, self.video_source.height,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Cannot match box sizes", str(exc))
+            return
+        if not matched:
+            self.video_tab.set_processing_status(
+                "No size changes needed. Matching P1/P2 boxes already have equal dimensions, "
+                "or no corresponding P1 box exists."
+            )
+            return
+        self._analysis_generation += 1
+        self.analysis.set_regions(self.regions)
+        self.video_tab.refresh_region_list(self.regions)
+        self.video_tab.redraw_region_overlays(self.regions)
+        self._refresh_arrow_reference_thumbnails()
+        self._refresh_score_calibration_status()
+        self.video_tab.set_processing_status(
+            f"Matched {len(matched)} P2 box size(s) to P1. Check crop alignment and references; "
+            "Save Layout to keep the changes."
+        )
+
+    def move_region(self, region: Region, x: int, y: int) -> None:
+        if self.video_source is None:
+            messagebox.showerror("No source", "Open a video or HDMI input before moving regions.")
+            return
+        if not any(candidate is region for candidate in self.regions):
+            messagebox.showerror("Region removed", "This region is no longer in the current layout.")
+            return
+        width, height = self.video_source.width, self.video_source.height
+        if not 0 < region.w <= width or not 0 < region.h <= height:
+            messagebox.showerror("Out of bounds", "This box cannot fit inside the source frame without resizing.")
+            return
+        region.x = min(max(0, x), width - region.w)
+        region.y = min(max(0, y), height - region.h)
+        self._analysis_generation += 1
+        self.analysis.set_regions(self.regions)
+        self.video_tab.refresh_region_list(self.regions)
+        self.video_tab.redraw_region_overlays(self.regions)
+        self._refresh_arrow_reference_thumbnails()
+        self._refresh_score_calibration_status()
+        self.video_tab.set_processing_status(
+            f"Moved {region.label} ({region.player}) without resizing ({region.w}x{region.h}). "
+            "Check crop alignment and references; Save Layout to keep the new position."
+        )
 
     def delete_region(self, index: int) -> None:
         if 0 <= index < len(self.regions):
@@ -740,9 +843,6 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Image calibration (arrow states and the shared game-end indicator)
     def capture_arrow_reference(self, region: Region, state: str) -> None:
-        if p1_reference_source(region, self.regions) is not region:
-            messagebox.showinfo("Shared P1 references", "Capture references on the matching P1 box; P2 uses them automatically.")
-            return
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", "Open a video and display a frame first.")
             return
@@ -760,23 +860,44 @@ class App(tk.Tk):
 
         self._refresh_arrow_reference_thumbnails()
         self.video_tab.set_processing_status(
-            f"Captured '{state}' reference {len(references)} for {region.label} at the current frame. "
-            "Matching P2 boxes use P1 references automatically. "
+            f"Captured '{state}' reference {len(references)} for {region.label} ({region.player}) at the current frame. "
+            "References belong only to this box. "
             "Save Layout to keep all references."
         )
 
+    def show_arrow_reference_gallery(self, region: Region, state: str) -> None:
+        dialog = ReferenceGalleryDialog(self, self, region, state)
+        self.wait_window(dialog)
+
+    def delete_arrow_reference(self, region: Region, state: str, index: int) -> bool:
+        references = region.reference_images.get(state, [])
+        if not 0 <= index < len(references):
+            messagebox.showerror("Reference not found", "The reference list has changed. Reopen the gallery and try again.")
+            return False
+        del references[index]
+        if not references:
+            del region.reference_images[state]
+        self._analysis_generation += 1
+        self.analysis.set_regions(self.regions)
+        if not references:
+            self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None, 0)
+        self._refresh_arrow_reference_thumbnails()
+        self.video_tab.set_processing_status(
+            f"Deleted '{state}' reference {index + 1} for {region.label} ({region.player}) only. "
+            f"{len(references)} remain. Save Layout to keep this change."
+        )
+        return True
+
     def clear_arrow_reference(self, region: Region, state: str) -> None:
-        if p1_reference_source(region, self.regions) is not region:
-            messagebox.showinfo("Shared P1 references", "Clear references on the matching P1 box; P2 uses them automatically.")
-            return
         if state in region.reference_images:
             del region.reference_images[state]
             self._analysis_generation += 1
             self.analysis.set_regions(self.regions)
         self.video_tab.set_arrow_reference_thumbnail(region.key(), state, None, 0)
-        for other in self.regions:
-            if other is not region and p1_reference_source(other, self.regions) is region:
-                self.video_tab.set_arrow_reference_thumbnail(other.key(), state, None, 0)
+        self.video_tab.set_processing_status(
+            f"Cleared '{state}' references for {region.label} ({region.player}) only. "
+            "Save Layout to keep this change."
+        )
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         self.analysis.set_arrow_similarity_threshold(value)
@@ -870,24 +991,34 @@ class App(tk.Tk):
                 "and Center for each player.\n\n"
                 "The saved layout file is unchanged until you save it.",
             )
-        self.regions = [
+        regions = [
             region for region in profile.regions
             if region.kind != "arrow" or region.direction in config.ARROW_DIRECTIONS
         ]
+        try:
+            matched = layout_store.match_player_region_sizes(
+                regions, self.video_source.width, self.video_source.height,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Cannot match box sizes", str(exc))
+            return
+        self.regions = regions
         self._analysis_generation += 1
         self.analysis.set_regions(self.regions)
         self.video_tab.refresh_region_list(self.regions)
         self.video_tab.redraw_region_overlays(self.regions)
         self._refresh_arrow_reference_thumbnails()
         self._refresh_score_calibration_status()
+        if matched:
+            self.video_tab.set_processing_status(
+                f"Loaded layout; matched {len(matched)} P2 box size(s) to P1. "
+                "Check crop alignment and references; Save Layout to keep the changes."
+            )
 
     def _refresh_score_calibration_status(self) -> None:
         statuses = []
         for region in self.regions:
             if region.kind not in ("score", "combo"):
-                continue
-            if p1_reference_source(region, self.regions) is None:
-                statuses.append(f"{region.label} ({region.player}): no matching P1 box; OCR without digit references")
                 continue
             if (
                 region.digit_templates_reviewed
@@ -931,9 +1062,6 @@ class App(tk.Tk):
             self._submit_numeric_analysis(self._last_frame_bgr, index, timestamp)
 
     def teach_score(self, region: Region) -> None:
-        if p1_reference_source(region, self.regions) is not region:
-            messagebox.showinfo("Shared P1 references", "Teach digits on the matching P1 box; P2 uses them automatically.")
-            return
         if self._last_frame_bgr is None:
             messagebox.showerror("No frame", f"Open a video or HDMI input and display a clear {region.kind} first.")
             return
@@ -955,7 +1083,8 @@ class App(tk.Tk):
         self._analysis_generation += 1
         self._refresh_score_calibration_status()
         self.video_tab.set_processing_status(
-            f"{region.kind.capitalize()} samples learned. Advance/play to verify with OCR. Save Layout to keep them. Existing events and "
+            f"{region.kind.capitalize()} samples learned for {region.label} ({region.player}) only. "
+            "Advance/play to verify with OCR. Save Layout to keep them. Existing events and "
             "accepted values are unchanged; New Session resets incorrect history."
         )
         if self.video_source is not None:
@@ -983,6 +1112,10 @@ class App(tk.Tk):
             if region.kind not in ("arrow", "judgment", "game_end"):
                 continue
             for state, encoded_images in region.reference_images.items():
+                if region.kind == "arrow" and state not in config.ARROW_STATES:
+                    continue
+                if region.kind == "judgment" and state not in config.JUDGMENT_POINTS:
+                    continue
                 if not encoded_images:
                     continue
                 img = image_utils.decode_base64_png_to_crop(encoded_images[-1])
@@ -999,6 +1132,7 @@ class App(tk.Tk):
     def toggle_analysis(self) -> None:
         if self.analysis.is_running:
             self._analysis_generation += 1
+            self._pending_seek_frame = None
             self.analysis.stop()
         else:
             if self.video_source is None:
@@ -1014,6 +1148,7 @@ class App(tk.Tk):
 
     def new_session(self) -> None:
         self._analysis_generation += 1
+        self._pending_seek_frame = None
         position = self._last_frame_position or (None, None)
         previous_count = len(self.event_bus.events)
         self.analysis.new_session(*position, clear_events=False)
@@ -1166,6 +1301,9 @@ class App(tk.Tk):
         if self._analysis_poll_after_id is not None:
             self.after_cancel(self._analysis_poll_after_id)
             self._analysis_poll_after_id = None
+        if self._seek_poll_after_id is not None:
+            self.after_cancel(self._seek_poll_after_id)
+            self._seek_poll_after_id = None
         self._analysis_executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 

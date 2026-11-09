@@ -208,7 +208,6 @@ def test_arrow_dialog_offers_and_accepts_all_five_directions(root, direction, pl
     try:
         dialog.kind_var.set("arrow")
         dialog.player_var.set(player)
-        dialog.label_var.set(f"{player} {direction}")
         dialog._on_kind_changed()
         assert tuple(dialog.direction_combo["values"]) == (
             "Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center",
@@ -237,10 +236,58 @@ def test_center_arrow_is_unique_per_player(root):
         assert "already exists" in dialog.error_var.get()
         dialog.player_var.set("P2")
         dialog._on_confirm()
-        assert dialog.result == ("Score", "P2", "arrow", "Center")
+        assert dialog.result == ("P2 Center", "P2", "arrow", "Center")
     finally:
         if dialog.winfo_exists():
             dialog.destroy()
+
+
+@pytest.mark.parametrize("kind", ["score", "combo", "judgment", "game_end"])
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_region_dialog_generates_names_without_a_label_input(root, kind, player):
+    from app.models import Region
+    from app.ui.region_dialog import RegionDialog
+
+    root.deiconify()
+    root.update()
+    dialog = RegionDialog(root)
+    try:
+        assert dialog.title() == "Add region"
+        form, = dialog.winfo_children()
+        assert all(widget.winfo_class() != "TEntry" for widget in form.winfo_children())
+        assert all(
+            widget.cget("text") != "Label:"
+            for widget in form.winfo_children() if widget.winfo_class() == "TLabel"
+        )
+        dialog.player_var.set(player)
+        dialog.kind_var.set(kind)
+        dialog._on_kind_changed()
+        dialog._on_confirm()
+        expected_player = "Unknown" if kind == "game_end" else player
+        expected_label = "Game end" if kind == "game_end" else f"{player} {kind.capitalize()}"
+        assert dialog.result == (expected_label, expected_player, kind, None)
+        region = Region(expected_label, expected_player, kind, 0, 0, 20, 20)
+        assert Region.from_dict(region.to_dict()).label == expected_label
+    finally:
+        if dialog.winfo_exists():
+            dialog.destroy()
+
+
+def test_judgment_still_requires_a_known_player_without_a_label_field(root):
+    from app.ui.region_dialog import RegionDialog
+
+    root.deiconify()
+    root.update()
+    dialog = RegionDialog(root)
+    try:
+        dialog.player_var.set("Unknown")
+        dialog.kind_var.set("judgment")
+        dialog._on_kind_changed()
+        dialog._on_confirm()
+        assert dialog.result is None
+        assert "Choose P1 or P2" in dialog.error_var.get()
+    finally:
+        dialog.destroy()
 
 
 def test_source_picker_names_devices_and_disables_replay_controls_for_hdmi(root):

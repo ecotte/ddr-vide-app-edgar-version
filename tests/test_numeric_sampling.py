@@ -41,6 +41,8 @@ def _controller():
         _last_frame_position=None,
         _dropped_analysis_frames=0,
         _analysis_poll_after_id=None,
+        _pending_seek_frame=None,
+        _seek_poll_after_id=None,
         after=Mock(return_value="poll"),
         _apply_analysis_result=Mock(),
         video_tab=SimpleNamespace(set_error_status=Mock(), set_processing_status=Mock()),
@@ -50,6 +52,8 @@ def _controller():
     controller._poll_analysis_result = MethodType(App._poll_analysis_result, controller)
     controller._flush_final_numeric_frame = MethodType(App._flush_final_numeric_frame, controller)
     controller._submit_final_numeric_analysis = MethodType(App._submit_final_numeric_analysis, controller)
+    controller._process_and_update = MethodType(App._process_and_update, controller)
+    controller._retry_pending_seek = MethodType(App._retry_pending_seek, controller)
     return controller, jobs
 
 
@@ -348,6 +352,124 @@ def test_seek_discards_old_pair_and_starts_new_generation():
     app._apply_analysis_result.assert_not_called()
     assert jobs[1][1][1:] == (0, 0)
     assert not app._analysis_is_confirmation
+
+
+@pytest.mark.parametrize("lock_name", ["_score_lock", "_combo_lock", "_arrow_lock"])
+def test_tracking_reset_never_waits_for_a_busy_recognition_lock(lock_name):
+    analysis = AnalysisSession(EventBus())
+    analysis.set_regions([Region("Score", "P1", "score", 0, 0, 20, 20)])
+    entered, release = Event(), Event()
+    generation = analysis.generation
+
+    def hold_lock():
+        with getattr(analysis, lock_name):
+            entered.set()
+            assert release.wait(5)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holder = pool.submit(hold_lock)
+        try:
+            assert entered.wait(5)
+            attempt = pool.submit(analysis.try_reset_tracking)
+            assert attempt.result(timeout=0.5) is False
+            assert analysis.generation == generation
+            for name in ("_score_lock", "_combo_lock", "_arrow_lock"):
+                if name != lock_name:
+                    lock = getattr(analysis, name)
+                    assert lock.acquire(blocking=False)
+                    lock.release()
+        finally:
+            release.set()
+        holder.result(timeout=5)
+    assert analysis.try_reset_tracking()
+    assert analysis.generation == generation + 1
+
+
+def test_backward_steps_display_immediately_during_ocr_and_resume_only_the_latest_frame(monkeypatch):
+    app, jobs = _controller()
+    entered, release = Event(), Event()
+    engine = OcrEngine()
+
+    def blocked_ocr(_):
+        entered.set()
+        assert release.wait(5)
+        return OcrResult("100", 0.99)
+
+    monkeypatch.setattr(engine, "recognize_score_digits", blocked_ocr)
+    app.analysis = AnalysisSession(app.event_bus, engine)
+    score = Region("Score", "P1", "score", 0, 0, 20, 20)
+    app.regions = [score]
+    app.analysis.set_regions(app.regions)
+    app.analysis.start()
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    position = [121]
+
+    def read_next():
+        index = position[0]
+        position[0] += 1
+        return frame, index, True
+
+    app.video_source = SimpleNamespace(
+        frame_count=200, current_frame_index=lambda: position[0],
+        seek_to_frame=lambda target: position.__setitem__(0, target),
+        read_next=read_next, video_time_ms_for_frame=lambda index: index * 17,
+    )
+    app.video_tab = Mock()
+    app._display_current_frame = Mock()
+    app.live_scoreboard = Mock()
+    app.is_playing = False
+    app._analysis_frame_index = 120
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        work = pool.submit(app.analysis.process_background_numeric_frame, frame, 120, 2040)
+        app._analysis_future = work
+        try:
+            assert entered.wait(5)
+            pool.submit(App.step_backward, app).result(timeout=0.5)
+            assert not work.done()
+            app.video_tab.set_frame_position.assert_called_with(119, 200, 2023)
+            pool.submit(App.step_backward, app).result(timeout=0.5)
+            app.video_tab.set_frame_position.assert_called_with(118, 200, 2006)
+            assert app._pending_seek_frame[1:3] == (118, 2006)
+            assert not jobs
+            assert app._display_current_frame.call_count == 2
+        finally:
+            release.set()
+        old_result = work.result(timeout=5)
+    app._poll_analysis_result()
+    app._apply_analysis_result.assert_not_called()
+    app._retry_pending_seek()
+    assert app._pending_seek_frame is None
+    assert app.analysis.tracker_for(score).accepted_value is None
+    assert len(jobs) == 1 and jobs[0][1][1:] == (118, 2006)
+    result = app.analysis.process_background_numeric_frame(frame, 118, 2006)
+    jobs[0][0].set_result(result)
+    app._poll_analysis_result()
+    assert app.analysis.tracker_for(score).accepted_value == 100
+    assert all(call.args[0] is not old_result for call in app._apply_analysis_result.call_args_list)
+    app._apply_analysis_result.assert_called_with(result, 0)
+
+
+@pytest.mark.parametrize("stale", ["source", "generation"])
+def test_pending_seek_is_discarded_after_source_or_generation_changes(stale):
+    app, _ = _controller()
+    source = object()
+    app.video_source = object() if stale == "source" else source
+    app._pending_seek_frame = (np.zeros((2, 2, 3), dtype=np.uint8), 0, 0, source, 0)
+    if stale == "generation":
+        app._analysis_generation += 1
+    app.analysis.try_reset_tracking = Mock()
+    app._retry_pending_seek()
+    assert app._pending_seek_frame is None
+    app.analysis.try_reset_tracking.assert_not_called()
+    app.after.assert_not_called()
+
+
+def test_ocr_submission_waits_until_pending_seek_tracking_has_reset():
+    app, jobs = _controller()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    app._pending_seek_frame = (frame, 0, 0, object(), 0)
+    app._submit_numeric_analysis(frame, 0, 0)
+    assert not jobs
 
 
 def test_stop_does_not_submit_buffered_frame():

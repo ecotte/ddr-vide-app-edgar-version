@@ -12,9 +12,10 @@ from app.rayfin_sender import (
 
 def _player():
     return {
-        "score": None, "combo": None, "hits": 0, "misses": 0,
+        "score": None, "runningScore": 0, "combo": None, "hits": 0, "misses": 0,
         "unassignedHits": 0, "unassignedMisses": 0,
         "hitsByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
+        "missesByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
         "hitPace": 0.0,
         "averageResponseTimeMs": None, "responseSamples": 0,
         "observedScore": None, "lastVideoTimeMs": None,
@@ -139,10 +140,24 @@ class LiveScoreboard:
                 ):
                     self._error = "Live scoreboard: invalid arrow direction in outcome event."
                     return
+                judgment = event.payload.get("judgment")
+                if judgment is not None and (
+                    not isinstance(judgment, str) or judgment not in config.JUDGMENT_POINTS
+                    or (judgment == "miss") != event.event_type.endswith("_miss")
+                ):
+                    self._error = "Live scoreboard: invalid judgment tier in outcome event."
+                    return
+                points = config.JUDGMENT_POINTS.get(judgment, 0)
+                if player["runningScore"] + points > 9007199254740991:
+                    self._error = "Live scoreboard: running score exceeds the supported range."
+                    return
+                player["runningScore"] += points
                 if event.event_type.endswith("_miss"):
                     player["misses"] += 1
                     if unassigned:
                         player["unassignedMisses"] += 1
+                    else:
+                        player["missesByDirection"][direction] += 1
                     self._state["revision"] += 1
                     return
                 player["hits"] += 1

@@ -124,7 +124,7 @@ def parse_digits(raw_text: str, max_digits: Optional[int] = None) -> Optional[in
 class ArrowTrackerStatus:
     """A snapshot of arrow tracker state, useful for UI display."""
 
-    active_state: Optional[str]        # activity/appearance/judgment state, or None (idle)
+    active_state: Optional[str]        # activity/judgment state, or None (idle)
     pending_state: Optional[str]
     pending_count: int
     required_count: int
@@ -142,7 +142,7 @@ class ArrowStateTracker:
     suppresses repeats while that same state persists across frames - i.e.
     a debounced edge/pulse detector, not a stability filter.
 
-    ``observe(state)`` takes "active", "appeared", or "idle" for arrow boxes (never invented here -
+    ``observe(state)`` takes "active" or "idle" for arrow boxes (never invented here -
     see app.recognition.classify_arrow_state, which returns "idle" when no
     captured reference matches closely enough). An unreadable frame is
     represented by passing ``None``, which - as with TemporalValueTracker -
@@ -216,10 +216,10 @@ def classify_arrow_state(
     reference_images: dict,
     threshold: float,
 ):
-    """Classify a live arrow-lane crop against captured activity/appearance
+    """Classify a live arrow-lane crop against captured activity
     references. Returns (state, confidence):
-      * state is "active" or "appeared" if the best-matching reference's
-        similarity is >= threshold,
+      * state is "active" if the best activity similarity is >= threshold
+        and exceeds the best optional Empty match by more than the margin,
       * otherwise "idle" (no confident match - the honest default, not a
         guess),
       * confidence is the best similarity score found (0.0 if no
@@ -228,11 +228,11 @@ def classify_arrow_state(
     This never assumes a color or animation meaning - it only compares
     pixels to whatever example(s) the user captured from their own footage.
     """
-    from app import image_utils  # local import: keeps recognition.py OCR/image-lib free at import time
+    from app import config, image_utils  # local import: keeps recognition.py OCR/image-lib free at import time
 
     best_state = None
     best_score = 0.0
-    for state_name in ("active", "appeared"):
+    for state_name in ("active",):
         references = reference_images.get(state_name, [])
         if not isinstance(references, (list, tuple)):
             references = [references]
@@ -245,6 +245,13 @@ def classify_arrow_state(
                 best_state = state_name
 
     if best_state is not None and best_score >= threshold:
+        empty_references = reference_images.get("empty", [])
+        if not isinstance(empty_references, (list, tuple)):
+            empty_references = [empty_references]
+        if empty_references:
+            empty_score = max(image_utils.similarity(crop_bgr, reference) for reference in empty_references)
+            if best_score <= empty_score + config.ARROW_EMPTY_REFERENCE_MARGIN:
+                return "idle", best_score
         return best_state, best_score
     return "idle", best_score
 

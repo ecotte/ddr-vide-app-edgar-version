@@ -1,4 +1,4 @@
-"""A small modal dialog for labeling a newly-drawn region."""
+"""Configure a newly-drawn region and derive its label from its identity."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -16,7 +16,7 @@ class RegionDialog(tk.Toplevel):
     def __init__(self, parent: tk.Widget, existing_keys: Optional[set] = None):
         super().__init__(parent)
         self.withdraw()
-        self.title("Label region")
+        self.title("Add region")
         self.resizable(False, False)
         self.result: Optional[Tuple[str, str, str, Optional[str]]] = None
         self._existing_keys = existing_keys or set()
@@ -24,43 +24,38 @@ class RegionDialog(tk.Toplevel):
         frm = ttk.Frame(self, padding=12)
         frm.grid(row=0, column=0, sticky="nsew")
 
-        ttk.Label(frm, text="Label:").grid(row=0, column=0, sticky="w", pady=4)
-        self.label_var = tk.StringVar(value="Score")
-        label_entry = ttk.Entry(frm, textvariable=self.label_var, width=24)
-        label_entry.grid(row=0, column=1, pady=4)
-
-        ttk.Label(frm, text="Player:").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(frm, text="Player:").grid(row=0, column=0, sticky="w", pady=4)
         self.player_var = tk.StringVar(value=config.PLAYER_CHOICES[0])
         self.player_combo = ttk.Combobox(
             frm, textvariable=self.player_var, values=config.PLAYER_CHOICES,
             state="readonly", width=21,
         )
-        self.player_combo.grid(row=1, column=1, pady=4)
+        self.player_combo.grid(row=0, column=1, pady=4)
 
-        ttk.Label(frm, text="Field kind:").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Label(frm, text="Field kind:").grid(row=1, column=0, sticky="w", pady=4)
         self.kind_var = tk.StringVar(value=config.REGION_KINDS[0])
         kind_combo = ttk.Combobox(
             frm, textvariable=self.kind_var, values=config.REGION_KINDS, state="readonly", width=21,
         )
-        kind_combo.grid(row=2, column=1, pady=4)
+        kind_combo.grid(row=1, column=1, pady=4)
         kind_combo.bind("<<ComboboxSelected>>", lambda e: self._on_kind_changed())
 
         self.direction_label = ttk.Label(frm, text="Arrow direction:")
-        self.direction_label.grid(row=3, column=0, sticky="w", pady=4)
+        self.direction_label.grid(row=2, column=0, sticky="w", pady=4)
         self.direction_var = tk.StringVar(value=config.ARROW_DIRECTIONS[0])
         self.direction_combo = ttk.Combobox(
             frm, textvariable=self.direction_var, values=config.ARROW_DIRECTIONS,
             state="readonly", width=21,
         )
-        self.direction_combo.grid(row=3, column=1, pady=4)
+        self.direction_combo.grid(row=2, column=1, pady=4)
 
         self.error_var = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self.error_var, style="Error.TLabel", wraplength=320).grid(
-            row=4, column=0, columnspan=2, sticky="w"
+            row=3, column=0, columnspan=2, sticky="w"
         )
 
         btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=2, pady=(8, 0), sticky="e")
+        btns.grid(row=4, column=0, columnspan=2, pady=(8, 0), sticky="e")
         ttk.Button(btns, text="Cancel", command=self._on_cancel).grid(row=0, column=0, padx=4)
         ttk.Button(btns, text="Add region", style="Accent.TButton", command=self._on_confirm).grid(row=0, column=1, padx=4)
 
@@ -76,7 +71,7 @@ class RegionDialog(tk.Toplevel):
         self.wait_visibility()
         self.lift()
         self.grab_set()
-        label_entry.focus_set()
+        self.player_combo.focus_set()
 
     def _on_kind_changed(self) -> None:
         is_arrow = self.kind_var.get() == "arrow"
@@ -88,13 +83,9 @@ class RegionDialog(tk.Toplevel):
         self.direction_combo.configure(state=state)
 
     def _on_confirm(self) -> None:
-        label = self.label_var.get().strip()
         player = self.player_var.get()
         kind = self.kind_var.get()
         direction = self.direction_var.get() if kind == "arrow" else None
-        if not label:
-            self.error_var.set("Label cannot be empty.")
-            return
         if kind == "judgment" and player not in ("P1", "P2"):
             self.error_var.set("Choose P1 or P2 for a judgment region.")
             return
@@ -108,6 +99,9 @@ class RegionDialog(tk.Toplevel):
                 f"A '{detail}' region for {player} already exists. Delete it first or pick a different player/kind/direction."
             )
             return
+        label = "Game end" if kind == "game_end" else (
+            f"{player} {direction}" if kind == "arrow" else f"{player} {kind.capitalize()}"
+        )
         self.result = (label, player, kind, direction)
         self.destroy()
 

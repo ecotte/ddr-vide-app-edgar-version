@@ -68,39 +68,89 @@ def outcomes(bus):
     )]
 
 
-@pytest.mark.parametrize("outcome", ["hit", "miss"])
-@pytest.mark.parametrize("offset", [-151, -150, 0, 150, 151])
+@pytest.mark.parametrize("outcome", ["hit", "perfect", "great", "good", "miss"])
+@pytest.mark.parametrize("offset", [-501, -500, -499, -300, -151, -150, 0, 150, 151])
 def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(outcome, offset):
-    session, bus, _, frame = setup()
+    session, bus, _, frame = setup(graded=outcome != "hit")
     arrow = {"P1:arrow:Up-Right": "miss" if outcome == "hit" else "hit"}
     judgment = {"P1:judgment": outcome}
     if offset < 0:
-        frame(200 + offset, **arrow)
-        frame(200, **judgment)
+        frame(1000 + offset, **arrow)
+        frame(1000, **judgment)
     elif offset == 0:
-        frame(200, **arrow, **judgment)
+        frame(1000, **arrow, **judgment)
     else:
-        frame(200, **judgment)
-        frame(200 + offset, **arrow)
+        frame(1000, **judgment)
+        frame(1000 + offset, **arrow)
     assert outcomes(bus) == []
-    frame(499)
+    frame(1649)
     assert outcomes(bus) == []
-    resolved = frame(500)
+    resolved = frame(1650)
     event, = outcomes(bus)
-    known = abs(offset) <= config.JUDGMENT_CORRELATION_WINDOW_MS
-    assert event.event_type == f"{'arrow' if known else 'judgment'}_{outcome}"
+    known = -500 <= offset <= 150
+    expected_outcome = "miss" if outcome == "miss" else "hit"
+    assert event.event_type == f"{'arrow' if known else 'judgment'}_{expected_outcome}"
     assert event.payload["direction"] == ("Up-Right" if known else None)
-    assert event.payload["state"] == outcome
-    assert event.payload["judgment_video_time_ms"] == 200
+    assert event.payload["state"] == expected_outcome
+    assert event.payload["judgment_video_time_ms"] == 1000
+    assert event.payload["correlation_lookback_ms"] == 500
+    assert event.payload["correlation_lookahead_ms"] == 150
     assert event in resolved.new_events
     assert session._pending_judgments == []
+
+
+@pytest.mark.parametrize("tier", ["perfect", "great", "good", "miss"])
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_early_arrow_survives_delayed_word_and_full_settling_interval(tier, player):
+    session, bus, _, frame = setup(
+        players=("P1", "P2"), judgments=("P1", "P2"), graded=True,
+    )
+    frame(100, **{f"{player}:arrow:Up-Right": "hit"})
+    frame(550)
+    frame(600, **{f"{player}:judgment": tier})
+    frame(1000)
+    frame(1249)
+    assert outcomes(bus) == []
+    assert len(session._pending_lanes) == 1
+    frame(1250)
+    event, = outcomes(bus)
+    assert event.player == player
+    assert event.event_type == ("arrow_miss" if tier == "miss" else "arrow_hit")
+    assert event.payload["direction"] == "Up-Right"
+    assert event.payload["judgment"] == tier
+    assert not session._pending_lanes
+
+
+def test_waits_for_a_competing_delayed_judgment_at_the_last_allowed_instant():
+    _, bus, _, frame = setup(graded=True)
+    frame(1000, **{"P1:judgment": "perfect"})
+    frame(1100)
+    frame(1150, **{"P1:arrow:Up-Right": "hit"})
+    frame(1400)
+    frame(1649)
+    assert outcomes(bus) == []
+    frame(1650, **{"P1:judgment": "good"})
+    first, = outcomes(bus)
+    assert first.event_type == "judgment_hit" and first.payload["direction"] is None
+    frame(2300)
+    assert len(outcomes(bus)) == 2
+    assert all(event.payload["direction"] is None for event in outcomes(bus))
+
+
+def test_expired_arrow_evidence_is_pruned_after_the_full_retention_interval():
+    session, _, regions, _ = setup()
+    session._pending_lanes = [LaneEvidence(regions[0], 100, .99)]
+    assert session._correlate_judgments(50, 1250) == []
+    assert len(session._pending_lanes) == 1
+    assert session._correlate_judgments(51, 1251) == []
+    assert not session._pending_lanes
 
 
 def test_player_judgments_never_validate_other_player_arrows_or_infer_arrow_only_outcomes():
     _, bus, _, frame = setup(players=("P1", "P2"), judgments=("P1",))
     frame(100, **{"P1:judgment": "miss", "P2:arrow:Up-Right": "hit"})
     assert outcomes(bus) == []
-    frame(400)
+    frame(750)
     p1, = outcomes(bus)
     assert (p1.player, p1.event_type, p1.payload["direction"]) == ("P1", "judgment_miss", None)
 
@@ -123,7 +173,7 @@ def test_persistent_judgment_counts_once_and_cannot_validate_later_arrow_flashes
     frame(1000)
     frame(1250)
     frame(1300, **{"P1:judgment": "hit", "P1:arrow:Up-Right": "hit"})
-    frame(1600)
+    frame(1950)
     assert len(outcomes(bus)) == 2
     assert outcomes(bus)[1].event_type == "arrow_hit"
 
@@ -135,7 +185,7 @@ def test_simultaneous_arrows_share_one_judgment_and_count_each_direction(tier, d
     states = {f"P1:arrow:{direction}": "hit" for direction in directions}
     states["P1:judgment"] = tier
     frame(100, **states)
-    resolved = frame(400, **states)
+    resolved = frame(750, **states)
     frame(900, **states)
     events = outcomes(bus)
     assert len(events) == len(directions)
@@ -161,6 +211,7 @@ def test_simultaneous_arrows_share_one_judgment_and_count_each_direction(tier, d
         player = board.snapshot()["players"]["P1"]
         assert player["hits"] == (len(directions) if tier != "miss" else 0)
         assert player["misses"] == (len(directions) if tier == "miss" else 0)
+        assert player["runningScore"] == config.JUDGMENT_POINTS[tier] * len(directions)
         for direction in directions:
             assert player["hitsByDirection"][direction] == (tier != "miss")
     finally:
@@ -172,7 +223,7 @@ def test_two_judgments_cannot_both_claim_one_arrow():
     frame(100, **{"P1:judgment": "hit", "P1:arrow:Up-Right": "hit"})
     frame(150)
     frame(200, **{"P1:judgment": "miss"})
-    frame(500)
+    frame(750)
     assert [event.event_type for event in outcomes(bus)] == ["arrow_hit"]
     assert outcomes(bus)[0].payload["direction"] == "Up-Right"
 
@@ -181,23 +232,23 @@ def test_direct_success_to_miss_transition_requires_blank_before_recounting():
     _, bus, _, frame = setup()
     frame(0, **{"P1:judgment": "hit"})
     frame(100, **{"P1:judgment": "miss"})
-    frame(500)
+    frame(650)
     assert [event.event_type for event in outcomes(bus)] == ["judgment_hit"]
-    frame(750)
-    frame(800, **{"P1:judgment": "miss"})
-    frame(1100)
+    frame(900)
+    frame(950, **{"P1:judgment": "miss"})
+    frame(1600)
     assert [event.event_type for event in outcomes(bus)] == ["judgment_hit", "judgment_miss"]
 
 
 def test_recording_toggle_does_not_recount_a_still_visible_judgment():
     session, bus, _, frame = setup()
     frame(0, **{"P1:judgment": "hit"})
-    frame(300, **{"P1:judgment": "hit"})
+    frame(650, **{"P1:judgment": "hit"})
     session.set_recording_enabled(False)
-    frame(400, **{"P1:judgment": "hit"})
+    frame(700, **{"P1:judgment": "hit"})
     session.set_recording_enabled(True)
-    frame(500, **{"P1:judgment": "hit"})
-    frame(1000, **{"P1:judgment": "hit"})
+    frame(800, **{"P1:judgment": "hit"})
+    frame(1200, **{"P1:judgment": "hit"})
     assert len(outcomes(bus)) == 1
 
 
@@ -208,7 +259,7 @@ def test_confirmation_samples_use_onset_time_not_confirmation_time():
     frame(100, **both)
     assert outcomes(bus) == []
     frame(133, **both)
-    frame(400)
+    frame(750)
     event, = outcomes(bus)
     assert event.event_type == "arrow_hit"
     assert event.payload["judgment_video_time_ms"] == 100
@@ -244,19 +295,19 @@ def test_backward_frames_and_repeated_frames_do_not_duplicate_or_carry_pending_o
     pixels = np.concatenate((image("hit"), image("hit")), axis=1)
     session.process_arrow_frame(pixels, 10, 500)
     session.process_arrow_frame(pixels, 10, 500)
-    session.process_arrow_frame(np.concatenate((image("idle"), image("idle")), axis=1), 11, 1000)
+    session.process_arrow_frame(np.concatenate((image("idle"), image("idle")), axis=1), 11, 1150)
     assert len(outcomes(bus)) == 1
 
 
-def test_timing_is_only_carried_for_a_unique_successful_lane():
+def test_legacy_appearance_images_do_not_generate_response_timing():
     _, bus, _, frame = setup()
     frame(0, **{"P1:arrow:Up-Right": "appeared"})
     frame(100, **{"P1:arrow:Up-Right": "hit", "P1:judgment": "hit"})
-    frame(400)
+    frame(750)
     event, = outcomes(bus)
-    assert event.payload["response_time_ms"] == 100
-    assert event.payload["hit_video_time_ms"] == 100
-    assert event.video_time_ms == 400
+    assert "response_time_ms" not in event.payload
+    assert "hit_video_time_ms" not in event.payload
+    assert event.video_time_ms == 750
 
 
 def test_uncalibrated_judgment_region_blocks_arrow_only_outcomes_and_explains_why():
@@ -322,11 +373,17 @@ def test_judgment_cards_align_and_route_all_calibration_actions():
                 ]
                 controller.capture_arrow_reference.reset_mock()
                 button.invoke()
-                if player == "P1":
-                    controller.capture_arrow_reference.assert_called_with(region, name)
-                else:
-                    assert button.instate(["disabled"])
-                    controller.capture_arrow_reference.assert_not_called()
+                assert not button.instate(["disabled"])
+                controller.capture_arrow_reference.assert_called_once_with(region, name)
+                clear_button, = [
+                    widget for group in card.winfo_children() if isinstance(group, ttk.Frame)
+                    for widget in group.winfo_children()
+                    if isinstance(widget, ttk.Button) and widget["text"] == f"Clear {title} refs"
+                ]
+                controller.clear_arrow_reference.reset_mock()
+                clear_button.invoke()
+                assert not clear_button.instate(["disabled"])
+                controller.clear_arrow_reference.assert_called_once_with(region, name)
                 tab.set_arrow_reference_thumbnail(region.key(), name, None, 0)
             tab.update_arrow_recognition_row(region.key(), None, "hit", .99, "Counted hit: direction unknown.")
             assert "direction unknown" in data["status_var"].get()
@@ -349,17 +406,15 @@ def test_graded_judgments_preserve_tier_and_existing_outcomes(tier, with_lane):
     if with_lane:
         states["P1:arrow:Up-Right"] = "hit"
     frame(100, **states)
-    resolved = frame(400)
+    resolved = frame(750)
     event, = outcomes(bus)
     outcome = "miss" if tier == "miss" else "hit"
     assert event.event_type == f"{'arrow' if with_lane else 'judgment'}_{outcome}"
     assert event.payload["state"] == outcome
     assert event.payload["judgment"] == tier
-    assert ("response_time_ms" in event.payload) == (with_lane and tier != "miss")
+    assert "response_time_ms" not in event.payload
     direction = "Up-Right" if with_lane else "Direction unknown"
     expected_detail = f"{direction} - {tier.upper()}"
-    if with_lane and tier != "miss":
-        expected_detail += " | 100 ms response"
     assert EventsTab._format_detail(event) == expected_detail
     judgment_result = next(r for r in resolved.region_results if r.region.kind == "judgment")
     assert f"Counted {tier.upper()}:" in judgment_result.validation_note
@@ -372,6 +427,7 @@ def test_graded_judgments_preserve_tier_and_existing_outcomes(tier, with_lane):
         player = board.snapshot()["players"]["P1"]
         assert player["hits"] == (tier != "miss")
         assert player["misses"] == (tier == "miss")
+        assert player["runningScore"] == config.JUDGMENT_POINTS[tier]
     finally:
         board.stop()
     assert event.to_dict()["payload"]["judgment"] == tier
@@ -387,7 +443,7 @@ def test_perfect_to_good_transition_requires_a_blank():
     frame(900)
     frame(1150)
     frame(1200, **{"P1:judgment": "good"})
-    frame(1500)
+    frame(1850)
     assert [event.payload["judgment"] for event in outcomes(bus)] == ["perfect", "good"]
     assert [event.event_type for event in outcomes(bus)] == ["judgment_hit", "judgment_hit"]
 
@@ -400,12 +456,12 @@ def test_partial_tier_calibration_counts_taught_outcomes_and_ignores_legacy_succ
     result = frame(0, **{"P1:judgment": "perfect"})
     assert result.region_results[-1].error is None
     assert "Untaught judgments: Great, Good" in result.region_results[-1].validation_note
-    frame(300)
+    frame(650)
     assert outcomes(bus)[0].payload["judgment"] == "perfect"
     references["good"] = [image_utils.encode_crop_to_base64_png(image("good"))]
     session.set_regions(regions)
-    frame(400, **{"P1:judgment": "perfect"})
-    frame(700)
+    frame(750, **{"P1:judgment": "perfect"})
+    frame(1400)
     assert [event.payload["judgment"] for event in outcomes(bus)] == ["perfect", "perfect"]
 
 
@@ -446,7 +502,7 @@ def test_lingering_tiers_ignore_brief_no_match_and_rearm_after_250ms(tier):
     frame(1350)
     frame(1400, **{"P1:judgment": tier})
     frame(1420, **{"P1:judgment": tier})
-    frame(1700, **{"P1:judgment": tier})
+    frame(2050, **{"P1:judgment": tier})
     assert [event.payload["judgment"] for event in outcomes(bus)] == [tier, tier]
 
 
@@ -477,7 +533,7 @@ def test_one_taught_category_counts_for_both_players_with_shared_p1_references(t
     frame(1000)
     frame(1250)
     frame(1300, **states)
-    frame(1600)
+    frame(1950)
     assert len(outcomes(bus)) == 4
 
 
@@ -505,7 +561,7 @@ def test_no_match_rearm_threshold_uses_source_time_without_blank_reference(gap, 
     frame(400)
     frame(400 + gap)
     frame(700, **{"P1:judgment": "perfect"})
-    frame(1000, **{"P1:judgment": "perfect"})
+    frame(1350, **{"P1:judgment": "perfect"})
     assert len(outcomes(bus)) == expected
 
 
@@ -548,13 +604,13 @@ def test_simultaneous_group_requires_close_onsets_not_just_proximity_to_word(spr
     session, bus, regions, _ = setup(directions=("Center", "Up-Right"), graded=True)
     session._pending_judgments = [JudgmentEvidence(regions[-1], "great", 200, .99)]
     session._pending_lanes = [
-        LaneEvidence(regions[0], 125, .98, 25),
-        LaneEvidence(regions[1], 125 + spread, .97, 50),
+        LaneEvidence(regions[0], 125, .98),
+        LaneEvidence(regions[1], 125 + spread, .97),
     ]
-    events = session._correlate_judgments(50, 500)
+    events = session._correlate_judgments(50, 850)
     assert len(events) == expected_count
     if expected_count == 2:
-        assert [e.payload["response_time_ms"] for e in events] == [100, 225]
+        assert all("response_time_ms" not in e.payload for e in events)
         assert [e.confidence for e in events] == [.98, .97]
     else:
         assert events[0].event_type == "judgment_hit"
@@ -566,10 +622,10 @@ def test_repeated_direction_does_not_get_counted_as_simultaneous_step():
     session, _, regions, _ = setup(graded=True)
     session._pending_judgments = [JudgmentEvidence(regions[-1], "perfect", 200, .99)]
     session._pending_lanes = [
-        LaneEvidence(regions[0], 180, .99, None),
-        LaneEvidence(regions[0], 220, .99, None),
+        LaneEvidence(regions[0], 180, .99),
+        LaneEvidence(regions[0], 220, .99),
     ]
-    event, = session._correlate_judgments(50, 500)
+    event, = session._correlate_judgments(50, 850)
     assert event.event_type == "judgment_hit"
     assert event.payload["direction"] is None
 
@@ -581,10 +637,10 @@ def test_competing_judgments_cannot_assign_same_simultaneous_arrows():
         JudgmentEvidence(regions[-1], "miss", 300, .99),
     ]
     session._pending_lanes = [
-        LaneEvidence(regions[0], 225, .99, None),
-        LaneEvidence(regions[1], 250, .99, None),
+        LaneEvidence(regions[0], 225, .99),
+        LaneEvidence(regions[1], 250, .99),
     ]
-    events = session._correlate_judgments(50, 600)
+    events = session._correlate_judgments(50, 950)
     assert [e.event_type for e in events] == ["judgment_hit", "judgment_miss"]
     assert len({e.payload["judgment_id"] for e in events}) == 2
     assert all(e.payload["direction"] is None for e in events)
@@ -599,7 +655,7 @@ def test_simultaneous_steps_remain_separate_for_each_player():
     states = {f"{player}:arrow:{direction}": "hit"
               for player in ("P1", "P2") for direction in ("Center", "Up-Right")}
     frame(100, **states, **{"P1:judgment": "perfect", "P2:judgment": "miss"})
-    frame(400)
+    frame(750)
     events = outcomes(bus)
     assert len(events) == 4
     assert len({e.payload["judgment_id"] for e in events}) == 2

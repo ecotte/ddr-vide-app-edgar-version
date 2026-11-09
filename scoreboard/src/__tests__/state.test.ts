@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { arrowBalance, parseSnapshot, poll } from '../state';
+import { arrowAccuracy, parseSnapshot, poll } from '../state';
 
 const player = { username: null, score: null, combo: 3, hits: 0, misses: 0, unassignedHits: 0, unassignedMisses: 0,
   hitsByDirection: { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 },
@@ -7,6 +7,47 @@ const player = { username: null, score: null, combo: 3, hits: 0, misses: 0, unas
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: { P1: player, P2: player } };
 
 describe('scoreboard state', () => {
+  it('preserves independent lane misses without inventing them for older snapshots', () => {
+    const misses = { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 5 };
+    const parsed = parseSnapshot({
+      ...snapshot, players: { P1: { ...player, missesByDirection: misses }, P2: player },
+    });
+    expect(parsed.players.P1.missesByDirection).toEqual(misses);
+    expect(parsed.players.P1.missesByDirection).not.toBe(misses);
+    expect(parsed.players.P2.missesByDirection).toBeUndefined();
+  });
+  it.each([-1, 0.5, '1', true, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid per-lane miss count %s', count => {
+      expect(() => parseSnapshot({
+        ...snapshot, players: {
+          P1: { ...player, missesByDirection: { ...player.hitsByDirection, Center: count } },
+          P2: player,
+        },
+      })).toThrow('Invalid scoreboard data');
+    },
+  );
+  it.each([[], {}, { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0 }])(
+    'rejects incomplete per-lane miss counts %j', missesByDirection => {
+      expect(() => parseSnapshot({
+        ...snapshot, players: { P1: { ...player, missesByDirection }, P2: player },
+      })).toThrow('Invalid scoreboard data');
+    },
+  );
+  it('preserves running scores through parsing and leaves older snapshots distinguishable', () => {
+    for (const runningScore of [0, 10, 80, 130]) {
+      expect(parseSnapshot({
+        ...snapshot, players: { P1: { ...player, runningScore }, P2: player },
+      }).players.P1.runningScore).toBe(runningScore);
+    }
+    expect(parseSnapshot(snapshot).players.P1.runningScore).toBeUndefined();
+  });
+  it.each([-1, 1.5, '40', true, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid running score %s', runningScore => {
+      expect(() => parseSnapshot({
+        ...snapshot, players: { P1: { ...player, runningScore }, P2: player },
+      })).toThrow('Invalid scoreboard data');
+    },
+  );
   it('preserves unknown-direction outcomes while older snapshots default to zero', () => {
     const updated = { ...player, hits: 3, misses: 2, unassignedHits: 2, unassignedMisses: 1 };
     expect(parseSnapshot({ ...snapshot, players: { P1: updated, P2: player } }).players.P1).toEqual(updated);
@@ -60,15 +101,21 @@ describe('scoreboard state', () => {
     } };
     expect(() => parseSnapshot({ ...snapshot, players: { P1: incomplete, P2: player } })).toThrow();
   });
-  it('calculates balance from actual directional counts and handles no hits', () => {
-    expect(arrowBalance(player)).toBeNull();
-    expect(arrowBalance()).toBeNull();
-    expect(arrowBalance({ ...player, hitsByDirection: null })).toBeNull();
-    const shares = arrowBalance({
-      ...player, hits: 20,
+  it('calculates per-lane accuracy instead of hit distribution and handles unplayed lanes', () => {
+    expect(arrowAccuracy(player)).toBeNull();
+    expect(arrowAccuracy()).toBeNull();
+    expect(arrowAccuracy({ ...player, hitsByDirection: null })).toBeNull();
+    expect(arrowAccuracy({ ...player, missesByDirection: undefined })).toBeNull();
+    const rates = arrowAccuracy({
+      ...player, hits: 20, misses: 9, unassignedHits: 4, unassignedMisses: 3,
       hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
+      missesByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 1, 'Down-Left': 0, Center: 0 },
     });
-    expect(shares).toEqual({ 'Up-Right': 5, 'Up-Left': 10, 'Down-Right': 15, 'Down-Left': 20, Center: 50 });
+    expect(rates).toEqual({ 'Up-Right': 50, 'Up-Left': 50, 'Down-Right': 75, 'Down-Left': 100, Center: 100 });
+    expect(arrowAccuracy({
+      ...player, misses: 2,
+      missesByDirection: { ...player.hitsByDirection, Center: 2 },
+    })).toEqual({ 'Up-Right': null, 'Up-Left': null, 'Down-Right': null, 'Down-Left': null, Center: 0 });
   });
   it('keeps a missing pace unavailable for old snapshots', () => {
     const legacy = { ...player, hitPace: undefined };

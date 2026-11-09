@@ -91,6 +91,60 @@ def test_overlays_reuse_unchanged_regions_and_refresh_after_edits(display):
     assert len(view._overlay_ids) == 2
 
 
+@pytest.mark.parametrize("scale", [1.0, 0.5])
+def test_dragging_existing_p2_box_moves_without_resizing(tk_root, scale):
+    controller = Mock()
+    p1 = Region("P1", "P1", "judgment", 10, 20, 40, 30)
+    p2 = Region("P2", "P2", "judgment", 80, 20, 40, 30)
+    controller.regions = [p1, p2]
+    tab = VideoTab(tk_root, controller)
+    tab.display_scale = scale
+    try:
+        tab.redraw_region_overlays(controller.regions)
+        start = SimpleNamespace(x=90 * scale, y=30 * scale)
+        end = SimpleNamespace(x=110 * scale, y=40 * scale)
+        tab._on_canvas_press(start)
+        assert tab._move_region is p2
+        tab._on_canvas_drag(end)
+        assert tab.canvas.coords(tab._rect_id) == [100 * scale, 30 * scale, 140 * scale, 60 * scale]
+        assert (p2.x, p2.y, p2.w, p2.h) == (80, 20, 40, 30)
+        tab._on_canvas_release(end)
+        controller.move_region.assert_called_once_with(p2, 100, 30)
+        controller.on_region_drawn.assert_not_called()
+        assert tab._move_region is None and tab._rect_id is None
+    finally:
+        tab.destroy()
+
+
+def test_drawing_new_box_still_routes_to_region_dialog(tk_root):
+    controller = Mock(regions=[])
+    tab = VideoTab(tk_root, controller)
+    try:
+        tab._toggle_draw_mode()
+        tab._on_canvas_press(SimpleNamespace(x=20, y=30))
+        tab._on_canvas_drag(SimpleNamespace(x=60, y=50))
+        tab._on_canvas_release(SimpleNamespace(x=60, y=50))
+        controller.on_region_drawn.assert_called_once_with(20, 30, 40, 20)
+        controller.move_region.assert_not_called()
+    finally:
+        tab.destroy()
+
+
+def test_toggle_draw_mode_cancels_pending_move(tk_root):
+    controller = Mock()
+    controller.regions = [Region("P2", "P2", "judgment", 80, 20, 40, 30)]
+    tab = VideoTab(tk_root, controller)
+    try:
+        tab._on_canvas_press(SimpleNamespace(x=90, y=30))
+        tab._toggle_draw_mode()
+        tab._on_canvas_release(SimpleNamespace(x=110, y=40))
+        controller.move_region.assert_not_called()
+        controller.on_region_drawn.assert_not_called()
+        assert tab._rect_id is None
+    finally:
+        tab.destroy()
+
+
 def test_recognition_thumbnail_reuses_image_without_stale_pixels(display):
     root, _ = display
     crop = np.full((30, 150, 3), (0, 0, 255), dtype=np.uint8)
@@ -144,8 +198,8 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
         for region in regions:
             photo = App._make_thumbnail_photo(np.zeros((region.h, region.w, 3), dtype=np.uint8))
             if region.kind == "arrow":
-                tab.update_arrow_recognition_row(region.key(), photo, "hit", 0.99, "active: hit")
-                for state in ("hit", "miss", "appeared"):
+                tab.update_arrow_recognition_row(region.key(), photo, "active", 0.99, "active: active")
+                for state in ("active", "empty"):
                     ref = App._make_thumbnail_photo(
                         np.zeros((30, 374, 3), dtype=np.uint8), max_width=96, max_height=64,
                     )
@@ -204,19 +258,21 @@ def test_two_player_columns_fit_and_route_controls_independently(window_width, t
                 controller.set_combo_fast_mode.assert_called_with(region, True)
                 assert "(unconfirmed)" in row_data["candidate_var"].get()
             else:
-                buttons = [
-                    button for frame in card.winfo_children() if isinstance(frame, ttk.Frame)
+                buttons = {
+                    button["text"]: button for frame in card.winfo_children() if isinstance(frame, ttk.Frame)
                     for button in frame.winfo_children() if isinstance(button, ttk.Button)
-                ]
+                }
                 assert len(buttons) == 6
-                buttons[2].invoke()
-                controller.capture_arrow_reference.assert_called_with(region, "miss")
-                buttons[3].invoke()
-                controller.clear_arrow_reference.assert_called_with(region, "miss")
-                buttons[4].invoke()
-                controller.capture_arrow_reference.assert_called_with(region, "appeared")
-                buttons[5].invoke()
-                controller.clear_arrow_reference.assert_called_with(region, "appeared")
+                for state, add, clear, gallery in (
+                    ("active", "Add Active Arrow ref", "Clear Active Arrow refs", "View / delete refs..."),
+                    ("empty", "Add Empty ref", "Clear Empty refs", "View / delete Empty refs..."),
+                ):
+                    buttons[add].invoke()
+                    controller.capture_arrow_reference.assert_called_with(region, state)
+                    buttons[clear].invoke()
+                    controller.clear_arrow_reference.assert_called_with(region, state)
+                    buttons[gallery].invoke()
+                    controller.show_arrow_reference_gallery.assert_called_with(region, state)
         tab.refresh_region_list([regions[0]])
         root.update()
         assert len(tab.recognition_container.winfo_children()) == 3
@@ -244,7 +300,7 @@ def test_matching_regions_stay_aligned_with_missing_regions_shuffled_order_and_u
         tab.refresh_region_list(regions)
         tab._region_rows["P1:score"]["status_var"].set("Long status\n" * 8)
         photo = App._make_thumbnail_photo(np.zeros((96, 100, 3), dtype=np.uint8))
-        tab.set_arrow_reference_thumbnail("P2:arrow:Up-Right", "appeared", photo, 7)
+        tab.set_arrow_reference_thumbnail("P2:arrow:Up-Right", "empty", photo, 7)
         root.update()
         cards = {key: data["thumb_label"].master for key, data in tab._region_rows.items()}
         for suffix in ("score", "arrow:Up-Right", "arrow:Up-Left"):

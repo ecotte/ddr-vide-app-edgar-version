@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from types import MethodType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -45,6 +45,180 @@ def test_save_and_load_round_trip():
     assert loaded.regions[0].label == "P1 Score"
     assert loaded.regions[0].player == "P1"
     assert loaded.regions[0].kind == "score"
+
+
+@pytest.mark.parametrize("kind", ["arrow", "judgment", "score", "combo"])
+def test_matching_player_sizes_preserves_centers_references_and_settings(kind):
+    p1 = Region("P1", "P1", kind, 0, 0, 40, 20, direction="Center")
+    p2 = Region("P2", "P2", kind, 80, 40, 30, 10, direction="Center",
+                reference_images={"active": ["example"]}, digit_templates={"1": ["digit"]},
+                combo_yellow_filter=True, combo_fast_mode=True)
+    before = p2.to_dict()
+    assert layout_store.match_player_region_sizes([p2, p1], 200, 100) == [p2]
+    assert (p2.x, p2.y, p2.w, p2.h) == (75, 35, 40, 20)
+    assert (p1.x, p1.y, p1.w, p1.h) == (0, 0, 40, 20)
+    assert {key: value for key, value in p2.to_dict().items() if key not in ("x", "y", "w", "h")} == {
+        key: value for key, value in before.items() if key not in ("x", "y", "w", "h")
+    }
+    assert not layout_store.match_player_region_sizes([p2, p1], 200, 100)
+    profile = LayoutProfile("matched", 200, 100, [p1, p2])
+    layout_store.save_layout(profile)
+    restored = layout_store.load_layout("matched").regions
+    assert restored[0].w == restored[1].w == 40
+    assert restored[0].h == restored[1].h == 20
+
+
+def test_size_matching_only_changes_corresponding_supported_player_boxes():
+    regions = [
+        Region("P1 arrow", "P1", "arrow", 0, 0, 40, 20, direction="Center"),
+        Region("Other arrow", "P2", "arrow", 0, 0, 10, 10, direction="Up-Left"),
+        Region("P2 judgment", "P2", "judgment", 0, 0, 30, 10),
+        Region("Unknown", "Unknown", "arrow", 0, 0, 10, 10, direction="Center"),
+        Region("End", "P2", "game_end", 0, 0, 10, 10),
+    ]
+    before = [region.to_dict() for region in regions]
+    assert not layout_store.match_player_region_sizes(regions, 100, 100)
+    assert [region.to_dict() for region in regions] == before
+
+
+@pytest.mark.parametrize("x,y", [(0, 0), (90, 90)])
+def test_matching_sizes_keeps_exact_dimensions_inside_frame_edges(x, y):
+    p1 = Region("P1", "P1", "judgment", 0, 0, 40, 30)
+    p2 = Region("P2", "P2", "judgment", x, y, 10, 10)
+    layout_store.match_player_region_sizes([p1, p2], 100, 100)
+    assert (p2.w, p2.h) == (40, 30)
+    assert 0 <= p2.x <= 60 and 0 <= p2.y <= 70
+
+
+def test_matching_sizes_rejects_impossible_dimensions_without_partial_changes():
+    regions = [
+        Region("P1 score", "P1", "score", 0, 0, 40, 20),
+        Region("P2 score", "P2", "score", 80, 40, 30, 10),
+        Region("P1 judgment", "P1", "judgment", 0, 0, 201, 20),
+        Region("P2 judgment", "P2", "judgment", 0, 0, 30, 10),
+    ]
+    before = [region.to_dict() for region in regions]
+    with pytest.raises(ValueError, match="cannot fit"):
+        layout_store.match_player_region_sizes(regions, 200, 100)
+    assert [region.to_dict() for region in regions] == before
+    with pytest.raises(ValueError, match="positive"):
+        layout_store.match_player_region_sizes(regions, 0, 100)
+
+
+@pytest.mark.parametrize("first_player", ["P1", "P2"])
+def test_drawing_matching_box_uses_p1_size_regardless_of_drawing_order(first_player):
+    from app.ui.app_window import App
+
+    first = Region("First", first_player, "judgment", 0, 0, 40, 20)
+    second_player = "P2" if first_player == "P1" else "P1"
+    app = SimpleNamespace(
+        regions=[first], video_source=SimpleNamespace(width=200, height=100),
+        wait_window=Mock(), analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    with patch("app.ui.app_window.RegionDialog", return_value=SimpleNamespace(
+        result=("Second", second_player, "judgment", None),
+    )):
+        App.on_region_drawn(app, 80, 40, 30, 10)
+    assert len(app.regions) == 2
+    p1 = next(region for region in app.regions if region.player == "P1")
+    p2 = next(region for region in app.regions if region.player == "P2")
+    expected = (40, 20) if first_player == "P1" else (30, 10)
+    assert (p1.w, p1.h) == (p2.w, p2.h) == expected
+    app.analysis.set_regions.assert_called_once_with(app.regions)
+    app.video_tab.set_processing_status.assert_called_once()
+
+
+def test_drawing_p1_does_not_create_p2_automatically():
+    from app.ui.app_window import App
+
+    app = SimpleNamespace(
+        regions=[], video_source=SimpleNamespace(width=200, height=100),
+        wait_window=Mock(), analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    with patch("app.ui.app_window.RegionDialog", return_value=SimpleNamespace(
+        result=("P1", "P1", "judgment", None),
+    )):
+        App.on_region_drawn(app, 0, 0, 40, 20)
+    assert len(app.regions) == 1 and app.regions[0].player == "P1"
+
+
+def test_match_sizes_action_refreshes_analysis_and_previews():
+    from app.ui.app_window import App
+
+    p1 = Region("P1", "P1", "judgment", 0, 0, 40, 20)
+    p2 = Region("P2", "P2", "judgment", 80, 40, 30, 10)
+    app = SimpleNamespace(
+        regions=[p1, p2], video_source=SimpleNamespace(width=200, height=100),
+        analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    App.match_player_region_sizes(app)
+    assert (p2.w, p2.h) == (40, 20)
+    app.analysis.set_regions.assert_called_once_with(app.regions)
+    app.video_tab.refresh_region_list.assert_called_once_with(app.regions)
+    app.video_tab.redraw_region_overlays.assert_called_once_with(app.regions)
+    app._refresh_arrow_reference_thumbnails.assert_called_once()
+    app._refresh_score_calibration_status.assert_called_once()
+    App.match_player_region_sizes(app)
+    app.analysis.set_regions.assert_called_once()
+
+
+def test_loading_layout_matches_p2_sizes_and_reports_changes():
+    from app.ui.app_window import App
+
+    p1 = Region("P1", "P1", "judgment", 0, 0, 40, 20)
+    p2 = Region("P2", "P2", "judgment", 80, 40, 30, 10)
+    profile = LayoutProfile("loaded", 200, 100, [p1, p2])
+    app = SimpleNamespace(
+        regions=[], video_source=SimpleNamespace(width=200, height=100),
+        analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    App._apply_loaded_profile(app, lambda width, height: profile)
+    assert (p2.x, p2.y, p2.w, p2.h) == (75, 35, 40, 20)
+    assert app.regions == [p1, p2]
+    app.analysis.set_regions.assert_called_once_with(app.regions)
+    assert "matched 1" in app.video_tab.set_processing_status.call_args.args[0]
+
+
+def test_loading_unmatchable_layout_keeps_current_layout():
+    from app.ui.app_window import App
+
+    current = [Region("Current", "P1", "judgment", 0, 0, 40, 20)]
+    profile = LayoutProfile("invalid", 200, 100, [
+        Region("P1", "P1", "judgment", 0, 0, 201, 20),
+        Region("P2", "P2", "judgment", 80, 40, 30, 10),
+    ])
+    app = SimpleNamespace(
+        regions=current, video_source=SimpleNamespace(width=200, height=100),
+        analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+    )
+    with patch("app.ui.app_window.messagebox.showerror") as error:
+        App._apply_loaded_profile(app, lambda width, height: profile)
+    error.assert_called_once()
+    assert app.regions is current
+    app.analysis.set_regions.assert_not_called()
+
+
+@pytest.mark.parametrize("x,y,expected", [(85, 40, (85, 40)), (-10, 120, (0, 80)), (190, -5, (160, 0))])
+def test_moving_region_preserves_size_and_other_player_and_stays_in_bounds(x, y, expected):
+    from app.ui.app_window import App
+
+    p1 = Region("P1", "P1", "judgment", 0, 0, 40, 20)
+    p2 = Region("P2", "P2", "judgment", 80, 40, 40, 20)
+    app = SimpleNamespace(
+        regions=[p1, p2], video_source=SimpleNamespace(width=200, height=100),
+        analysis=Mock(), video_tab=Mock(), _analysis_generation=0,
+        _refresh_arrow_reference_thumbnails=Mock(), _refresh_score_calibration_status=Mock(),
+    )
+    App.move_region(app, p2, x, y)
+    assert (p2.x, p2.y) == expected
+    assert (p2.w, p2.h) == (40, 20)
+    assert (p1.x, p1.y, p1.w, p1.h) == (0, 0, 40, 20)
+    app.analysis.set_regions.assert_called_once_with(app.regions)
+    app.video_tab.redraw_region_overlays.assert_called_once_with(app.regions)
 
 
 def test_list_layout_names_returns_saved_profiles():
