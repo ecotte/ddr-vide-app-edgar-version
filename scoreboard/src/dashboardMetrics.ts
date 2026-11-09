@@ -12,16 +12,28 @@ export function stepTitle(player: PlayerState) {
   const counts = player.hitsByDirection;
   const misses = player.missesByDirection;
   const accuracy = arrowAccuracy(player);
-  if (!counts || !misses || !accuracy) return null;
+  const warmingUp = {
+    title: 'Warming up', symbol: '\u266a',
+    detail: !counts || !misses
+      ? 'Waiting for per-lane hit and miss data.'
+      : 'Waiting for a recognized hit with a direction.',
+  };
+  if (!counts || !misses || !accuracy) return warmingUp;
   const maximum = Math.max(...DIRECTIONS.map(direction => accuracy[direction] ?? 0));
-  if (maximum === 0) return null;
+  if (maximum === 0) return warmingUp;
   const leaders = DIRECTIONS.filter(direction => accuracy[direction] === maximum);
   const percentage = maximum.toFixed(1);
   if (leaders.length === DIRECTIONS.length) {
     return { title: 'All-Step Ace', symbol: '\u2196 \u2197 \u25a3 \u2199 \u2198',
       detail: `All five directions tied at ${percentage}% hit rate.` };
   }
-  if (leaders.length !== 1) return null;
+  if (leaders.length !== 1) {
+    return {
+      title: 'Joint leaders',
+      symbol: leaders.map(direction => STEP_TITLES[direction].symbol).join(' '),
+      detail: `Best hit rate: ${leaders.join(', ')} (${percentage}% each).`,
+    };
+  }
   const direction = leaders[0];
   const outcomes = counts[direction] + misses[direction];
   return {

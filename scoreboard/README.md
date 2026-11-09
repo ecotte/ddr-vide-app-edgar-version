@@ -292,9 +292,11 @@ Connection/publish errors appear in the desktop Events tab.
   Center-Step Superstar, with the corresponding direction symbol. The card shows
   its percentage and detected outcome count. Unplayed lanes are excluded; no
   minimum sample count is required. Equal positive accuracy across all five lanes
-  awards All-Step Ace; zero accuracy and partial ties have no title.
+  awards All-Step Ace; partial ties show Joint leaders with the tied directions.
+  During active games the Step Title tile always stays visible, showing Warming up
+  for zero accuracy, unplayed lanes, or unavailable per-lane hit/miss data.
   Desktop snapshots now include `missesByDirection` alongside `hitsByDirection`.
-  Older snapshots without lane-miss counts omit accuracy-based titles. Restart
+  Older snapshots without lane-miss counts show Warming up rather than guessing a title. Restart
   the desktop publisher and deploy the updated frontend; old games are not replayed.
 - Two extra player tiles add playful captions without changing the numbers:
   **Most-hit lane** lists every lane tied for the highest positive hit count
@@ -311,7 +313,8 @@ Connection/publish errors appear in the desktop Events tab.
   failed feeds pause it, and a new game resets the cycle. Captions are playful,
   not additional measurements; tile numbers and lane names do not change with them.
 - Cards without data are omitted, including score/combo, response timing,
-  animal comparisons, percentages, pace, directional breakdown, and titles.
+  animal comparisons, percentages, pace, and directional breakdown.
+  Step Title is retained with a Warming up state during active games.
   A real zero (for example 0% after detected misses) is not missing data.
 - Optional desktop `judgment` regions correlate each player's captured success/MISS
   images with arrow activity. Unique directions remain `arrow_hit` / `arrow_miss`.

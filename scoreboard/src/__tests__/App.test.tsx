@@ -321,12 +321,43 @@ it('matches titles and symbols to each player highest lane accuracy and updates 
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Down-Left Dynamo');
 });
 
-it('omits accuracy titles for older snapshots with hits but no per-lane misses', async () => {
+it('keeps all four main tiles when P2 has tied accuracy leaders and updates the title without removing it', async () => {
+  const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
+  const p1 = { ...player, averageResponseTimeMs: null, responseSamples: 0 };
+  const p2 = {
+    ...p1, hits: 3, misses: 1,
+    hitsByDirection: { ...zero, 'Up-Right': 1, 'Up-Left': 1, Center: 1 },
+    missesByDirection: { ...zero, Center: 1 },
+  };
+  const { client, execute } = fakeClient({ ...snapshot, players: { P1: p1, P2: p2 } });
+  await act(async () => { render(<App client={client} />); });
+  for (const name of ['Player 1', 'Player 2']) {
+    const tile = screen.getByLabelText(`${name} step title`);
+    expect(tile.parentElement?.querySelectorAll('.metric-card')).toHaveLength(4);
+    for (const metric of ['most-hit lane', 'total detected steps', 'cumulative hit percentage']) {
+      expect(screen.getByLabelText(`${name} ${metric}`)).toBeInTheDocument();
+    }
+  }
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Joint leaders');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Up-Right, Up-Left (100.0% each)');
+  execute.mockResolvedValue([{
+    id: 'board', publishedAt: new Date(),
+    snapshot: JSON.stringify({
+      ...snapshot, revision: 2, players: {
+        P1: p1, P2: { ...p2, misses: 2, missesByDirection: { ...zero, 'Up-Left': 1, Center: 1 } },
+      },
+    }),
+  }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Up-Right Royalty');
+});
+
+it('keeps the title tile warming up for older snapshots without per-lane misses', async () => {
   const { missesByDirection: _misses, ...legacy } = player;
   const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });
   await act(async () => { render(<App client={client} />); });
-  expect(screen.queryByLabelText('Player 1 step title')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 step title')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Waiting for per-lane hit and miss data.');
 });
 
 it('omits unknown-direction explanations without changing displayed totals or lane counts', async () => {
@@ -379,16 +410,18 @@ it('hides missing metrics in legacy snapshots instead of leaving empty cards', a
   const legacy = { score: null, combo: null, hits: 3, observedScore: null, lastVideoTimeMs: 100 };
   const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });
   await act(async () => { render(<App client={client} />); });
-  for (const name of ['time to answer', 'animal comparison', 'cumulative hit percentage', 'step title', 'hit pace', 'arrow accuracy', 'hits by arrow', 'most-hit lane', 'total detected steps']) {
+  for (const name of ['time to answer', 'animal comparison', 'cumulative hit percentage', 'hit pace', 'arrow accuracy', 'hits by arrow', 'most-hit lane', 'total detected steps']) {
     expect(screen.queryByLabelText(`Player 1 ${name}`)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(`Player 2 ${name}`)).not.toBeInTheDocument();
   }
   expect(screen.queryByText('--')).not.toBeInTheDocument();
   expect(screen.queryByText('ACCEPTED SCORE')).not.toBeInTheDocument();
   expect(screen.queryByText('COMBO')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Warming up');
 });
 
-it('shows zero-percent accuracy for real misses but no timing or title without hits', async () => {
+it('shows zero-percent accuracy for real misses and a warming-up title without hits', async () => {
   const empty = { ...player, hits: 0, misses: 2, hitsByDirection: {
     'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0,
   }, averageResponseTimeMs: null, responseSamples: 0 };
@@ -396,7 +429,7 @@ it('shows zero-percent accuracy for real misses but no timing or title without h
   await act(async () => { render(<App client={client} />); });
   expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('0.0%');
   expect(screen.queryByLabelText('Player 1 time to answer')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 1 step title')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
 });
 
 it('hides all metric cards when the publisher is inactive, even with retained values', async () => {
@@ -404,6 +437,8 @@ it('hides all metric cards when the publisher is inactive, even with retained va
   await act(async () => { render(<App client={client} />); });
   expect(screen.queryByLabelText('Player 1 time to answer')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Player 1 cumulative hit percentage')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Player 1 step title')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Player 2 step title')).not.toBeInTheDocument();
   expect(screen.queryAllByRole('meter')).toHaveLength(0);
   expect(screen.queryByLabelText('Player 1 most-hit lane')).not.toBeInTheDocument();
   expect(screen.queryByLabelText('Player 2 most-hit lane')).not.toBeInTheDocument();

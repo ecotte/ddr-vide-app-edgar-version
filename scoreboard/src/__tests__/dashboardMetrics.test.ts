@@ -50,14 +50,29 @@ it.each([
   })).toEqual({ title, symbol, detail: `Best hit rate: ${direction} (100.0%; 2 hits / 2 detected outcomes).` });
 });
 
-it('does not award titles for missing, zero, or partially tied counts', () => {
-  expect(stepTitle({ ...player, hitsByDirection: null })).toBeNull();
-  expect(stepTitle({ ...player, missesByDirection: undefined })).toBeNull();
-  expect(stepTitle({ ...player, missesByDirection: null })).toBeNull();
-  expect(stepTitle(player)).toBeNull();
-  expect(stepTitle({
-    ...player, hits: 2, hitsByDirection: { ...player.hitsByDirection!, 'Up-Left': 1, 'Up-Right': 1 },
-  })).toBeNull();
+it('keeps a warming-up tile instead of inventing titles for unavailable or zero accuracy', () => {
+  for (const state of [
+    { ...player, hitsByDirection: null },
+    { ...player, missesByDirection: undefined },
+    { ...player, missesByDirection: null },
+    player,
+  ]) {
+    expect(stepTitle(state)).toMatchObject({ title: 'Warming up', symbol: '\u266a' });
+  }
+  expect(stepTitle({ ...player, missesByDirection: undefined }).detail).toBe(
+    'Waiting for per-lane hit and miss data.',
+  );
+});
+
+it.each([2, 3, 4])('keeps a Joint leaders tile when %s lanes tie for best accuracy', count => {
+  const leaders = DIRECTIONS.slice(0, count);
+  const hitsByDirection = { ...player.hitsByDirection! };
+  for (const direction of leaders) hitsByDirection[direction] = 1;
+  expect(stepTitle({ ...player, hits: count, hitsByDirection })).toMatchObject({
+    title: 'Joint leaders',
+    detail: `Best hit rate: ${leaders.join(', ')} (100.0% each).`,
+  });
+  expect(stepTitle({ ...player, hits: count, hitsByDirection }).symbol.split(' ')).toHaveLength(count);
 });
 
 it('awards All-Step Ace for equal positive accuracy even with different hit counts', () => {
@@ -86,7 +101,7 @@ it('chooses accuracy over hit volume and excludes unassigned outcomes', () => {
 it('does not reward zero-percent or unplayed lanes', () => {
   expect(stepTitle({
     ...player, misses: 2, missesByDirection: { ...player.missesByDirection!, Center: 2 },
-  })).toBeNull();
+  })).toMatchObject({ title: 'Warming up', detail: 'Waiting for a recognized hit with a direction.' });
 });
 
 it.each([

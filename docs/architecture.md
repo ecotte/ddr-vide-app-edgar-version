@@ -283,9 +283,11 @@ universal speed ranking.
 The highest per-lane hit percentage determines the step title and its matching
 direction symbol, using `hitsByDirection` and `missesByDirection`. Unknown-direction
 outcomes and unplayed lanes are excluded. A positive five-way accuracy tie is
-All-Step Ace; zero accuracy and partial ties award no title. No minimum sample count
-is required. Legacy snapshots without lane misses omit titles instead of guessing.
-All metric cards without supporting data are omitted rather than left empty.
+All-Step Ace; partial ties show Joint leaders with the matching directions.
+The Step Title tile remains visible during active games, using Warming up for zero
+accuracy or missing lane data rather than inventing a winner. No minimum sample
+count is required. Legacy snapshots without lane misses also show Warming up.
+Other metric cards without supporting data are omitted rather than left empty.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
 active sharing session, and changes sessions through manual/video-load resets

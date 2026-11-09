@@ -284,7 +284,8 @@ all that is needed for outcomes and running points.
 **Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
 outcomes in the current game. Undetected notes are not counted. Missing data
 hides its card rather than showing an empty placeholder; the same applies to
-timing, animal comparisons, hit pace, per-lane arrow accuracy, and step titles.
+timing, animal comparisons, hit pace, and per-lane arrow accuracy.
+Step Title stays visible during active games, using Warming up until a title is available.
 **Arrow accuracy** uses each lane's `hits / (hits + misses)`, not its share of total
 hits. Unplayed lanes show **No attempts**; detected misses without hits show **0.0%**.
 Unknown-direction outcomes do not alter lane accuracy. Older snapshots without
@@ -297,9 +298,11 @@ earns one title: **Up-Left Legend**, **Up-Right Royalty**, **Down-Left Dynamo**,
 **Down-Right Champion**, or **Center-Step Superstar**, with its matching direction symbol.
 The card shows the percentage and detected outcome counts. Unplayed lanes and
 unknown-direction judgments are excluded. **All-Step Ace** requires equal positive
-hit percentages in all five lanes; zero percentages and partial ties award no title.
-No minimum sample count is required. Older snapshots without per-lane misses omit
-titles rather than guessing accuracy. Restart the desktop publisher and deploy the
+hit percentages in all five lanes. A two-, three-, or four-way accuracy tie shows
+**Joint leaders** with the tied directions. The Step Title tile remains visible
+during active games, showing **Warming up** when no directional hit can earn a title
+or per-lane data is unavailable. No minimum sample count is required.
+Restart the desktop publisher and deploy the
 updated scoreboard to use the new lane-accuracy titles; previous games are not replayed.
 
 Two playful tiles add **Most-hit lane** and **Total detected steps**, each with
