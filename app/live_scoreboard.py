@@ -132,42 +132,90 @@ class LiveScoreboard:
                     (event.player, "observedScore"), -1,
                 ) < event.sequence:
                     player["observedScore"] = None
-            elif event.event_type in ("arrow_hit", "arrow_miss", "judgment_hit", "judgment_miss"):
+            elif event.event_type in (
+                config.JUDGEMENT_EVENT_TYPE, config.ARROW_EVENT_TYPE,
+                "arrow_hit", "arrow_miss", "judgment_hit", "judgment_miss",
+            ):
                 direction = event.payload.get("direction")
-                unassigned = event.event_type.startswith("judgment_")
-                if (unassigned and direction is not None) or (
-                    not unassigned and direction not in player["hitsByDirection"]
+                if event.event_type == config.ARROW_EVENT_TYPE or (
+                    event.event_type == "arrow_hit" and event.payload.get("evidence") == "arrow_activity"
                 ):
-                    self._error = "Live scoreboard: invalid arrow direction in outcome event."
+                    if (
+                        event.payload.get("state") != "active"
+                        or event.payload.get("evidence") != "arrow_activity"
+                        or not isinstance(direction, str) or direction not in config.ARROW_DIRECTIONS
+                    ):
+                        self._error = "Live scoreboard: invalid arrow activity payload rejected."
                     return
+                is_judgement = event.event_type == config.JUDGEMENT_EVENT_TYPE
                 judgment = event.payload.get("judgment")
+                if is_judgement:
+                    outcome = event.payload.get("outcome")
+                    directions = event.payload.get("step_directions")
+                    count = event.payload.get("step_arrow_count")
+                    if (
+                        outcome not in ("hit", "miss")
+                        or event.payload.get("state") != outcome
+                        or not isinstance(directions, list)
+                        or not all(isinstance(item, str) and item in config.ARROW_DIRECTIONS for item in directions)
+                        or len(set(directions)) != len(directions)
+                        or type(count) is not int or count != len(directions)
+                        or direction != (directions[0] if len(directions) == 1 else None)
+                        or not isinstance(judgment, str)
+                        or judgment not in (*config.JUDGMENT_POINTS, "hit")
+                        or (judgment == "miss") != (outcome == "miss")
+                    ):
+                        self._error = "Live scoreboard: invalid judgement outcome payload rejected."
+                        return
+                    is_miss = outcome == "miss"
+                    unassigned = not directions
+                else:
+                    unassigned = event.event_type.startswith("judgment_")
+                    if (unassigned and direction is not None) or (
+                        not unassigned and direction not in player["hitsByDirection"]
+                    ):
+                        self._error = "Live scoreboard: invalid arrow direction in outcome event."
+                        return
+                    directions = [] if unassigned else [direction]
+                    is_miss = event.event_type.endswith("_miss")
                 if judgment is not None and (
-                    not isinstance(judgment, str) or judgment not in config.JUDGMENT_POINTS
-                    or (judgment == "miss") != event.event_type.endswith("_miss")
+                    not isinstance(judgment, str)
+                    or judgment not in (*config.JUDGMENT_POINTS, "hit")
+                    or (judgment == "miss") != is_miss
                 ):
                     self._error = "Live scoreboard: invalid judgment tier in outcome event."
                     return
-                points = config.JUDGMENT_POINTS.get(judgment, 0)
+                if event.event_type == "arrow_hit" and "judgement_event_id" in event.payload:
+                    if not isinstance(event.payload["judgement_event_id"], str) or not event.payload["judgement_event_id"]:
+                        self._error = "Live scoreboard: invalid judgement event link rejected."
+                    # The linked judgement is authoritative even when these events arrive first.
+                    return
+                outcome_count = len(directions) or 1
+                points = config.JUDGMENT_POINTS.get(judgment, 0) * outcome_count
                 if player["runningScore"] + points > 9007199254740991:
                     self._error = "Live scoreboard: running score exceeds the supported range."
                     return
                 player["runningScore"] += points
-                if event.event_type.endswith("_miss"):
-                    player["misses"] += 1
+                if is_miss:
+                    player["misses"] += outcome_count
                     if unassigned:
                         player["unassignedMisses"] += 1
                     else:
-                        player["missesByDirection"][direction] += 1
+                        for lane in directions:
+                            player["missesByDirection"][lane] += 1
                     self._state["revision"] += 1
                     return
-                player["hits"] += 1
+                player["hits"] += outcome_count
                 if unassigned:
                     player["unassignedHits"] += 1
                 else:
-                    player["hitsByDirection"][direction] += 1
+                    for lane in directions:
+                        player["hitsByDirection"][lane] += 1
                 response = event.payload.get("response_time_ms")
                 if unassigned and response is not None:
                     self._error = "Live scoreboard: directionless judgment timing excluded from average."
+                    response = None
+                if is_judgement:
                     response = None
                 if response is not None:
                     appearance = event.payload.get("appearance_video_time_ms")
@@ -190,7 +238,8 @@ class LiveScoreboard:
                     if not self._playback_clock:
                         self._video_time_ms = max(self._video_time_ms, timestamp)
                     if self._video_time_ms - 5000 < timestamp <= self._video_time_ms:
-                        insort(self._recent_hits[event.player], timestamp)
+                        for _ in range(outcome_count):
+                            insort(self._recent_hits[event.player], timestamp)
                     self._refresh_pace()
                 else:
                     self._error = "Live scoreboard: hit lacks a valid video timestamp; excluded from hit pace."

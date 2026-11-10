@@ -20,8 +20,8 @@ a new game. Signed-in scoreboard viewers see those names, but never PINs or
 registration records. Older snapshots without names keep the Player 1/2 labels.
 Side-by-side player panels share section and metric-row heights: names, scores,
 combos, totals, arrows, matching tiles, hit pace, and balance stay aligned even
-when a field is missing or text wraps. Missing values remain hidden rather than
-being replaced with invented data. On narrow screens the panels stack normally
+when a field is missing or text wraps. Main tiles remain visible with Waiting for
+data text rather than invented values. On narrow screens the panels stack normally
 without reserving gaps for the other player.
 Both screens use the supplied white Microsoft Fabric logo asset, preserving its
 colors, aspect ratio, and transparent clear space on the dark background.
@@ -301,32 +301,56 @@ Connection/publish errors appear in the desktop Events tab.
 - Two extra player tiles add playful captions without changing the numbers:
   **Most-hit lane** lists every lane tied for the highest positive hit count
   This is hit volume, unlike the accuracy-based step title. Unknown-direction hits
-  are excluded; zero or unavailable lane counts hide the tile.
+  are excluded; zero or unavailable lane counts show Waiting for data.
   **Total detected steps** is player hits + misses, including unknown-direction
   outcomes once. It counts detected outcomes, not unique physical steps:
   simultaneous matched arrows count separately. A real zero is shown; missing
-  miss totals hide the tile. Each tile has 50 unique playful captions, rotating
+  miss totals show Waiting for data. A known zero total remains zero, with waiting
+  text until the first detected outcome. Each tile has 50 unique playful captions, rotating
   every 15 seconds while the feed is active, connected, and healthy. A shuffled
   session-specific order prevents repeats until all 50 are used; the players use
   different positions in the deck so their simultaneous captions differ.
   Polling and metric changes do not restart the rotation. Inactive, stale, and
   failed feeds pause it, and a new game resets the cycle. Captions are playful,
   not additional measurements; tile numbers and lane names do not change with them.
-- Cards without data are omitted, including score/combo, response timing,
-  animal comparisons, percentages, pace, and directional breakdown.
-  Step Title is retained with a Warming up state during active games.
-  A real zero (for example 0% after detected misses) is not missing data.
+- The four main metric tiles, score, arrow counts, hit pace and arrow accuracy
+  remain visible while waiting for the first snapshot, in zero-outcome games,
+  for legacy snapshots, and while sharing is inactive. Missing values show Waiting
+  for data; known zeros remain zeros. Hit percentage waits for a detected outcome.
+  Step Title uses Warming up during active games, otherwise Waiting for data.
+  Inactive feeds do not expose retained game values or check-in names. Captions
+  stay hidden until the corresponding lane/step data exists.
+  Combo and optional legacy response timing/animal comparisons remain data-dependent.
 - Optional desktop `judgment` regions correlate each player's captured success/MISS
-  images with arrow activity. Unique directions remain `arrow_hit` / `arrow_miss`.
-  Uncertain directions produce `judgment_hit` / `judgment_miss` with null direction,
-  counted once per observed judgment in player totals, percentage and hit pace.
+  images with arrow activity. Each recognized outcome emits one `judgement`
+  event with `payload.outcome: "hit" | "miss"` and its tier in `payload.judgment`.
+  Known directions are retained in `step_directions`; `step_arrow_count` is its
+  length and `direction` is populated only for one matched direction.
+  Each confirmed arrow activation independently emits `arrow` immediately,
+  before correlation, with `state: "active"` and `evidence: "arrow_activity"`.
+  This reports activity only, even without a judgment box; no outcome or tier is
+  attached. Judgments emit no additional arrow events, and misses never emit
+  `arrow_miss`. The scoreboard excludes activity from points, hits, misses,
+  accuracy, and hit pace, regardless of delivery order.
+  `judgement` is authoritative: known directions count individually for totals,
+  points, and lane accuracy; unknown directions count once for player totals and
+  hit pace, not lane metrics. Legacy event types are still accepted for older
+  input (including earlier linked hit events); new analysis no longer emits
+  `judgment_hit` or `judgment_miss`.
+  Previously queued events are not modified; downstream Fabric consumers must
+  update their event-type filters and read the payload outcome. Restart the
+  desktop to use this contract; the frontend snapshot shape is unchanged.
+  Activity consumers must now filter on `arrow` rather than `arrow_hit`.
+  The scoreboard still ignores historical activity-only `arrow_hit` messages;
+  previously queued data is not renamed or deleted.
   `unassignedHits` / `unassignedMisses` retain these counts in snapshots. The viewer
   omits the scoring-rules explanation and unknown-direction summary; totals,
   scoring, directional counts, and response timing calculations are unchanged.
   Arrow accuracy and lane titles use direction-assigned hits and misses only.
   Accuracy is `lane hits / (lane hits + lane misses)`, not a distribution of hit
   counts across lanes. Unplayed lanes show No attempts rather than 0%; real
-  misses without hits show 0%. Snapshots without per-lane miss data omit this section.
+  misses without hits show 0%. Snapshots without per-lane miss data retain waiting
+  rows without fabricated meter values.
   Legacy snapshots
   default the new counters to zero, and arrow-only layouts keep their original behavior.
 - The SDK worker rejects revisions older than its last acknowledged revision.

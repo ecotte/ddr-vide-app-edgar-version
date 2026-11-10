@@ -69,6 +69,78 @@ it('does not query data before sign-in', async () => {
   expect(execute).not.toHaveBeenCalled();
 });
 
+it.each(['missing', 'inactive', 'zero'])('shows all four main tiles in the %s state', async mode => {
+  const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
+  const empty = {
+    ...player, score: null, runningScore: 0, combo: null, hits: 0, misses: 0,
+    hitsByDirection: zero, missesByDirection: zero,
+    observedScore: null, averageResponseTimeMs: null, responseSamples: 0, hitPace: 0,
+  };
+  const { client, execute } = fakeClient({
+    ...snapshot, active: mode !== 'inactive', players: { P1: empty, P2: empty },
+  });
+  if (mode === 'missing') execute.mockResolvedValue([]);
+  await act(async () => { render(<App client={client} />); });
+  for (const name of ['Player 1', 'Player 2']) {
+    const title = screen.getByLabelText(`${name} step title`);
+    expect(title.parentElement?.querySelectorAll('.metric-card')).toHaveLength(4);
+    for (const metric of ['most-hit lane', 'cumulative hit percentage']) {
+      expect(screen.getByLabelText(`${name} ${metric}`)).toHaveTextContent('Waiting for data');
+    }
+    const steps = screen.getByLabelText(`${name} total detected steps`);
+    expect(steps).toHaveTextContent('Waiting for data');
+    if (mode === 'zero') {
+      expect(steps.querySelector('.metric-value')).toHaveTextContent('0');
+      expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('0');
+      expect(screen.getByLabelText(`${name} hit pace`)).toHaveTextContent('0.0 detected hits / sec');
+      expect(title).toHaveTextContent('Warming up');
+    } else {
+      expect(steps.querySelector('.metric-value')).toBeNull();
+      expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('Waiting for data');
+      expect(title).toHaveTextContent('Waiting for data');
+    }
+    expect(screen.getByLabelText(`${name} hits by arrow`).children).toHaveLength(5);
+    expect(screen.getByLabelText(`${name} arrow accuracy`).querySelectorAll('.accuracy-row')).toHaveLength(5);
+  }
+  expect(screen.queryAllByRole('meter')).toHaveLength(0);
+  expect(document.querySelectorAll('.metric-caption')).toHaveLength(0);
+});
+
+it('populates waiting tiles in place and clears them for an inactive feed', async () => {
+  const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
+  const empty = {
+    ...player, hits: 0, misses: 0, hitsByDirection: zero, missesByDirection: zero,
+    averageResponseTimeMs: null, responseSamples: 0,
+  };
+  const { client, execute } = fakeClient({ ...snapshot, players: { P1: empty, P2: empty } });
+  await act(async () => { render(<App client={client} />); });
+  const tiles = ['most-hit lane', 'total detected steps', 'cumulative hit percentage', 'step title'];
+  const originalTiles = tiles.map(metric => screen.getByLabelText(`Player 1 ${metric}`));
+  execute.mockResolvedValue([{
+    id: 'board', publishedAt: new Date(),
+    snapshot: JSON.stringify({ ...snapshot, revision: 2, players: { P1: { ...player, averageResponseTimeMs: null, responseSamples: 0 }, P2: empty } }),
+  }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(screen.getByLabelText('Player 1 most-hit lane')).toHaveTextContent('Center');
+  expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('80.0%');
+  expect(screen.getByLabelText('Player 2 most-hit lane')).toHaveTextContent('Waiting for data');
+  tiles.forEach((metric, index) => {
+    expect(screen.getByLabelText(`Player 1 ${metric}`)).toBe(originalTiles[index]);
+  });
+  execute.mockResolvedValue([{
+    id: 'board', publishedAt: new Date(),
+    snapshot: JSON.stringify({ ...snapshot, active: false, revision: 3 }),
+  }]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  tiles.forEach((metric, index) => {
+    const tile = screen.getByLabelText(`Player 1 ${metric}`);
+    expect(tile).toBe(originalTiles[index]);
+    expect(tile).toHaveTextContent('Waiting for data');
+  });
+  expect(screen.queryByText('Center-Step Superstar')).not.toBeInTheDocument();
+  expect(screen.queryAllByRole('meter')).toHaveLength(0);
+});
+
 it('selects required fields and separates unconfirmed and accepted values', async () => {
   const { client, select } = fakeClient();
   await act(async () => { render(<App client={client} />); });
@@ -96,7 +168,7 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
   expect(screen.queryByText('ARROW BALANCE')).not.toBeInTheDocument();
 });
 
-it('distinguishes zero lane accuracy from unplayed lanes and hides unavailable legacy lane metrics', async () => {
+it('distinguishes zero lane accuracy, unplayed lanes, and waiting for legacy lane data', async () => {
   const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
   const p1 = {
     ...player, hits: 0, misses: 2, hitsByDirection: zero,
@@ -111,7 +183,8 @@ it('distinguishes zero lane accuracy from unplayed lanes and hides unavailable l
   expect(within(accuracy).getByRole('meter', { name: 'Player 1 Center accuracy' })).toHaveAttribute('aria-valuenow', '0');
   expect(within(accuracy).getByText('0.0%')).toBeInTheDocument();
   expect(within(accuracy).queryByRole('meter', { name: 'Player 1 Up-Right accuracy' })).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 arrow accuracy')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 2 arrow accuracy')).toHaveTextContent('Waiting');
+  expect(within(screen.getByLabelText('Player 2 arrow accuracy')).queryByRole('meter')).not.toBeInTheDocument();
 });
 
 it('keeps known zero hit pace visible after hits even when no recent hits remain', async () => {
@@ -120,7 +193,7 @@ it('keeps known zero hit pace visible after hits even when no recent hits remain
   });
   await act(async () => { render(<App client={client} />); });
   expect(screen.getByLabelText('Player 1 hit pace')).toHaveTextContent('0.0 detected hits / sec');
-  expect(screen.queryByLabelText('Player 2 hit pace')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 2 hit pace')).toHaveTextContent('Waiting for data');
 });
 
 it('uses judgment running scores as the main score including zero and suppresses unrelated OCR', async () => {
@@ -193,10 +266,11 @@ it('shows playful most-hit and detected-step tiles per player and clears them fo
   }]);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   for (const name of ['Player 1', 'Player 2']) {
-    expect(screen.queryByLabelText(`${name} most-hit lane`)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(`${name} most-hit lane`)).toHaveTextContent('Waiting for data');
     const steps = screen.getByLabelText(`${name} total detected steps`);
     expect(steps.querySelector('.metric-value')).toHaveTextContent('0');
-    expect(DETECTED_STEPS_CAPTIONS).toContain(steps.querySelector('.metric-caption')?.textContent);
+    expect(steps).toHaveTextContent('Waiting for data');
+    expect(steps.querySelector('.metric-caption')).toBeNull();
   }
 });
 
@@ -268,7 +342,7 @@ it('keeps stable alignment slots without inventing missing names, scores, combos
   const panels = screen.getByRole('heading', { name: 'Player 1 BubblyDashboard4442' })
     .closest('.players')!;
   expect(panels.querySelectorAll('.player-heading')).toHaveLength(2);
-  expect(panels.querySelectorAll('.player-score')).toHaveLength(1);
+  expect(panels.querySelectorAll('.player-score')).toHaveLength(2);
   expect(panels.querySelectorAll('.combo')).toHaveLength(1);
   for (const [label, className] of [
     ['most-hit lane', 'metric-most-hit'],
@@ -282,7 +356,7 @@ it('keeps stable alignment slots without inventing missing names, scores, combos
   }
   expect(screen.getByLabelText('Player 1 time to answer')).toHaveClass('metric-response');
   expect(screen.queryByLabelText('Player 2 time to answer')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 score')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 2 score')).toHaveTextContent('Waiting for data');
   expect(screen.queryByText('--')).not.toBeInTheDocument();
 });
 
@@ -406,17 +480,24 @@ it('does not show previous player names while the feed is inactive', async () =>
   expect(screen.queryByText('OldPlayer')).not.toBeInTheDocument();
 });
 
-it('hides missing metrics in legacy snapshots instead of leaving empty cards', async () => {
+it('retains the dashboard with waiting states for missing legacy metrics without inventing values', async () => {
   const legacy = { score: null, combo: null, hits: 3, observedScore: null, lastVideoTimeMs: 100 };
   const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });
   await act(async () => { render(<App client={client} />); });
-  for (const name of ['time to answer', 'animal comparison', 'cumulative hit percentage', 'hit pace', 'arrow accuracy', 'hits by arrow', 'most-hit lane', 'total detected steps']) {
+  for (const name of ['time to answer', 'animal comparison']) {
     expect(screen.queryByLabelText(`Player 1 ${name}`)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(`Player 2 ${name}`)).not.toBeInTheDocument();
   }
   expect(screen.queryByText('--')).not.toBeInTheDocument();
   expect(screen.queryByText('ACCEPTED SCORE')).not.toBeInTheDocument();
   expect(screen.queryByText('COMBO')).not.toBeInTheDocument();
+  for (const name of ['Player 1', 'Player 2']) {
+    for (const metric of ['cumulative hit percentage', 'hit pace', 'most-hit lane', 'total detected steps', 'score']) {
+      expect(screen.getByLabelText(`${name} ${metric}`)).toHaveTextContent('Waiting for data');
+    }
+    expect(within(screen.getByLabelText(`${name} hits by arrow`)).getAllByText('Waiting for data')).toHaveLength(5);
+    expect(within(screen.getByLabelText(`${name} arrow accuracy`)).queryByRole('meter')).not.toBeInTheDocument();
+  }
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
   expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Warming up');
 });
@@ -432,18 +513,21 @@ it('shows zero-percent accuracy for real misses and a warming-up title without h
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
 });
 
-it('hides all metric cards when the publisher is inactive, even with retained values', async () => {
+it('keeps waiting tiles when the publisher is inactive without displaying retained game values', async () => {
   const { client } = fakeClient({ ...snapshot, active: false });
   await act(async () => { render(<App client={client} />); });
   expect(screen.queryByLabelText('Player 1 time to answer')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 1 cumulative hit percentage')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 1 step title')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 step title')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('Waiting for data');
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Waiting for data');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Waiting for data');
   expect(screen.queryAllByRole('meter')).toHaveLength(0);
-  expect(screen.queryByLabelText('Player 1 most-hit lane')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 most-hit lane')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 1 total detected steps')).not.toBeInTheDocument();
-  expect(screen.queryByLabelText('Player 2 total detected steps')).not.toBeInTheDocument();
+  for (const name of ['Player 1', 'Player 2']) {
+    expect(screen.getByLabelText(`${name} most-hit lane`)).toHaveTextContent('Waiting for data');
+    expect(screen.getByLabelText(`${name} total detected steps`)).toHaveTextContent('Waiting for data');
+    expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('Waiting for data');
+  }
+  expect(screen.queryByText('1,200')).not.toBeInTheDocument();
+  expect(screen.queryByText('65')).not.toBeInTheDocument();
 });
 
 it('retains old values with an explicit warning after a query failure', async () => {

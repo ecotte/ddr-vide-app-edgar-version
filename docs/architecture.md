@@ -180,14 +180,30 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   serialize and rescale with layouts. Active-only layouts preserve prior behavior.
   The arrow preview reports Active similarity and explains Empty overrides in status.
   Without Active Arrow calibration no lane evidence is produced.
-- `arrow_hit` and `arrow_miss`: judgment-correlated outcomes only. Arrow activity
-  alone never determines success or failure, even without a judgment box.
+- `judgement`: one event per recognized outcome, whether directions are known
+  or uncertain. `payload.outcome` and `state` are hit/miss, `judgment` is the
+  original tier (or legacy ungraded `hit`), and `step_directions` preserves all
+  matched lanes. `step_arrow_count` is their count; `direction` is set only for
+  a single matched lane. No new `arrow_miss`,
+  `judgment_hit`, or `judgment_miss` events are emitted.
+  Arrow activity alone never determines success or failure, even without a judgment box.
+- `arrow`: reports only confirmed
+  arrow activity, with `state: "active"` and `evidence: "arrow_activity"`.
+  It emits immediately on activation, without waiting for a judgment or requiring
+  a judgment region. The event has its own direction and confidence, and
+  `activity_video_time_ms` preserves onset while the event timestamp reflects
+  confirmation. Held activity and repeated paused frames do not repeat it.
+  Its payload contains no outcome, tier, or judgment link.
+  Only the later `judgement` can add outcome counts, points, or lane accuracy.
+  This replaces the earlier activity-only `arrow_hit` name; queued historical
+  messages are unchanged and remain accepted without scoring their activity.
 - Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
   at source-frame rate. Their new pulses determine outcome type, with arrow
   activity matched from 500 ms before to 150 ms after the word's source-time onset.
   A 650 ms settling interval after the word
-  detects competing judgments. Ambiguous directions produce `judgment_hit` or
-  `judgment_miss` with `direction: null`, never a guessed lane. A lingering judgment
+  detects competing judgments. Ambiguous judgments have `direction: null`,
+  empty `step_directions` and `step_arrow_count: 0`, never a guessed lane.
+  Their player outcome still counts once. A lingering judgment
   cannot validate repeated arrows; 250 ms of source-video time without an outcome
   match must rearm the box before any next judgment, including a different word.
   Ambiguous strong matches and crop/calibration errors restart that interval. Pending
@@ -203,14 +219,19 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   Partial calibration recognizes taught outcomes without requiring all four
   categories. Missing categories show actionable warnings;
   no outcome references is a blocking calibration error.
-  Simultaneous distinct directions receive the same judgment, emitting one arrow
-  outcome per direction. All onsets must span at most 150 ms and each lane must
+  Simultaneous distinct directions receive the same judgment, emitting only one
+  later `judgement` for either hit or miss. Each arrow already emitted its own
+  independent activity event. All onsets must span at most 150 ms and each lane must
   uniquely match this judgment; repeated directions or competing judgments remain
   unassigned. Each event has its own ID for delivery deduplication plus a shared
   `payload.judgment_id`, `step_directions`, and `step_arrow_count` for step grouping.
-  Existing arrow totals count each arrow; distinct judgment IDs count judged steps.
+  The scoreboard counts only the authoritative `judgement` for new outcomes,
+  weighting it by the number of matched arrows (or once when unknown).
+  Activity-only arrow events never add to these metrics, even when received first.
+  Event IDs deduplicate retries. Legacy event types remain supported for old
+  input; previous history and durable outbox messages are never rewritten.
   The desktop also accumulates `runningScore` per player: Good 10, Great 20,
-  Perfect 40, Miss 0 points per outcome event. Unknown-direction judgments score
+  Perfect 40, Miss 0 points per matched arrow. Unknown-direction judgments score
   once; legacy ungraded hits score zero. Event-ID deduplication and game resets
   apply to points as well as counts. OCR score fields remain separate; the React
   scoreboard prefers `runningScore`, including zero, and falls back to accepted
@@ -257,7 +278,8 @@ The live display includes Up-Right/Up-Left/Down-Right/Down-Left/Center hit count
 and total hits. Miss totals contribute to cumulative hit percentage:
 `hits / (hits + misses) * 100` for detected outcomes this game, not all chart notes.
 Misses also remain in Fabric history. Without miss calibration this percentage
-can overstate actual performance; old snapshots without miss totals hide it.
+can overstate actual performance; old snapshots without miss totals show a
+waiting state instead of fabricated percentages.
 The desktop direction selector, region keys, arrow events, and scoreboard use
 these same five names. Loading a legacy layout warns and removes unsupported
 arrow regions from the active setup while keeping numeric, game-end, and
@@ -287,7 +309,11 @@ All-Step Ace; partial ties show Joint leaders with the matching directions.
 The Step Title tile remains visible during active games, using Warming up for zero
 accuracy or missing lane data rather than inventing a winner. No minimum sample
 count is required. Legacy snapshots without lane misses also show Warming up.
-Other metric cards without supporting data are omitted rather than left empty.
+The four main tiles and score, arrow-count, pace, and accuracy sections remain
+visible before data arrives and while inactive. Missing data shows waiting text,
+known zero values remain zero, and no percentage is invented before attempts.
+Inactive feeds suppress retained game values and names. Optional legacy timing
+and animal cards remain data-dependent.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
 active sharing session, and changes sessions through manual/video-load resets

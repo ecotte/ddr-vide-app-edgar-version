@@ -54,7 +54,7 @@ def test_p2_outcomes_use_its_own_different_judgment_references():
     pixels[:, 20:] = 0
     session.process_arrow_frame(pixels, 1, 100)
     session.process_arrow_frame(pixels, 2, 750)
-    outcomes = [event for event in bus.events if event.event_type == "judgment_hit"]
+    outcomes = [event for event in bus.events if event.event_type == "judgement"]
     assert len(outcomes) == 1
     assert outcomes[0].player == "P2" and outcomes[0].payload["judgment"] == "perfect"
 
@@ -146,7 +146,7 @@ def test_p2_recognizes_p1_reference_on_its_own_differently_sized_crop():
     pixels[:, 70:] = 255
     session.process_arrow_frame(pixels, 1, 100)
     session.process_arrow_frame(pixels, 2, 750)
-    hits = [e for e in bus.events if e.event_type == "arrow_hit"]
+    hits = [e for e in bus.events if e.event_type == "arrow"]
     assert len(hits) == 1 and hits[0].player == "P2"
     assert hits[0].payload["direction"] == "Center"
 

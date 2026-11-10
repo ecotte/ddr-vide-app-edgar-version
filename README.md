@@ -93,7 +93,7 @@ activity. General judgment-text OCR remains future work.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo and a separate edge-triggered activity detector for arrows; matched judgment pulses determine the outcomes - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
-- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` / `judgment_hit` / `judgment_miss` events in a table, with gameplay recording on/off and clear-table controls.
+- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `judgement` / `arrow` events in a table, with gameplay recording on/off and clear-table controls. Each confirmed arrow activation immediately emits activity-only `arrow`; each recognized judgment later emits one `judgement` carrying the outcome and matched directions. New analysis never emits `arrow_hit`, `arrow_miss`, `judgment_hit`, or `judgment_miss`.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
@@ -282,14 +282,18 @@ older snapshots remain compatible. Active Arrow and judgment calibration are
 all that is needed for outcomes and running points.
 
 **Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
-outcomes in the current game. Undetected notes are not counted. Missing data
-hides its card rather than showing an empty placeholder; the same applies to
-timing, animal comparisons, hit pace, and per-lane arrow accuracy.
-Step Title stays visible during active games, using Warming up until a title is available.
+outcomes in the current game. Undetected notes are not counted. The four main
+tiles (Most-hit lane, Total detected steps, Cumulative hit percentage, Step Title)
+remain visible even before the first snapshot or while sharing is inactive.
+Unavailable values show **Waiting for data**, never invented zeroes. A known zero
+total remains zero; accuracy waits until there is at least one detected outcome.
+Step Title uses Warming up during active games until a title is available.
+Score, arrow counts, hit pace, and per-lane accuracy sections also stay visible;
+only optional legacy response-timing and animal comparisons still require data.
 **Arrow accuracy** uses each lane's `hits / (hits + misses)`, not its share of total
 hits. Unplayed lanes show **No attempts**; detected misses without hits show **0.0%**.
 Unknown-direction outcomes do not alter lane accuracy. Older snapshots without
-per-lane miss counts omit this section.
+per-lane miss counts show a waiting state in this section.
 Without Miss references in the judgment box, misses cannot be detected, so this percentage may
 overstate actual performance.
 
@@ -313,7 +317,10 @@ captions never change the underlying numbers. Most-hit lane uses hit
 counts, not accuracy, and lists ties. Total detected steps adds player hits and
 misses, including unknown-direction outcomes once; simultaneous arrows count
 separately, so it is a detected-outcome count, not a physical step count. Missing
-data hides a tile; a known total of zero remains visible.
+data shows a waiting state; a known total of zero remains visible, with waiting
+text until the first detected outcome. Captions appear only when their tile has
+the data needed to display them. Inactive feeds keep the complete waiting layout
+without showing the previous game's names or values.
 
 **Existing four-direction layouts:** loading a layout with Up/Down/Left/Right
 arrow regions shows a warning and removes those unsupported arrow regions from
@@ -379,7 +386,7 @@ app restarts; exported events and queued Fabric messages retain their original I
    To reduce playback overhead, unchanged arrow cards refresh their crop, similarity, and pending-count display at most ten times per second. Arrow-state changes, errors, unreadable crops, and tracking resets update immediately. This only paces the recognition panel: arrow analysis and event recording still run on every displayed video frame, and completed score/combo OCR results are displayed immediately.
 
    Each numeric card shows **OCR frame** and its video timestamp. Its crop and readings belong to that completed OCR job, not necessarily the frame currently playing on the left. OCR latency still applies, but unnecessary confirmation passes no longer hold the panel on older footage; pausing lets the worker catch up to the final displayed frame. Confirmation jobs process only pending fields, so confirming a score does not rerun unrelated combo OCR on the older frame.
-3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
+3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo_changed` / `judgement` / `arrow` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
 4. **New Session** resets the session ID, sequence counter, and all recognition state - use it if you want a clean slate on the same video without reloading it. Loading a different video or seeking (slider, or the frame-back button) also resets recognition state automatically, so a jump in the video never gets misread as a huge score change or a phantom arrow hit.
 
 ---
@@ -401,7 +408,7 @@ app restarts; exported events and queued Fabric messages retain their original I
 **Arrow lanes:**
 - **Classification only compares against fresh Active Arrow snapshots you captured.** The direction comes from the box configuration; the reference detects activity, not success. Missing Active Arrow calibration shows an error. Old Hit/Miss images are ignored.
 - **A frame is classified "idle"** whenever its similarity to your best-matching reference falls below the **Arrow similarity threshold** - "idle" is the honest default, not a third guess.
-- **Activity is edge-triggered:** a persistent active arrow produces one correlation candidate, not an outcome every frame. Only a matching player judgment emits `arrow_hit`/`arrow_miss`; without one, activity does not affect totals.
+- **Activity is edge-triggered:** a confirmed active arrow immediately emits one `arrow` with `state: "active"` and `evidence: "arrow_activity"`, then rearms after confirmed idle. It never waits for a judgment or emits repeatedly while held active. These activity-only events have no hit/miss outcome or tier and never affect score or accuracy. A later recognized player judgment emits `judgement` and determines outcomes.
 - **"Arrow confirm frames"** (default 1) can require a state to be seen for more than one frame before it's confirmed, if single-frame noise is producing false events - but raising it risks missing genuinely brief flashes, the same trade-off as consistency frames above.
 
 **Correlating arrow activity with Perfect / Great / Good / Miss:**
@@ -437,28 +444,56 @@ delayed word and the settling interval. Event payloads expose
 `correlation_window_ms` reports the larger allowance (500 ms).
 
 For simultaneous steps, the same judgment applies to every matched arrow.
-Each distinct direction emits one `arrow_hit` or `arrow_miss`, with its full
-judgment word. Arrow onsets must be within 150 ms of each other and each must
-match only this judgment. The events have separate `event_id` values and a shared
-`payload.judgment_id`, `step_directions`, and `step_arrow_count`. Two arrows with
-PERFECT therefore count as two hits but one judgment. Deduplicate deliveries by
-`event_id`; count distinct `payload.judgment_id` for judgment totals.
+Each recognized Perfect/Great/Good/Miss emits exactly one **`judgement`** event
+(note the event type spelling), including when directions are known.
+`payload.outcome` is `"hit"` or `"miss"`, `payload.state` retains the same value,
+and `payload.judgment` retains the tier (`"hit"` for legacy ungraded success).
+`step_directions` lists all matched directions and `step_arrow_count` is its length.
+`direction` is the matched direction for a single-arrow step and `null` for
+multi-arrow or unknown-direction judgments. Arrow onsets must be within 150 ms
+of each other and each must match only this judgment.
+
+Each confirmed arrow activation already emitted an immediate `arrow`,
+independently of whether a subsequent judgment says hit or miss. Its payload
+contains the arrow's `direction`, `state: "active"`, `evidence: "arrow_activity"`,
+and `activity_video_time_ms` (activation onset); the event timestamp is the frame
+that confirms activity. There is no `outcome`, tier, or judgment-event link.
+Activity is recorded even without a judgment box, subject to the normal
+analysis/recording controls. Repeated paused frames and held-active arrows cannot
+emit another activity event until the tracker rearms.
+Correlation emits only the later `judgement`, never an additional arrow event.
+Misses emit **no `arrow_miss` events**; their directions remain in the judgment
+payload. Two simultaneous arrows produce two immediate activity events, then
+one `judgement` if a word is recognized, whether it says Perfect or Miss.
+Deduplicate deliveries by `event_id`; use `judgement` as the authoritative
+source for player totals, lane counts, and points, never counting activity as
+a successful hit. Multiply by `max(step_arrow_count, 1)` for detected outcome
+totals and points. Unknown directions count once, not as zero steps.
 No appearance-based response timing is generated.
 
 If no arrow, repeated activity in one direction, widely spaced arrows, or competing judgments make the direction uncertain,
-one `judgment_hit` / `judgment_miss` event is recorded for that player with
+the `judgement` event is recorded for that player with
 `direction: null`, rather than guessing or counting every arrow. These outcomes
 contribute to player totals, hit percentage and hit pace, but not directional
-counts, lane-based titles or response-time samples. Unambiguous outcomes keep
-the existing `arrow_hit` / `arrow_miss` types, with judgment evidence in their payload.
+counts, lane-based titles or response-time samples.
 Unassigned outcomes have `step_arrow_count: 0` and empty `step_directions`;
 this means the arrow count is unknown, not that no step occurred.
 Each player's word only validates that player's arrow activity.
-The payload's `judgment` field preserves `perfect`, `great`, `good`, or `miss`, while
-`state` and event types remain hit/miss-compatible for existing dashboards.
+The payload's `judgment` field preserves `perfect`, `great`, `good`, or `miss`;
+the common event type no longer encodes hit/miss in its name.
 The Events table's Detail column and the judgment card's counted status show the
 full judgment word (PERFECT, GREAT, GOOD, or MISS), with its direction when known.
 Legacy ungraded events still show HIT/MISS; no judgment tier is invented.
+This changes the emitted event contract: update downstream filters from
+`arrow_miss` / `judgment_hit` / `judgment_miss` to `judgement` plus
+`payload.outcome`. Restart the desktop to use it. JSONL export and Fabric
+delivery use the same event shape. Previously recorded/queued events are not
+rewritten or deleted; the scoreboard still accepts the legacy event types.
+New `arrow` activity events must not be interpreted as successful hits:
+the scoreboard explicitly excludes `evidence: "arrow_activity"` from metrics.
+The activity event type was renamed from `arrow_hit` to `arrow`; update
+downstream activity filters. Existing queued events are unchanged, and the
+scoreboard still accepts older activity-only `arrow_hit` messages without scoring them.
 Old layouts with Success (`hit`) references still count ungraded hits, without
 inventing a tier. Once Perfect, Great, or Good references are added, the old
 Success references are ignored; only the explicitly taught categories are matched.
@@ -574,7 +609,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
   this as evidence the underlying approach is sound, not as a validated
   hit/miss detector for your footage. In the current app, capture fresh
   Active Arrow references and separately teach judgment words; validate both
-  against the footage before trusting any `arrow_hit`/`arrow_miss` events.
+  against the footage before trusting any `judgement`/`arrow` events.
 
 ---
 
@@ -650,9 +685,9 @@ score/combo change looks like:
 }
 ```
 
-An arrow hit/miss event uses the same envelope, with `direction` and
-`state` in the payload instead of previous/new values, and `confidence`
-holding the similarity score to the matched reference:
+A `judgement` event uses the same envelope, with the hit/miss outcome, tier,
+and matched directions in the payload instead of previous/new values.
+`confidence` holds the judgment reference similarity:
 
 ```json
 {
@@ -664,17 +699,49 @@ holding the similarity score to the matched reference:
   "frame_index": 2515,
   "video_time_ms": 41959,
   "observed_at_utc": "2026-09-15T18:22:31.520000+00:00",
-  "event_type": "arrow_hit",
+  "event_type": "judgement",
   "player": "P1",
   "payload": {
-    "field": "arrow",
-    "region_label": "P1 Up-Right",
+    "field": "judgment",
+    "region_label": "P1 Judgment",
     "direction": "Up-Right",
-    "state": "hit"
+    "outcome": "hit",
+    "state": "hit",
+    "judgment": "perfect",
+    "judgment_id": "shared-judgment-uuid",
+    "step_directions": ["Up-Right"],
+    "step_arrow_count": 1,
+    "evidence": "judgment_and_arrow",
+    "judgment_video_time_ms": 41309,
+    "correlation_window_ms": 500,
+    "correlation_lookback_ms": 500,
+    "correlation_lookahead_ms": 150
   },
   "confidence": 0.97
 }
 ```
+
+The arrow was recorded earlier as activity, without waiting for this judgment:
+
+```json
+{
+  "event_type": "arrow",
+  "payload": {
+    "field": "arrow",
+    "region_label": "P1 Up-Right",
+    "direction": "Up-Right",
+    "state": "active",
+    "evidence": "arrow_activity",
+    "activity_video_time_ms": 41309
+  }
+}
+```
+
+This abbreviated example omits the standard envelope fields. Activity never
+implies a hit or miss and correlation emits no additional arrow event.
+A Miss instead sets
+`outcome`/`state`/`judgment` to `"miss"` on the single `judgement` event;
+it has no accompanying arrow event.
 
 `video_time_ms` is the position inside the video's own timeline;
 `observed_at_utc` is the wall-clock UTC time the event was produced while

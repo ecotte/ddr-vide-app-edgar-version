@@ -810,28 +810,28 @@ class AnalysisSession:
             outcome = "miss" if judgment.state == "miss" else "hit"
             judgment_id = str(uuid.uuid4())
             step_directions = [lane.region.direction for lane in lanes]
-            for lane in lanes or [None]:
-                event = self.event_bus.make_event(
-                    event_type=f"{'arrow' if lane else 'judgment'}_{outcome}",
-                    payload={
-                        "field": "arrow" if lane else "judgment", "region_label": judgment.region.label,
-                        "direction": lane.region.direction if lane else None, "state": outcome,
-                        **({"judgment": judgment.state} if judgment.state != "hit" else {}),
-                        "judgment_id": judgment_id,
-                        "step_directions": step_directions,
-                        "step_arrow_count": len(lanes),
-                        "evidence": "judgment_and_arrow" if lane else "judgment_only",
-                        "judgment_video_time_ms": judgment.onset,
-                        "correlation_window_ms": max(lookback, lookahead),
-                        "correlation_lookback_ms": lookback,
-                        "correlation_lookahead_ms": lookahead,
-                    },
-                    frame_index=frame_index, video_time_ms=video_time_ms,
-                    player=judgment.region.player,
-                    confidence=min(judgment.confidence, lane.confidence) if lane else judgment.confidence,
-                )
-                self.event_bus.record(event)
-                events.append(event)
+            payload = {
+                "field": "judgment", "region_label": judgment.region.label,
+                "direction": step_directions[0] if len(step_directions) == 1 else None,
+                "outcome": outcome, "state": outcome,
+                "judgment": judgment.state,
+                "judgment_id": judgment_id,
+                "step_directions": step_directions,
+                "step_arrow_count": len(lanes),
+                "evidence": "judgment_and_arrow" if lanes else "judgment_only",
+                "judgment_video_time_ms": judgment.onset,
+                "correlation_window_ms": max(lookback, lookahead),
+                "correlation_lookback_ms": lookback,
+                "correlation_lookahead_ms": lookahead,
+            }
+            judgement_event = self.event_bus.make_event(
+                event_type=config.JUDGEMENT_EVENT_TYPE,
+                payload=payload,
+                frame_index=frame_index, video_time_ms=video_time_ms,
+                player=judgment.region.player, confidence=judgment.confidence,
+            )
+            self.event_bus.record(judgement_event)
+            events.append(judgement_event)
             self._pending_judgments.remove(judgment)
         self._pending_lanes = [
             lane for index, lane in enumerate(self._pending_lanes)
@@ -871,7 +871,7 @@ class AnalysisSession:
 
         has_judgment = any(r.kind == "judgment" and r.player == region.player for r in self.regions)
         note = None if has_judgment else (
-            f"Add and calibrate a judgment box for {region.player}. Arrow activity alone cannot count hits or misses."
+            f"Activity only. Add and calibrate a judgment box for {region.player} to determine outcomes and score."
         )
 
         state, score = classify_arrow_state(crop, references, self.arrow_similarity_threshold)
@@ -882,8 +882,8 @@ class AnalysisSession:
         )
         if previous_frame == (frame_index, video_time_ms):
             return RegionFrameResult(
-                region=region, confidence=score, error=note, arrow_state=state, crop=crop,
-                validation_note=empty_note,
+                region=region, confidence=score, arrow_state=state, crop=crop,
+                validation_note=empty_note or note,
             ), None
         if tracker.status().pending_state != state:
             self._arrow_state_started[key] = video_time_ms
@@ -893,19 +893,27 @@ class AnalysisSession:
             onset = self._arrow_state_started[key]
             if has_judgment:
                 self._pending_lanes.append(LaneEvidence(region, onset, score))
+            event = self.event_bus.make_event(
+                event_type=config.ARROW_EVENT_TYPE,
+                payload={
+                    "field": "arrow", "region_label": region.label,
+                    "direction": region.direction, "state": "active",
+                    "evidence": "arrow_activity", "activity_video_time_ms": onset,
+                },
+                frame_index=frame_index, video_time_ms=video_time_ms,
+                player=region.player, confidence=score,
+            )
+            self.event_bus.record(event)
             return RegionFrameResult(
                 region=region, confidence=score, arrow_state=state, crop=crop,
-                error=note,
-                validation_note="Arrow activity observed; waiting for a matching player judgment."
-                if has_judgment else None,
-            ), None
+                validation_note=note or "Arrow activity recorded; outcome requires a matching player judgment.",
+            ), event
 
         result = RegionFrameResult(
             region=region,
             confidence=score,
-            error=note,
             arrow_state=state,
-            validation_note=empty_note,
+            validation_note=empty_note or note,
             is_unreadable=False,
             crop=crop,
         )

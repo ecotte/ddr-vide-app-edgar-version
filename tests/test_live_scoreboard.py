@@ -26,6 +26,123 @@ def event(bus, kind="combo_changed", value=10, player="P1", direction="Up-Right"
     }, 1, 17, player, 0.99)
 
 
+def judgement_event(bus, tier="perfect", directions=None, player="P1"):
+    directions = ["Center"] if directions is None else directions
+    outcome = "miss" if tier == "miss" else "hit"
+    return bus.make_event("judgement", {
+        "field": "judgment", "outcome": outcome, "state": outcome,
+        "judgment": tier, "direction": directions[0] if len(directions) == 1 else None,
+        "step_directions": directions, "step_arrow_count": len(directions),
+    }, 1, 17, player, .99)
+
+
+@pytest.mark.parametrize("player", ["P1", "P2"])
+@pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])
+@pytest.mark.parametrize("event_type", ["arrow", "arrow_hit"])
+def test_arrow_activity_never_changes_score_counts_accuracy_or_pace(player, direction, event_type):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event(event_type, {
+            "field": "arrow", "direction": direction, "state": "active",
+            "evidence": "arrow_activity", "activity_video_time_ms": 100,
+        }, 1, 100, player, .99)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        board.record(judgement_event(bus, tier="miss", directions=[direction], player=player), bus.session_id)
+        stats = board.snapshot()["players"][player]
+        assert stats["hits"] == 0 and stats["misses"] == 1
+        assert stats["missesByDirection"][direction] == 1
+        assert stats["runningScore"] == 0 and stats["hitPace"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("invalid", [
+    {"direction": "invalid"}, {"direction": []}, {"direction": None}, {"state": "hit"},
+    {"evidence": "unknown"},
+])
+def test_invalid_activity_is_reported_without_counting_a_hit(invalid):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event("arrow", {
+            "field": "arrow", "direction": "Center", "state": "active", "evidence": "arrow_activity",
+            **invalid,
+        }, 1, 100, "P1", .99)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid arrow activity payload" in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("invalid", [
+    {"outcome": "perfect"}, {"outcome": None}, {"outcome": "miss"},
+    {"state": "miss"}, {"judgment": "unknown"}, {"judgment": []},
+    {"judgment": "miss"}, {"step_directions": None}, {"step_directions": "Center"},
+    {"step_directions": ["invalid"]}, {"step_directions": [[]]},
+    {"step_directions": ["Center", "Center"], "step_arrow_count": 2, "direction": None},
+    {"step_arrow_count": True}, {"step_arrow_count": -1}, {"step_arrow_count": 2},
+    {"direction": "Up-Right"}, {"direction": None},
+])
+def test_invalid_judgement_payload_does_not_change_metrics(invalid):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = judgement_event(bus)
+        row.payload.update(invalid)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid judgement outcome payload" in board.status()
+    finally:
+        board.stop()
+
+
+def test_new_judgements_preserve_player_isolation_synthetic_exclusion_and_session_reset():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    bus.set_live_sink(board.record)
+    board.start(bus.session_id)
+    try:
+        old = judgement_event(bus, directions=["Up-Left", "Center"], player="P2")
+        bus.record(old)
+        synthetic = judgement_event(bus, tier="miss")
+        synthetic.source_mode = "synthetic"
+        bus.record(synthetic)
+        assert board.snapshot()["players"]["P1"]["misses"] == 0
+        assert board.snapshot()["players"]["P2"]["runningScore"] == 80
+        bus.new_session()
+        bus.record(old)
+        assert all(player["runningScore"] == 0 for player in board.snapshot()["players"].values())
+        bus.record(judgement_event(bus, tier="good", directions=[], player="P1"))
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 10
+        assert board.snapshot()["players"]["P2"]["runningScore"] == 0
+    finally:
+        board.stop()
+
+
+def test_multi_arrow_judgement_checks_total_points_before_mutating_metrics():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        board._state["players"]["P1"]["runningScore"] = 9007199254740991 - 40
+        before = board.snapshot()
+        board.record(judgement_event(bus, directions=["Center", "Up-Left"]), bus.session_id)
+        assert board.snapshot() == before
+        assert "supported range" in board.status()
+    finally:
+        board.stop()
+
+
 def test_running_score_uses_judgment_points_per_arrow_and_once_for_unassigned():
     board = LiveScoreboard(FakeSender)
     bus = EventBus()
