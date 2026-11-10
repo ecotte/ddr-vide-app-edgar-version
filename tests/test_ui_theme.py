@@ -155,6 +155,69 @@ def test_game_end_card_is_shared_and_capture_controls_are_wired(root):
     controller.set_game_end_settings.assert_called_once_with(0.96, 3)
 
 
+def test_separate_threshold_controls_route_to_independent_analysis_settings(root):
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.ui.app_window import App
+
+    controller = Mock()
+    controller.analysis = AnalysisSession(EventBus())
+    controller.set_arrow_similarity_threshold.side_effect = lambda value: App.set_arrow_similarity_threshold(controller, value)
+    controller.set_judgment_similarity_threshold.side_effect = lambda value: App.set_judgment_similarity_threshold(controller, value)
+    tab = VideoTab(root, controller)
+    try:
+        tab.arrow_threshold_var.set(.95)
+        tab._on_arrow_threshold_changed()
+        tab.judgment_threshold_var.set(.65)
+        tab._on_judgment_threshold_changed()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .65
+        controller.set_arrow_similarity_threshold.assert_called_once_with(.95)
+        controller.set_judgment_similarity_threshold.assert_called_once_with(.65)
+        for variable, handler, label in (
+            (tab.arrow_threshold_var, tab._on_arrow_threshold_changed, "arrow"),
+            (tab.judgment_threshold_var, tab._on_judgment_threshold_changed, "judgment"),
+        ):
+            for value in ("invalid", float("nan"), .49, 1.01):
+                variable.set(value)
+                handler()
+                assert f"Invalid {label} similarity:" in tab.error_status_var.get()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .65
+        tab.judgment_threshold_var.set(.7)
+        tab._on_judgment_threshold_changed()
+        assert not tab.error_status_var.get()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .7
+    finally:
+        tab.destroy()
+
+
+def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_player(root):
+    from app.models import Region
+
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    regions = [
+        Region(player, player, "judgment", 0, 0, 100, 30) for player in ("P1", "P2")
+    ]
+    try:
+        tab.refresh_region_list(regions)
+        tab.set_judgment_diagnostics("P1:judgment", "Latch blocked PERFECT; no-match 33/50 ms.")
+        assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: Latch blocked PERFECT; no-match 33/50 ms."
+        )
+        assert tab._region_rows["P2:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: Advance/play to inspect judgment matching."
+        )
+        tab.set_judgment_diagnostics("P1:judgment", None)
+        assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: No frame diagnostics available."
+        )
+    finally:
+        tab.destroy()
+
+
 def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
     from app.ui.region_dialog import RegionDialog
 

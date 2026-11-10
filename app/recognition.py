@@ -256,9 +256,18 @@ def classify_arrow_state(
     return "idle", best_score
 
 
-def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
-    """Return idle for no outcome match, but None for ambiguous strong matches."""
-    from app import image_utils
+@dataclass(frozen=True)
+class JudgmentMatch:
+    state: Optional[str]
+    similarity: float
+    best_state: Optional[str] = None
+    runner_up_state: Optional[str] = None
+    runner_up_similarity: Optional[float] = None
+
+
+def match_judgment(crop_bgr, reference_images: dict, threshold: float) -> JudgmentMatch:
+    """Classify once and retain the best two category scores for diagnostics."""
+    from app import config, image_utils
 
     ranked = sorted(
         (
@@ -273,10 +282,19 @@ def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
         reverse=True,
     )
     if not ranked:
-        return None, 0.0
+        return JudgmentMatch(None, 0.0)
     score, state = ranked[0]
+    runner_score, runner_state = ranked[1] if len(ranked) > 1 else (None, None)
     if score < threshold:
-        return "idle", score
-    if len(ranked) > 1 and score - ranked[1][0] < 0.02:
-        return None, score
-    return state, score
+        observed = "idle"
+    elif runner_score is not None and score - runner_score < config.JUDGMENT_AMBIGUITY_MARGIN:
+        observed = None
+    else:
+        observed = state
+    return JudgmentMatch(observed, score, state, runner_state, runner_score)
+
+
+def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
+    """Return idle for no outcome match, but None for ambiguous strong matches."""
+    result = match_judgment(crop_bgr, reference_images, threshold)
+    return result.state, result.similarity

@@ -54,7 +54,7 @@ COMBO_MIN_CONFIDENCE = 0.90
 # event type; arrow outcomes are determined by judgment correlation.
 FIELD_EVENT_TYPES = {
     "score": "score_changed",
-    "combo": "combo_changed",
+    "combo": "combo",
 }
 SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
@@ -62,7 +62,7 @@ REGION_KINDS = ["score", "combo", "arrow", "judgment", "game_end"]
 JUDGMENT_CORRELATION_LOOKBACK_MS = 500
 JUDGMENT_CORRELATION_LOOKAHEAD_MS = 150
 SIMULTANEOUS_STEP_WINDOW_MS = 150
-JUDGMENT_REARM_MS = 250
+JUDGMENT_REARM_MS = 50
 JUDGMENT_POINTS = {"good": 10, "great": 20, "perfect": 40, "miss": 0}
 JUDGEMENT_EVENT_TYPE = "judgement"
 ARROW_EVENT_TYPE = "arrow"
@@ -86,6 +86,8 @@ ARROW_EMPTY_REFERENCE_MARGIN = 0.02
 # UI; higher = fewer false positives but more likely to miss real hits/misses
 # if lighting/animation varies frame to frame.
 DEFAULT_ARROW_SIMILARITY_THRESHOLD = 0.90
+DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD = 0.90
+JUDGMENT_AMBIGUITY_MARGIN = 0.02
 
 # Consecutive frames a candidate arrow state must be observed before it is
 # confirmed and correlated with a judgment. Activity flashes can be very

@@ -109,14 +109,17 @@ class LiveScoreboard:
             if event.player not in self._state["players"]:
                 return
             player = self._state["players"][event.player]
-            if event.event_type in ("score_changed", "combo_changed", "score_observed"):
-                key = "observed_value" if event.event_type == "score_observed" else "new_value"
+            if event.event_type in ("score_changed", "combo", "combo_changed", "score_observed"):
+                key = (
+                    "value" if event.event_type == "combo"
+                    else "observed_value" if event.event_type == "score_observed" else "new_value"
+                )
                 value = event.payload.get(key)
                 if type(value) is not int or not 0 <= value <= 9007199254740991:
                     self._error = "Live scoreboard: invalid numeric event rejected."
                     return
                 field = {
-                    "score_changed": "score", "combo_changed": "combo",
+                    "score_changed": "score", "combo": "combo", "combo_changed": "combo",
                     "score_observed": "observedScore",
                 }[event.event_type]
                 field_key = (event.player, field)

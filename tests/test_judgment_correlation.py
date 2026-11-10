@@ -10,7 +10,7 @@ from app import config, image_utils, layout_store
 from app.analysis import AnalysisSession, JudgmentEvidence, LaneEvidence
 from app.event_bus import EventBus
 from app.models import LayoutProfile, Region
-from app.recognition import classify_judgment_state
+from app.recognition import JudgmentMatch, classify_judgment_state, match_judgment
 from app.ui.app_window import App
 from app.ui.events_tab import EventsTab
 from app.ui.video_tab import VideoTab
@@ -48,6 +48,7 @@ def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=F
     bus = EventBus()
     session = AnalysisSession(bus)
     session.arrow_similarity_threshold = 0.99
+    session.judgment_similarity_threshold = 0.99
     session.set_regions(regions)
     session.start()
     index = 0
@@ -662,7 +663,7 @@ def test_perfect_good_ties_are_unconfirmed_and_graded_references_round_trip(tmp_
 
 
 @pytest.mark.parametrize("tier", ["perfect", "great", "good", "miss"])
-def test_lingering_tiers_ignore_brief_no_match_and_rearm_after_250ms(tier):
+def test_lingering_tiers_ignore_brief_no_match_and_rearm_after_50ms(tier):
     session, bus, _, frame = setup(graded=True)
     session.set_arrow_min_confirm_frames(2)
     frame(0, **{"P1:judgment": tier})
@@ -678,10 +679,10 @@ def test_lingering_tiers_ignore_brief_no_match_and_rearm_after_250ms(tier):
     assert len(outcomes(bus)) == 1
     frame(1100)
     frame(1120)
-    frame(1350)
-    frame(1400, **{"P1:judgment": tier})
-    frame(1420, **{"P1:judgment": tier})
-    frame(2050, **{"P1:judgment": tier})
+    frame(1150)
+    frame(1200, **{"P1:judgment": tier})
+    frame(1220, **{"P1:judgment": tier})
+    frame(1850, **{"P1:judgment": tier})
     assert [event.payload["judgment"] for event in outcomes(bus)] == [tier, tier]
 
 
@@ -730,18 +731,37 @@ def test_single_taught_category_needs_no_blank_reference_and_ignores_short_gaps(
     assert len(outcomes(bus)) == 1
 
 
-@pytest.mark.parametrize("gap,expected", [(249, 1), (250, 2), (251, 2)])
-def test_no_match_rearm_threshold_uses_source_time_without_blank_reference(gap, expected):
-    session, bus, regions, frame = setup(graded=True)
+@pytest.mark.parametrize("gap,expected", [(49, 1), (50, 2), (51, 2)])
+@pytest.mark.parametrize("tier", ["perfect", "great", "good", "miss"])
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_no_match_rearm_threshold_uses_source_time_without_blank_reference(gap, expected, tier, player):
+    assert config.JUDGMENT_REARM_MS == 50
+    session, bus, regions, frame = setup(
+        players=(player,), judgments=(player,), graded=True,
+    )
     regions[-1].reference_images.pop("idle")
     session.set_regions(regions)
-    frame(0, **{"P1:judgment": "perfect"})
-    frame(300, **{"P1:judgment": "perfect"})
+    frame(0, **{f"{player}:judgment": tier})
+    frame(300, **{f"{player}:judgment": tier})
     frame(400)
     frame(400 + gap)
-    frame(700, **{"P1:judgment": "perfect"})
-    frame(1350, **{"P1:judgment": "perfect"})
+    frame(500, **{f"{player}:judgment": tier})
+    frame(1150, **{f"{player}:judgment": tier})
     assert len(outcomes(bus)) == expected
+    assert all(event.player == player and event.payload["judgment"] == tier for event in outcomes(bus))
+
+
+@pytest.mark.parametrize("tier", ["perfect", "great", "good", "miss"])
+def test_50ms_rearm_recovers_repeated_judgments_at_two_per_second(tier):
+    _, bus, _, frame = setup(graded=True)
+    for index in range(150):
+        state = tier if index % 15 < 9 else "idle"
+        frame(round(index * 1000 / 30), **{"P1:judgment": state})
+    frame(6000)
+    events = outcomes(bus)
+    assert len(events) == 10
+    assert all(event.payload["judgment"] == tier for event in events)
+    assert not any(event.event_type == "arrow" for event in bus.events)
 
 
 def test_ambiguous_strong_match_restarts_absence_interval(monkeypatch):
@@ -750,11 +770,14 @@ def test_ambiguous_strong_match_restarts_absence_interval(monkeypatch):
     frame(300, **{"P1:judgment": "perfect"})
     frame(400)
     with monkeypatch.context() as context:
-        context.setattr("app.analysis.classify_judgment_state", lambda *args: (None, .999))
-        frame(600)
-    frame(650)
-    frame(850)
-    frame(860, **{"P1:judgment": "perfect"})
+        context.setattr(
+            "app.analysis.match_judgment",
+            lambda *args: JudgmentMatch(None, .999, "perfect", "great", .99),
+        )
+        frame(425)
+    frame(450)
+    frame(499)
+    frame(500, **{"P1:judgment": "perfect"})
     frame(1200, **{"P1:judgment": "perfect"})
     assert len(outcomes(bus)) == 1
 
@@ -776,6 +799,127 @@ def test_legacy_blank_reference_cannot_hide_a_matching_word():
     assert classify_judgment_state(image("perfect"), {
         "perfect": [image("perfect")], "idle": [image("perfect")],
     }, .9)[0] == "perfect"
+
+
+def test_arrow_and_judgment_thresholds_are_independent():
+    session, _, regions, _ = setup(graded=True)
+    regions[-1].reference_images = {"perfect": regions[-1].reference_images["perfect"]}
+    session.set_regions(regions)
+    session.set_arrow_similarity_threshold(.9)
+    session.set_judgment_similarity_threshold(.9)
+    pixels = np.full((20, 40, 3), 180, dtype=np.uint8)
+    first = session.process_arrow_frame(pixels, 0, 0)
+    assert first.region_results[0].arrow_state == "idle"
+    assert first.region_results[1].arrow_state == "idle"
+    session.set_judgment_similarity_threshold(.65)
+    assert session.arrow_similarity_threshold == .9
+    second = session.process_arrow_frame(pixels, 1, 33)
+    assert second.region_results[0].arrow_state == "idle"
+    assert second.region_results[1].arrow_state == "perfect"
+    session.set_judgment_similarity_threshold(.99)
+    session.set_arrow_similarity_threshold(.65)
+    assert session.judgment_similarity_threshold == .99
+    third = session.process_arrow_frame(pixels, 2, 66)
+    assert third.region_results[0].arrow_state == "active"
+    assert third.region_results[1].arrow_state == "idle"
+    assert session.game_end_similarity_threshold == config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD
+
+
+@pytest.mark.parametrize("setter", ["set_arrow_similarity_threshold", "set_judgment_similarity_threshold"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -.01, 1.01])
+def test_invalid_similarity_settings_cannot_change_recognition_thresholds(setter, value):
+    session = AnalysisSession(EventBus())
+    before = (session.arrow_similarity_threshold, session.judgment_similarity_threshold)
+    with pytest.raises(ValueError, match="finite number between 0 and 1"):
+        getattr(session, setter)(value)
+    assert (session.arrow_similarity_threshold, session.judgment_similarity_threshold) == before
+
+
+def test_match_details_retain_scores_without_changing_classification():
+    references = {
+        "perfect": [image("perfect")], "great": [image("great")], "miss": [image("miss")],
+    }
+    result = match_judgment(image("perfect"), references, .9)
+    assert result.state == result.best_state == "perfect"
+    assert result.similarity == pytest.approx(1)
+    assert result.runner_up_state == "great"
+    assert result.runner_up_similarity == pytest.approx(image_utils.similarity(image("perfect"), image("great")))
+    assert classify_judgment_state(image("perfect"), references, .9) == (result.state, result.similarity)
+    assert match_judgment(image("perfect"), {}, .9) == JudgmentMatch(None, 0)
+
+
+def test_judgment_diagnostics_explain_threshold_acceptance_latch_and_rearm():
+    _, _, _, frame = setup(graded=True)
+    below = frame(0).region_results[-1]
+    assert "Below judgment threshold" in below.judgment_diagnostics
+    assert "Best:" in below.judgment_diagnostics and "Next:" in below.judgment_diagnostics
+    assert "threshold 0.990" in below.judgment_diagnostics
+    assert "Frame 1 | 0 ms" in below.judgment_diagnostics
+    accepted = frame(100, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert "Accepted PERFECT" in accepted.judgment_diagnostics
+    assert "Best: PERFECT 1.000" in accepted.judgment_diagnostics
+    held = frame(120, **{"P1:judgment": "great"}).region_results[-1]
+    assert "Latch blocked GREAT; previous PERFECT" in held.judgment_diagnostics
+    frame(200)
+    short_gap = frame(249).region_results[-1]
+    assert "no-match 49/50 ms" in short_gap.judgment_diagnostics
+    ready = frame(250).region_results[-1]
+    assert "Latch: ready" in ready.judgment_diagnostics
+    assert "no-match 50/50 ms" in ready.judgment_diagnostics
+    accepted_again = frame(300, **{"P1:judgment": "great"}).region_results[-1]
+    assert "Accepted GREAT" in accepted_again.judgment_diagnostics
+
+
+def test_diagnostics_reuse_the_single_judgment_matching_pass(monkeypatch):
+    session, _, regions, frame = setup(graded=True)
+    session.set_regions([regions[-1]])
+    similarity = Mock(wraps=image_utils.similarity)
+    monkeypatch.setattr(image_utils, "similarity", similarity)
+    result = frame(0, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert similarity.call_count == 4
+    assert "Next:" in result.judgment_diagnostics
+
+
+def test_judgment_diagnostics_distinguish_ambiguity_from_low_similarity():
+    session, _, regions, frame = setup(graded=True)
+    regions[-1].reference_images["great"] = list(regions[-1].reference_images["perfect"])
+    session.set_regions(regions)
+    result = frame(0, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert result.arrow_state is None
+    assert "Ambiguous match" in result.judgment_diagnostics
+    assert "gap 0.000 (minimum 0.020)" in result.judgment_diagnostics
+    assert "Below judgment threshold" not in result.judgment_diagnostics
+
+
+def test_judgment_diagnostics_explain_confirmation_recording_and_repeated_frames():
+    session, bus, _, frame = setup(graded=True)
+    session.set_arrow_min_confirm_frames(2)
+    confirming = frame(0, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert "Confirming PERFECT: 1/2 frames" in confirming.judgment_diagnostics
+    session.set_recording_enabled(False)
+    off = frame(33, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert "Recording off" in off.judgment_diagnostics
+    assert "recording off" in off.judgment_diagnostics
+    pixels = np.concatenate((image("idle"), image("perfect")), axis=1)
+    repeated = session.process_arrow_frame(pixels, 2, 33).region_results[-1]
+    assert "Repeated frame" in repeated.judgment_diagnostics
+    assert outcomes(bus) == []
+
+
+@pytest.mark.parametrize("invalid", ["references", "crop"])
+def test_judgment_diagnostics_surface_calibration_and_crop_errors(invalid):
+    session, _, regions, frame = setup(graded=True)
+    if invalid == "references":
+        regions[-1].reference_images.clear()
+    else:
+        regions[-1].x = 1000
+    session.set_regions(regions)
+    result = session.process_arrow_frame(
+        np.full((20, 40, 3), 128, dtype=np.uint8), 0, 0,
+    ).region_results[-1]
+    assert result.error
+    assert result.error in result.judgment_diagnostics
+    assert "Best: unavailable." in result.judgment_diagnostics
 
 
 @pytest.mark.parametrize("spread,expected_count", [(150, 2), (151, 0)])

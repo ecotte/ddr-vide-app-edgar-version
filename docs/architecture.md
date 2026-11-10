@@ -168,7 +168,12 @@ the app does not silently keep capturing or open another copy of the device.
 Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 `frame_index`, `video_time_ms`, `observed_at_utc`, `payload` and confidence.
 
-- `score_changed` and `combo_changed`: accepted numeric changes.
+- `score_changed`: accepted score changes with previous/new values.
+- `combo`: newly accepted current combo in `payload.value`, including zero,
+  with no `previous_value` or `new_value`. Stable readings do not emit again.
+  The Events table displays the current number; JSONL and outbox delivery keep
+  the same payload. Legacy queued `combo_changed` events are unchanged and
+  the scoreboard accepts both formats with shared per-player sequence ordering.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - Arrow references identify activity using fresh `active` samples; old `hit`/`miss`
   arrow images are ignored with a recalibration warning. Old `appeared` samples
@@ -198,13 +203,23 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   This replaces the earlier activity-only `arrow_hit` name; queued historical
   messages are unchanged and remain accepted without scoring their activity.
 - Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
-  at source-frame rate. Their new pulses determine outcome type, with arrow
+  at source-frame rate using an independent judgment similarity threshold
+  (default 0.90). Arrow activity uses its own threshold (also default 0.90);
+  changing either cannot change the other or the game-end setting.
+  Category ranking retains best and runner-up scores from the same matching
+  pass for diagnostics. A gap below 0.02 is ambiguous. Judgment cards show frame
+  time, scores, threshold, ambiguity margin, confirmation progress, latch,
+  rearm elapsed time, recording state, and the current acceptance/blocking reason.
+  Calibration and crop failures remain explicit. These diagnostics stay in the
+  UI, share preview pacing, and are not added to event payloads. Thresholds are
+  runtime settings rather than persisted layout calibration.
+  Their new pulses determine outcome type, with arrow
   activity matched from 500 ms before to 150 ms after the word's source-time onset.
   A 650 ms settling interval after the word
   detects competing judgments. Ambiguous judgments have `direction: null`,
   empty `step_directions` and `step_arrow_count: 0`, never a guessed lane.
   Their player outcome still counts once. A lingering judgment
-  cannot validate repeated arrows; 250 ms of source-video time without an outcome
+  cannot validate repeated arrows; 50 ms of source-video time without an outcome
   match must rearm the box before any next judgment, including a different word.
   Ambiguous strong matches and crop/calibration errors restart that interval. Pending
   evidence is cleared on seek, stop, recording/layout/source changes and new games.

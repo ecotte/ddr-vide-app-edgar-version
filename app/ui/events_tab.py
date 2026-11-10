@@ -140,6 +140,8 @@ class EventsTab(ttk.Frame):
             return f"Session ended ({payload['reason']}): {event.session_id}"
         if event.event_type == "score_observed":
             return f"UNCONFIRMED: {payload.get('observed_value')}"
+        if event.event_type == "combo":
+            return str(payload["value"])
         if "previous_value" in payload or "new_value" in payload:
             prev = payload.get("previous_value")
             new = payload.get("new_value")

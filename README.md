@@ -93,7 +93,7 @@ activity. General judgment-text OCR remains future work.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo and a separate edge-triggered activity detector for arrows; matched judgment pulses determine the outcomes - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
-- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `judgement` / `arrow` events in a table, with gameplay recording on/off and clear-table controls. Each confirmed arrow activation immediately emits activity-only `arrow`; each recognized judgment later emits one `judgement` carrying the outcome and matched directions. New analysis never emits `arrow_hit`, `arrow_miss`, `judgment_hit`, or `judgment_miss`.
+- Record `new_session` / `score_observed` / `score_changed` / `combo` / `judgement` / `arrow` events in a table, with gameplay recording on/off and clear-table controls. Each confirmed arrow activation immediately emits activity-only `arrow`; each recognized judgment later emits one `judgement` carrying the outcome and matched directions. New analysis never emits `arrow_hit`, `arrow_miss`, `judgment_hit`, or `judgment_miss`.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
@@ -262,7 +262,7 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
    Ties and near-ties stay idle. Capture multiple empty appearances if the receptor
    animates. Each card has independent Empty preview, clear, and **View / delete
    Empty refs...** controls; deleting Empty samples never removes Active samples.
-3. Adjust **Arrow similarity threshold** (default 0.90; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6.
+3. Adjust **Arrow similarity** (default 0.90; higher = stricter/fewer false positives) and **Arrow/judgment confirm frames** (default 1, since real flashes are often brief) if needed - see section 6. **Judgment similarity** is a separate control (default 0.90); lowering it does not lower arrow matching.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
    **View / delete refs...** opens a scrollable gallery of every Active Arrow sample
    for that box. Delete individual examples without clearing the rest or changing
@@ -386,7 +386,7 @@ app restarts; exported events and queued Fabric messages retain their original I
    To reduce playback overhead, unchanged arrow cards refresh their crop, similarity, and pending-count display at most ten times per second. Arrow-state changes, errors, unreadable crops, and tracking resets update immediately. This only paces the recognition panel: arrow analysis and event recording still run on every displayed video frame, and completed score/combo OCR results are displayed immediately.
 
    Each numeric card shows **OCR frame** and its video timestamp. Its crop and readings belong to that completed OCR job, not necessarily the frame currently playing on the left. OCR latency still applies, but unnecessary confirmation passes no longer hold the panel on older footage; pausing lets the worker catch up to the final displayed frame. Confirmation jobs process only pending fields, so confirming a score does not rerun unrelated combo OCR on the older frame.
-3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo_changed` / `judgement` / `arrow` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
+3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo` / `judgement` / `arrow` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
 4. **New Session** resets the session ID, sequence counter, and all recognition state - use it if you want a clean slate on the same video without reloading it. Loading a different video or seeking (slider, or the frame-back button) also resets recognition state automatically, so a jump in the video never gets misread as a huge score change or a phantom arrow hit.
 
 ---
@@ -400,7 +400,7 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **Score templates are supporting evidence, not ground truth.** Use **Teach score...** on clear frames and type all displayed digits, including leading zeros (commas are allowed). Check the preview's labels before Learn. Extraction retains dim zeros, supports wide/flat digits up to twice their height, and uses brighter-threshold passes to recover digits joined to HUD borders by shadows without duplicating boxes. It selects a consistent digit row and normalizes contrast. Mismatched counts are rejected. Partial reference sets can support OCR immediately. Older-format samples are ignored with a status message; repeated OCR remains available without teaching. The first new teaching replaces those outdated samples; subsequent teaching keeps all distinct examples. Save Layout persists changes. Animated/blended digits can still be misidentified.
 - **Candidate is separate from accepted.** A readable number awaiting confirmation or rejected by acceptance rules remains visible as the candidate, with a pending/rejection explanation. It is not mislabeled as an OCR failure or an unreadable crop.
 - **Ambiguous score readings are rejected, not corrected by guessing.** OCR must return exactly one digit per segmented box; multi-character results retain their original confidence and are rejected. Template matching compares foreground strokes (intersection over union), not shared black background, against the closest user-labeled example for each digit. The best digit must exceed the runner-up by at least 0.02 similarity and meet the 0.72 minimum match threshold. Template similarity is not an accuracy probability. Teaching does not rewrite accepted values or old events; use **New Session** to reset an incorrect baseline and event history (export first if you need to preserve them).
-- **Accepted combos can recover downward.** A lower value needs at least two matching readings, each with OCR confidence of at least 0.90, on distinct advancing frames within two seconds. "Consistency frames" above two raises this requirement. A different candidate, low-confidence reading, or unreadable frame restarts confirmation; duplicate/old frames cannot add evidence. A single lower reading keeps the accepted combo unchanged. Confirmed decreases update the displayed accepted value and emit a normal `combo_changed` event with the old and new values for the table, JSONL export, and Fabric delivery. Existing events are not rewritten. This also allows genuine combo resets; repeated confidently wrong readings can still be accepted.
+- **Accepted combos can recover downward.** A lower value needs at least two matching readings, each with OCR confidence of at least 0.90, on distinct advancing frames within two seconds. "Consistency frames" above two raises this requirement. A different candidate, low-confidence reading, or unreadable frame restarts confirmation; duplicate/old frames cannot add evidence. A single lower reading keeps the accepted combo unchanged. Confirmed decreases update the displayed accepted value and emit a `combo` event with only the current value in `payload.value`; no previous/new pair is sent. The Events table displays just that value. Existing events are not rewritten. This also allows genuine combo resets; repeated confidently wrong readings can still be accepted.
 - **High-confidence combos can advance immediately.** With the default consistency setting, OCR confidence of at least 0.90 allows a single plausible combo reading to establish or advance the accepted value. Lower-confidence, unreadable, or implausible upward-jump readings are rejected. A confidently wrong initial reading can still establish a bad baseline; confidence is not a guarantee of correctness.
 - **Confirmation depends on the field and confidence.** "Consistency frames" remains a configurable minimum: qualifying score/combo initial readings and increases may use 1; lower-confidence scores and all downward corrections require at least 2. Raising the setting above 1 also delays high-confidence score and combo readings. While OCR runs, the first neighboring frame and newest displayed frame are retained. The neighbor is processed only for pending confirmation; accepted, rejected, and unreadable results go directly to the newest frame. After one confirmation pass the worker returns to the newest frame rather than chaining old neighbors. This bounds the waiting buffer to two frames; EOF also retains its final-frame safeguard. Reprocessing a paused frame never adds evidence. Evidence expires after two seconds of video time and is restarted by a different candidate or invalid reading. Background OCR does not run on every source frame, so events can be delayed and brief changes missed. Preview playback remains independent.
 - **Important limitation the temporal filter cannot fix:** if OCR is *consistently* wrong for the same digits (a stable misread, not a one-frame glitch), the consistency filter will still "accept" that wrong value, because it only rejects readings that fail to repeat - it cannot know the true value. See section 7 for a real example of this happening. This is why the app always shows you the raw OCR text next to the accepted value, so you can visually sanity-check it.
@@ -426,9 +426,31 @@ and reteach its digits as needed. Nothing is deleted automatically.
 
 1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
 2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. No built-in text OCR or color interpretation is used.
-3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 250 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
+3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 50 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
 4. Keep each player's arrow reference calibration too. Each player uses its own references
    with its own screen boxes. **Save Layout** includes judgment regions and all their examples.
+
+**Independent similarity thresholds and diagnostics**
+
+- **Arrow similarity** controls activity matching, including comparison with Empty
+  samples. **Judgment similarity** controls Perfect/Great/Good/Miss matching only.
+  Both default to 0.90; game-end similarity remains separate. These are runtime
+  controls, not layout settings. If you previously used 0.65 for judgment words,
+  set Judgment similarity to 0.65 without lowering Arrow similarity.
+- Each judgment card shows the source frame/time, best category and similarity,
+  threshold, runner-up category/score, and the gap between them. The best
+  candidate must reach the judgment threshold and beat other categories by at
+  least 0.02. A high score can still be ambiguous if the top two are too close.
+- The diagnostic decision distinguishes **below threshold**, **ambiguous match**,
+  **confirming frames**, **accepted/queued**, **latch blocked**, **recording off**,
+  and **repeated frame**. It also shows the current latch and no-match elapsed
+  time against the 50 ms rearm requirement. Missing calibration and out-of-bounds
+  crops are reported explicitly.
+- Status still reports pending correlation and counted outcomes. Diagnostics
+  describe the current frame; they do not create events or infer judgments from
+  arrow activity. Advance/play after changing settings to see fresh results.
+  Lowering judgment similarity can also match backgrounds falsely, so compare
+  the crop and runner-up scores instead of lowering it blindly.
 
 For players with a judgment region, receptor flashes alone no longer count outcomes.
 A new confirmed judgment determines hit versus miss. Matching arrow
@@ -499,11 +521,11 @@ inventing a tier. Once Perfect, Great, or Good references are added, the old
 Success references are ignored; only the explicitly taught categories are matched.
 
 A lingering word counts once, not once per frame or receptor flash. At least
-250 ms of source-video time with no taught outcome matching is required before
+50 ms of source-video time with no taught outcome matching is required before
 any next judgment, even if the word changes category. Short matching gaps do not
 rearm; ambiguous strong matches hold the latch and restart the no-match interval.
 Pausing or repeatedly processing one frame cannot advance that interval.
-A matching failure lasting 250 ms can look like disappearance and cause a recount;
+A matching failure lasting 50 ms can look like disappearance and cause a recount;
 keep crops tight and teach representative examples for the changing background.
 Consecutive judgments without a detectable no-match/rearm interval between them
 cannot be separated reliably and may be undercounted. Simultaneous arrows count
@@ -684,6 +706,24 @@ score/combo change looks like:
   "confidence": 0.83
 }
 ```
+
+A combo event also uses the same envelope, with `event_type: "combo"` and this
+payload:
+
+```json
+{
+  "field": "combo",
+  "region_label": "P1 Combo",
+  "value": 15
+}
+```
+
+Only newly accepted values emit an event; repeated readings do not. Zero is a
+valid current combo. Score change events retain their previous/new-value pair.
+Update combo consumers from `combo_changed`/`payload.new_value` to
+`combo`/`payload.value`, then restart the desktop. Existing queued events are
+unchanged; the scoreboard still accepts the legacy combo format and sequences
+new and old formats together per player.
 
 A `judgement` event uses the same envelope, with the hit/miss outcome, tier,
 and matched directions in the payload instead of previous/new values.

@@ -20,9 +20,9 @@ class FakeSender:
         self.closed = True
 
 
-def event(bus, kind="combo_changed", value=10, player="P1", direction="Up-Right"):
+def event(bus, kind="combo", value=10, player="P1", direction="Up-Right"):
     return bus.make_event(kind, {
-        "new_value": value, "observed_value": value, "direction": direction,
+        "new_value": value, "observed_value": value, "value": value, "direction": direction,
     }, 1, 17, player, 0.99)
 
 
@@ -139,6 +139,43 @@ def test_multi_arrow_judgement_checks_total_points_before_mutating_metrics():
         board.record(judgement_event(bus, directions=["Center", "Up-Left"]), bus.session_id)
         assert board.snapshot() == before
         assert "supported range" in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("value", [None, -1, 1.5, "12", True, [], 9007199254740992])
+def test_invalid_current_combo_is_reported_without_using_old_new_value(value):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event("combo", {"value": value, "new_value": 20}, 1, 33, "P1")
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid numeric event" in board.status()
+    finally:
+        board.stop()
+
+
+def test_current_and_legacy_combos_share_sequence_ordering_and_preserve_zero():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        old = bus.make_event("combo", {"value": 40}, 1, 33, "P1")
+        legacy = bus.make_event("combo_changed", {"previous_value": 40, "new_value": 45}, 2, 66, "P1")
+        board.record(legacy, bus.session_id)
+        board.record(old, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["combo"] == 45
+        current = bus.make_event("combo", {"value": 0}, 3, 99, "P1")
+        board.record(current, bus.session_id)
+        board.record(current, bus.session_id)
+        p2 = bus.make_event("combo", {"value": 8}, 3, 99, "P2")
+        board.record(p2, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["combo"] == 0
+        assert board.snapshot()["players"]["P2"]["combo"] == 8
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 0
     finally:
         board.stop()
 
@@ -301,7 +338,7 @@ def test_sharing_is_opt_in_and_does_not_replace_fabric_sink(tmp_path):
     try:
         bus.record(event(bus, value=20))
         assert board.snapshot()["players"]["P1"]["combo"] == 20
-        assert [event.event_type for event in fabric] == ["new_session", "combo_changed", "combo_changed"]
+        assert [event.event_type for event in fabric] == ["new_session", "combo", "combo"]
         bus.set_delivery_sink(None)
         bus.record(event(bus, value=21))
         assert board.snapshot()["players"]["P1"]["combo"] == 21

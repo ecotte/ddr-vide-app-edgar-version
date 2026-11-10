@@ -693,6 +693,8 @@ class App(tk.Tk):
             self.video_tab.update_arrow_recognition_row(
                 rr.region.key(), photo, rr.arrow_state, rr.confidence, status_text
             )
+            if rr.region.kind == "judgment":
+                self.video_tab.set_judgment_diagnostics(rr.region.key(), rr.judgment_diagnostics)
             self._arrow_display_state[rr.region.key()] = (now, display_state)
         else:
             tracker_status: TrackerStatus = self.analysis.tracker_for(rr.region).status()
@@ -901,6 +903,9 @@ class App(tk.Tk):
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
         self.analysis.set_arrow_similarity_threshold(value)
+
+    def set_judgment_similarity_threshold(self, value: float) -> None:
+        self.analysis.set_judgment_similarity_threshold(value)
 
     def set_arrow_min_confirm_frames(self, n: int) -> None:
         self.analysis.set_arrow_min_confirm_frames(n)

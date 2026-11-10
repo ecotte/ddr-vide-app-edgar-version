@@ -90,6 +90,26 @@ def test_unchanged_arrow_previews_are_limited_to_ten_updates_per_second(monkeypa
     assert controller._make_thumbnail_photo.call_count == 2
 
 
+def test_judgment_diagnostics_refresh_without_bypassing_preview_pacing(monkeypatch):
+    controller = _display_controller()
+    rr = RegionFrameResult(
+        Region("Judgment", "P1", "judgment", 0, 0, 20, 20),
+        arrow_state="perfect", judgment_diagnostics="Accepted PERFECT",
+    )
+    clock = [0.0]
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: clock[0])
+    controller._update_recognition_row(rr)
+    controller.video_tab.set_judgment_diagnostics.assert_called_once_with("P1:judgment", "Accepted PERFECT")
+    rr.judgment_diagnostics = "Latch blocked PERFECT"
+    clock[0] = .01
+    controller._update_recognition_row(rr)
+    assert controller.video_tab.set_judgment_diagnostics.call_count == 1
+    clock[0] = .1
+    controller._update_recognition_row(rr)
+    controller.video_tab.set_judgment_diagnostics.assert_called_with("P1:judgment", "Latch blocked PERFECT")
+    assert controller.video_tab.set_judgment_diagnostics.call_count == 2
+
+
 @pytest.mark.parametrize("change", ["state", "error", "unreadable", "generation", "player"])
 def test_arrow_state_errors_and_tracking_resets_update_without_waiting(monkeypatch, change):
     controller = _display_controller()

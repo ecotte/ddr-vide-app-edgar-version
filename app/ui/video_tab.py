@@ -345,7 +345,7 @@ class VideoTab(ttk.Frame):
         consistency_spin.grid(row=0, column=1, sticky="w")
         consistency_spin.bind("<Return>", lambda e: self._on_consistency_changed())
 
-        ttk.Label(analysis_box, text="Arrow/judgment similarity:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Arrow similarity:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.arrow_threshold_var = tk.DoubleVar(value=config.DEFAULT_ARROW_SIMILARITY_THRESHOLD)
         arrow_threshold_spin = ttk.Spinbox(
             analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
@@ -354,13 +354,22 @@ class VideoTab(ttk.Frame):
         arrow_threshold_spin.grid(row=1, column=1, sticky="w", pady=(4, 0))
         arrow_threshold_spin.bind("<Return>", lambda e: self._on_arrow_threshold_changed())
 
-        ttk.Label(analysis_box, text="Arrow/judgment confirm frames:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Judgment similarity:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        self.judgment_threshold_var = tk.DoubleVar(value=config.DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD)
+        judgment_threshold_spin = ttk.Spinbox(
+            analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
+            textvariable=self.judgment_threshold_var, command=self._on_judgment_threshold_changed,
+        )
+        judgment_threshold_spin.grid(row=1, column=3, sticky="w", pady=(4, 0))
+        judgment_threshold_spin.bind("<Return>", lambda e: self._on_judgment_threshold_changed())
+
+        ttk.Label(analysis_box, text="Arrow/judgment confirm frames:").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.arrow_confirm_var = tk.IntVar(value=config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES)
         arrow_confirm_spin = ttk.Spinbox(
             analysis_box, from_=1, to=10, width=4, textvariable=self.arrow_confirm_var,
             command=self._on_arrow_confirm_changed,
         )
-        arrow_confirm_spin.grid(row=1, column=3, sticky="w", pady=(4, 0))
+        arrow_confirm_spin.grid(row=2, column=1, sticky="w", pady=(4, 0))
         arrow_confirm_spin.bind("<Return>", lambda e: self._on_arrow_confirm_changed())
 
         self.start_stop_button = ttk.Button(
@@ -373,10 +382,10 @@ class VideoTab(ttk.Frame):
 
         self.analysis_status_var = tk.StringVar(value="Analysis: stopped")
         ttk.Label(analysis_box, textvariable=self.analysis_status_var).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(4, 0)
+            row=3, column=0, columnspan=4, sticky="w", pady=(4, 0)
         )
         ttk.Label(analysis_box, text="Game-end similarity threshold:").grid(
-            row=3, column=0, sticky="w", pady=(8, 0),
+            row=4, column=0, sticky="w", pady=(8, 0),
         )
         self.game_end_threshold_var = tk.DoubleVar(value=config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD)
         self.game_end_confirm_var = tk.IntVar(value=config.DEFAULT_GAME_END_CONFIRM_FRAMES)
@@ -384,16 +393,16 @@ class VideoTab(ttk.Frame):
             analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
             textvariable=self.game_end_threshold_var, command=self._on_game_end_settings_changed,
         )
-        threshold_spin.grid(row=3, column=1, sticky="w", pady=(8, 0))
+        threshold_spin.grid(row=4, column=1, sticky="w", pady=(8, 0))
         threshold_spin.bind("<Return>", lambda e: self._on_game_end_settings_changed())
         ttk.Label(analysis_box, text="Game-end confirm frames:").grid(
-            row=3, column=2, sticky="w", pady=(8, 0),
+            row=4, column=2, sticky="w", pady=(8, 0),
         )
         confirm_spin = ttk.Spinbox(
             analysis_box, from_=1, to=30, width=4, textvariable=self.game_end_confirm_var,
             command=self._on_game_end_settings_changed,
         )
-        confirm_spin.grid(row=3, column=3, sticky="w", pady=(8, 0))
+        confirm_spin.grid(row=4, column=3, sticky="w", pady=(8, 0))
         confirm_spin.bind("<Return>", lambda e: self._on_game_end_settings_changed())
 
         # --- status bar ----------------------------------------------------
@@ -790,9 +799,14 @@ class VideoTab(ttk.Frame):
         status = tk.StringVar(value="status: Capture Perfect, Great, Good, and Miss examples.")
         for index, variable in enumerate((state, confidence, status), 2):
             ttk.Label(row, textvariable=variable).grid(row=index, column=0, sticky="w")
+        diagnostics = tk.StringVar(value="diagnostics: Advance/play to inspect judgment matching.")
+        ttk.Label(row, textvariable=diagnostics, justify="left").grid(
+            row=5, column=0, sticky="w", pady=(4, 0),
+        )
         data = {
             "kind": "judgment", "thumb_label": thumb, "state_var": state,
             "confidence_var": confidence, "status_var": status,
+            "diagnostics_var": diagnostics,
         }
         categories = (
             ("perfect", "Perfect"), ("great", "Great"), ("good", "Good"),
@@ -800,7 +814,7 @@ class VideoTab(ttk.Frame):
         )
         for index, (name, title) in enumerate(categories):
             controls = ttk.Frame(row)
-            controls.grid(row=5 + index, column=0, sticky="w", pady=4)
+            controls.grid(row=6 + index, column=0, sticky="w", pady=4)
             reference = ttk.Label(controls, text="(none)")
             reference.grid(row=0, column=0, columnspan=2, sticky="w")
             ttk.Button(
@@ -817,14 +831,14 @@ class VideoTab(ttk.Frame):
             "MISS counts as a miss. No Blank reference is needed. "
             "Old Success references remain ungraded until any success tier is taught. "
             "Each taught outcome can count immediately; untaught categories are not recognized. "
-            "Judgments count once, then rearm after 250 ms of video time without any "
+            f"Judgments count once, then rearm after {config.JUDGMENT_REARM_MS} ms of video time without any "
             "taught outcome matching. Changing words alone does not rearm. "
             "Ambiguous strong matches hold the current state. Prolonged matching failures "
             "can look like disappearance. Unclear directions count for the player only.",
-        ).grid(row=5 + len(categories), column=0, sticky="w")
+        ).grid(row=6 + len(categories), column=0, sticky="w")
         if region.player in ("P1", "P2"):
             ttk.Label(row, text="Capture this player's judgments separately. "
-                      "Adding or clearing references does not change the other player.").grid(row=6 + len(categories), column=0, sticky="w")
+                      "Adding or clearing references does not change the other player.").grid(row=7 + len(categories), column=0, sticky="w")
         VideoTab._wrap_card_labels(row)
         self._region_rows[region.key()] = data
 
@@ -895,6 +909,13 @@ class VideoTab(ttk.Frame):
             f"{similarity_label}: {confidence:.2f}" if confidence is not None else f"{similarity_label}: -"
         )
         row["status_var"].set(f"status: {status_text}")
+
+    def set_judgment_diagnostics(self, region_key: str, diagnostics: Optional[str]) -> None:
+        row = self._region_rows.get(region_key)
+        if row is not None and row.get("kind") == "judgment":
+            row["diagnostics_var"].set(
+                f"diagnostics: {diagnostics}" if diagnostics else "diagnostics: No frame diagnostics available."
+            )
 
     def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
@@ -1054,9 +1075,24 @@ class VideoTab(ttk.Frame):
     def _on_arrow_threshold_changed(self) -> None:
         try:
             value = float(self.arrow_threshold_var.get())
-        except (tk.TclError, ValueError):
+            if not 0.5 <= value <= 1:
+                raise ValueError("use a value between 0.50 and 1.00")
+            self.controller.set_arrow_similarity_threshold(value)
+        except (tk.TclError, ValueError) as exc:
+            self.set_error_status(f"Invalid arrow similarity: {exc}")
             return
-        self.controller.set_arrow_similarity_threshold(value)
+        self.set_error_status("")
+
+    def _on_judgment_threshold_changed(self) -> None:
+        try:
+            value = float(self.judgment_threshold_var.get())
+            if not 0.5 <= value <= 1:
+                raise ValueError("use a value between 0.50 and 1.00")
+            self.controller.set_judgment_similarity_threshold(value)
+        except (tk.TclError, ValueError) as exc:
+            self.set_error_status(f"Invalid judgment similarity: {exc}")
+            return
+        self.set_error_status("")
 
     def _on_arrow_confirm_changed(self) -> None:
         try:

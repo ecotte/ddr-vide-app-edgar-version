@@ -354,6 +354,13 @@ Connection/publish errors appear in the desktop Events tab.
   Legacy snapshots
   default the new counters to zero, and arrow-only layouts keep their original behavior.
 - The SDK worker rejects revisions older than its last acknowledged revision.
+- Desktop combo readings now emit `event_type: "combo"` with only the current
+  numeric `payload.value` (plus field/region metadata), rather than a previous/new
+  pair. Confirmed changes, including resets to zero, update the existing combo
+  display. Stable readings do not repeat events. The scoreboard still accepts
+  legacy `combo_changed`/`new_value` messages, using the same per-player ordering
+  guard across formats. Queued data is not rewritten. Restart the desktop;
+  the frontend snapshot shape does not change.
 
 There is no distributed multiple-publisher mechanism: this app uses one
 desktop-managed publisher. Stopping/restarting sharing cannot start a second

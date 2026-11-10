@@ -33,7 +33,7 @@ from app.event_bus import EventBus
 from app.models import Event, Region, share_player_references, shared_reference_source
 from app.ocr_engine import OcrEngine
 from app.recognition import (
-    ArrowStateTracker, TemporalValueTracker, classify_arrow_state, classify_judgment_state, parse_digits,
+    ArrowStateTracker, TemporalValueTracker, classify_arrow_state, match_judgment, parse_digits,
 )
 
 Tracker = Union[TemporalValueTracker, ArrowStateTracker]
@@ -69,6 +69,7 @@ class RegionFrameResult:
     needs_confirmation: bool = False
     frame_index: Optional[int] = None
     video_time_ms: Optional[int] = None
+    judgment_diagnostics: Optional[str] = None
 
 
 @dataclass
@@ -110,6 +111,7 @@ class AnalysisSession:
         self._arrow_lock = threading.RLock()
         self.required_consecutive_frames = config.DEFAULT_REQUIRED_CONSECUTIVE_FRAMES
         self.arrow_similarity_threshold = config.DEFAULT_ARROW_SIMILARITY_THRESHOLD
+        self.judgment_similarity_threshold = config.DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD
         self.arrow_min_confirm_frames = config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES
         self.game_end_similarity_threshold = config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD
         self.game_end_confirm_frames = config.DEFAULT_GAME_END_CONFIRM_FRAMES
@@ -175,8 +177,16 @@ class AnalysisSession:
             self._numeric_evidence.clear()
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("Arrow similarity must be a finite number between 0 and 1.")
         with self._arrow_lock:
             self.arrow_similarity_threshold = value
+
+    def set_judgment_similarity_threshold(self, value: float) -> None:
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("Judgment similarity must be a finite number between 0 and 1.")
+        with self._arrow_lock:
+            self.judgment_similarity_threshold = value
 
     def set_arrow_min_confirm_frames(self, n: int) -> None:
         with self._arrow_lock:
@@ -690,8 +700,9 @@ class AnalysisSession:
                 payload={
                     "field": region.kind,
                     "region_label": region.label,
-                    "previous_value": previous_value,
-                    "new_value": new_value,
+                    **({"value": new_value} if region.kind == "combo" else {
+                        "previous_value": previous_value, "new_value": new_value,
+                    }),
                 },
                 frame_index=frame_index,
                 video_time_ms=video_time_ms,
@@ -732,10 +743,11 @@ class AnalysisSession:
             error = "No judgment outcome references. Capture a Perfect, Great, Good, or Miss example for this player."
         elif crop.size == 0:
             error = "Empty judgment crop (region out of frame bounds?)"
-        state, score = (
-            classify_judgment_state(crop, references, self.arrow_similarity_threshold)
-            if error is None else (None, 0.0)
-        )
+        match = match_judgment(crop, references, self.judgment_similarity_threshold) if error is None else None
+        state, score = (match.state, match.similarity) if match is not None else (None, 0.0)
+        latched_before = tracker.status().active_state
+        repeated_frame = previous == (frame_index, video_time_ms)
+        confirmed = None
         if previous != (frame_index, video_time_ms):
             self._last_arrow_frame[region.key()] = (frame_index, video_time_ms)
             observation = state
@@ -758,10 +770,10 @@ class AnalysisSession:
                 if any(item.region.key() == region.key() for item in self._pending_judgments)
                 else "Ambiguous judgment; holding previous state."
                 if state is None and error is None
-                else "No judgment match; waiting for 250 ms of video time to rearm."
+                else f"No judgment match; waiting for {config.JUDGMENT_REARM_MS} ms of video time to rearm."
                 if state == "idle" and tracker.status().active_state is not None
                 else "Ready for the next judgment." if state == "idle"
-                else "Holding judgment; waiting for 250 ms without a match before counting again."
+                else f"Holding judgment; waiting for {config.JUDGMENT_REARM_MS} ms without a match before counting again."
                 if state in ("perfect", "great", "good", "hit", "miss") else None
         )
         if error is None:
@@ -770,9 +782,46 @@ class AnalysisSession:
             if missing:
                 warnings.append(f"Untaught judgments: {', '.join(missing)}; taught outcomes still count.")
             note = " ".join([*warnings, *([note] if note else [])]) or None
+        status = tracker.status()
+        absent_since = self._judgment_absent_since.get(region.key())
+        absent_ms = 0 if absent_since is None else max(0, video_time_ms - absent_since)
+        if error is not None:
+            decision = error
+        elif repeated_frame:
+            decision = "Repeated frame; confirmation and rearm do not advance."
+        elif state == "idle":
+            decision = "Below judgment threshold; no outcome match."
+        elif state is None:
+            decision = "Ambiguous match; top categories are too close. Rearm interval restarted."
+        elif not self.recording_enabled:
+            decision = "Recording off; match tracked but no judgment event queued."
+        elif latched_before is not None:
+            decision = f"Latch blocked {state.upper()}; previous {latched_before.upper()} has not rearmed."
+        elif confirmed is None:
+            decision = f"Confirming {state.upper()}: {status.pending_count}/{status.required_count} frames."
+        else:
+            decision = f"Accepted {state.upper()}; queued for judgment correlation."
+        match_detail = (
+            f"Best: {match.best_state.upper()} {score:.3f}; threshold {self.judgment_similarity_threshold:.3f}."
+            if match is not None and match.best_state is not None else "Best: unavailable."
+        )
+        if match is not None and match.runner_up_similarity is not None and match.runner_up_state is not None:
+            match_detail += (
+                f" Next: {match.runner_up_state.upper()} {match.runner_up_similarity:.3f};"
+                f" gap {score - match.runner_up_similarity:.3f}"
+                f" (minimum {config.JUDGMENT_AMBIGUITY_MARGIN:.3f})."
+            )
+        diagnostics = (
+            f"Frame {frame_index} | {video_time_ms} ms. {match_detail}\n"
+            f"{decision}\n"
+            f"Latch: {status.active_state or 'ready'}; no-match {absent_ms}/{config.JUDGMENT_REARM_MS} ms;"
+            f" confirmation {status.pending_count}/{status.required_count};"
+            f" recording {'on' if self.recording_enabled else 'off'}."
+        )
         return RegionFrameResult(
             region=region, crop=crop, arrow_state=state, confidence=score,
             error=error, is_unreadable=error is not None, validation_note=note,
+            judgment_diagnostics=diagnostics,
         )
 
     def _correlate_judgments(self, frame_index, video_time_ms):
