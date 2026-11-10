@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from PIL import Image, ImageTk
 
-from app import config
+from app import config, image_utils
 from app.ui.theme import FIELD, MUTED
 
 MAX_DISPLAY_W = 960
@@ -88,6 +88,70 @@ class _ScrollableFrame(ttk.Frame):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
 
+class ReferenceGalleryDialog(tk.Toplevel):
+    """Inspect and remove individual image samples for one region."""
+
+    def __init__(self, parent, controller, region, state: str):
+        super().__init__(parent)
+        self.controller = controller
+        self.region = region
+        self.state = state
+        self._photos = []
+        self.title(f"{region.player} {region.direction or region.kind} - {state.title()} references")
+        self.geometry("620x500")
+        self.minsize(440, 300)
+        self.count_var = tk.StringVar(self)
+        ttk.Label(self, textvariable=self.count_var, style="Section.TLabel").pack(
+            anchor="w", padx=12, pady=12,
+        )
+        self.images = _ScrollableFrame(self)
+        self.images.pack(fill="both", expand=True, padx=12)
+        ttk.Label(
+            self, text="Delete removes only this player's selected sample. "
+            "Close this window and Save Layout to keep changes.",
+            wraplength=560,
+        ).pack(anchor="w", padx=12, pady=8)
+        ttk.Button(self, text="Close", command=self.destroy).pack(anchor="e", padx=12, pady=(0, 12))
+        self._refresh_images()
+        self.transient(parent)
+        self.grab_set()
+
+    def _refresh_images(self) -> None:
+        for widget in self.images.inner.winfo_children():
+            widget.destroy()
+        self._photos.clear()
+        images = self.region.reference_images.get(self.state, [])
+        self.count_var.set(f"{len(images)} reference{'s' if len(images) != 1 else ''}")
+        if not images:
+            ttk.Label(self.images.inner, text="No references captured for this box.").grid(
+                row=0, column=0, sticky="w", pady=12,
+            )
+            return
+        for column in range(2):
+            self.images.inner.columnconfigure(column, weight=1, uniform="references")
+        for index, encoded in enumerate(images):
+            card = ttk.LabelFrame(
+                self.images.inner, text=f"Reference {index + 1}", padding=8,
+            )
+            card.grid(row=index // 2, column=index % 2, sticky="nsew", padx=4, pady=4)
+            crop = image_utils.decode_base64_png_to_crop(encoded)
+            if crop is None:
+                ttk.Label(card, text="Cannot decode this reference image.", wraplength=180).pack()
+            else:
+                photo = self.controller._make_thumbnail_photo(crop, max_width=160, max_height=120)
+                self._photos.append(photo)
+                ttk.Label(card, image=photo).pack(pady=4)
+                ttk.Label(card, text=f"{crop.shape[1]}x{crop.shape[0]} pixels").pack()
+            ttk.Button(
+                card, text=f"Delete reference {index + 1}",
+                command=lambda selected=index: self._delete_reference(selected),
+            ).pack(pady=(8, 0))
+
+    def _delete_reference(self, index: int) -> None:
+        if self.controller.delete_arrow_reference(self.region, self.state, index):
+            self._refresh_images()
+
+
 class VideoTab(ttk.Frame):
     def __init__(self, parent: tk.Widget, controller):
         super().__init__(parent, padding=12)
@@ -96,6 +160,8 @@ class VideoTab(ttk.Frame):
         self._draw_mode = False
         self._rect_start = None
         self._rect_id = None
+        self._move_region = None
+        self._move_start = None
         self._overlay_ids: List[int] = []
         self._region_thumb_refs = {}  # keep PhotoImage refs alive, keyed by region key
         self._photo_image = None  # keep current frame PhotoImage alive
@@ -223,6 +289,14 @@ class VideoTab(ttk.Frame):
 
         self.region_listbox = tk.Listbox(region_box, height=5, width=50)
         self.region_listbox.grid(row=1, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Button(
+            region_box, text="Match P2 sizes to P1", command=self.controller.match_player_region_sizes,
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            region_box, text="Matching player boxes use P1 dimensions when drawn or loaded. "
+            "With Draw Region OFF, drag an existing box to move it without resizing.",
+            wraplength=480, style="Muted.TLabel",
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         # --- layout profile controls -------------------------------------
         layout_box = ttk.LabelFrame(left, text="Layout profile", padding=6)
@@ -581,10 +655,9 @@ class VideoTab(ttk.Frame):
         if r.kind in ("score", "combo"):
             ttk.Button(
                 row, text=f"Teach {r.kind}...", command=lambda reg=r: self.controller.teach_score(reg),
-                state="disabled" if r.player == "P2" else "normal",
             ).grid(row=6, column=0, sticky="w", pady=(4, 0))
-            if r.player == "P2":
-                ttk.Label(row, text="Uses P1 digit references. Teach on P1; keep crops similarly framed.").grid(
+            if r.player in ("P1", "P2"):
+                ttk.Label(row, text="Teach this player's digits separately; samples are not shared.").grid(
                     row=10, column=0, sticky="w",
                 )
         yellow_filter_var = None
@@ -633,11 +706,11 @@ class VideoTab(ttk.Frame):
         thumb_label.grid(row=1, column=0, sticky="w", pady=4)
 
         state_var = tk.StringVar(value="state: -")
-        confidence_var = tk.StringVar(value="similarity: -")
+        confidence_var = tk.StringVar(value="active similarity: -")
         status_var = tk.StringVar(value=(
             "status: Activity only; outcomes require a matching judgment."
             if r.reference_images.get("active") else
-            "status: Capture a fresh Active Arrow reference on P1. Old Hit/Miss refs are ignored."
+            "status: Capture a fresh Active Arrow reference for this player. Old Hit/Miss refs are ignored."
         ))
         ttk.Label(row, textvariable=state_var).grid(row=2, column=0, sticky="w")
         ttk.Label(row, textvariable=confidence_var).grid(row=3, column=0, sticky="w")
@@ -648,37 +721,44 @@ class VideoTab(ttk.Frame):
         ttk.Label(refs, text="Active Arrow ref:").grid(row=0, column=0, sticky="w")
         active_ref_label = ttk.Label(refs, text="(none)")
         active_ref_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Label(refs, text="Appearance ref:").grid(row=2, column=0, sticky="w")
-        appeared_ref_label = ttk.Label(refs, text="(none)")
-        appeared_ref_label.grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(refs, text="Empty ref:").grid(row=0, column=1, sticky="w")
+        empty_ref_label = ttk.Label(refs, text="(none)")
+        empty_ref_label.grid(row=1, column=1, sticky="w")
 
         btns = ttk.Frame(row)
         btns.grid(row=6, column=0, sticky="w", pady=(4, 0))
         ttk.Button(
             btns, text="Add Active Arrow ref", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "active"),
-            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=0, padx=2)
         ttk.Button(
             btns, text="Clear Active Arrow refs", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "active"),
-            state="disabled" if r.player == "P2" else "normal",
         ).grid(row=0, column=1, padx=2)
         ttk.Button(
-            btns, text="Add Appearance", command=lambda reg=r: self.controller.capture_arrow_reference(reg, "appeared"),
-            state="disabled" if r.player == "P2" else "normal",
+            btns, text="View / delete refs...",
+            command=lambda reg=r: self.controller.show_arrow_reference_gallery(reg, "active"),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=2, pady=(4, 0))
+        ttk.Button(
+            btns, text="Add Empty ref",
+            command=lambda reg=r: self.controller.capture_arrow_reference(reg, "empty"),
         ).grid(row=2, column=0, padx=2, pady=(4, 0))
         ttk.Button(
-            btns, text="Clear Appearance", command=lambda reg=r: self.controller.clear_arrow_reference(reg, "appeared"),
-            state="disabled" if r.player == "P2" else "normal",
+            btns, text="Clear Empty refs",
+            command=lambda reg=r: self.controller.clear_arrow_reference(reg, "empty"),
         ).grid(row=2, column=1, padx=2, pady=(4, 0))
+        ttk.Button(
+            btns, text="View / delete Empty refs...",
+            command=lambda reg=r: self.controller.show_arrow_reference_gallery(reg, "empty"),
+        ).grid(row=3, column=0, columnspan=2, sticky="w", padx=2, pady=(4, 0))
         ttk.Label(
             row, text="Capture this arrow while active, not its always-visible idle receptor. "
-            "The judgment box alone decides Perfect/Great/Good/Miss. Old Hit/Miss refs are ignored. "
-            "Optional timing: capture a distinct earlier Appearance; the crop must show both "
-            "appearance and activity. Overlapping appearances are excluded.",
+            "Capture Empty when no note overlaps the receptor. Empty examples suppress "
+            "look-alike idle matches; Active must clearly match better. "
+            "The judgment box alone decides Perfect/Great/Good/Miss. "
+            "Old Hit/Miss/Appearance refs are ignored.",
         ).grid(row=7, column=0, sticky="w", pady=(4, 0))
-        if r.player == "P2":
-            ttk.Label(row, text="Uses P1 references for this direction. Add/calibrate the P1 box first. "
-                      "Keep both crops similarly framed.").grid(row=8, column=0, sticky="w")
+        if r.player in ("P1", "P2"):
+            ttk.Label(row, text="Capture this player's arrow separately. "
+                      "Adding or clearing references does not change the other player.").grid(row=8, column=0, sticky="w")
 
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
@@ -688,7 +768,7 @@ class VideoTab(ttk.Frame):
             "confidence_var": confidence_var,
             "status_var": status_var,
             "active_ref_label": active_ref_label,
-            "appeared_ref_label": appeared_ref_label,
+            "empty_ref_label": empty_ref_label,
         }
 
     def _build_judgment_row(self, region, parent, *, grid_row=None) -> None:
@@ -726,12 +806,10 @@ class VideoTab(ttk.Frame):
             ttk.Button(
                 controls, text=f"Add {title} ref",
                 command=lambda reg=region, value=name: self.controller.capture_arrow_reference(reg, value),
-                state="disabled" if region.player == "P2" else "normal",
             ).grid(row=1, column=0, padx=2)
             ttk.Button(
                 controls, text=f"Clear {title} refs",
                 command=lambda reg=region, value=name: self.controller.clear_arrow_reference(reg, value),
-                state="disabled" if region.player == "P2" else "normal",
             ).grid(row=1, column=1, padx=2)
             data[f"{name}_ref_label"] = reference
         ttk.Label(
@@ -744,9 +822,9 @@ class VideoTab(ttk.Frame):
             "Ambiguous strong matches hold the current state. Prolonged matching failures "
             "can look like disappearance. Unclear directions count for the player only.",
         ).grid(row=5 + len(categories), column=0, sticky="w")
-        if region.player == "P2":
-            ttk.Label(row, text="Uses P1 judgment references. Add/calibrate the P1 judgment box first. "
-                      "Keep both crops similarly framed.").grid(row=6 + len(categories), column=0, sticky="w")
+        if region.player in ("P1", "P2"):
+            ttk.Label(row, text="Capture this player's judgments separately. "
+                      "Adding or clearing references does not change the other player.").grid(row=6 + len(categories), column=0, sticky="w")
         VideoTab._wrap_card_labels(row)
         self._region_rows[region.key()] = data
 
@@ -812,8 +890,9 @@ class VideoTab(ttk.Frame):
             self._region_thumb_refs[region_key] = crop_photo
             row["thumb_label"].configure(image=crop_photo)
         row["state_var"].set(f"state: {observed_state if observed_state is not None else 'unreadable'}")
+        similarity_label = "active similarity" if row["kind"] == "arrow" else "similarity"
         row["confidence_var"].set(
-            f"similarity: {confidence:.2f}" if confidence is not None else "similarity: -"
+            f"{similarity_label}: {confidence:.2f}" if confidence is not None else f"{similarity_label}: -"
         )
         row["status_var"].set(f"status: {status_text}")
 
@@ -828,6 +907,7 @@ class VideoTab(ttk.Frame):
         else:
             self._region_thumb_refs[f"{region_key}:{state}_ref"] = photo
             label.configure(image=photo, text=f"{count} ref{'s' if count != 1 else ''}", compound="top")
+            row["status_var"].set("status: Reference ready. Advance/play to refresh recognition.")
 
 
     def refresh_layout_names(self) -> None:
@@ -842,11 +922,33 @@ class VideoTab(ttk.Frame):
         self.controller.seek_to(int(float(value)))
 
     def _toggle_draw_mode(self) -> None:
+        if self._rect_id is not None:
+            self.canvas.delete(self._rect_id)
+        self._rect_id = None
+        self._rect_start = None
+        self._move_region = None
+        self._move_start = None
+        self.canvas.configure(cursor="")
         self._draw_mode = not self._draw_mode
         self.draw_mode_button.config(text=f"Draw Region: {'ON' if self._draw_mode else 'OFF'}")
 
     def _on_canvas_press(self, event) -> None:
         if not self._draw_mode:
+            scale = self.display_scale
+            x, y = event.x / scale, event.y / scale
+            self._move_region = next((
+                region for region in reversed(self.controller.regions)
+                if region.x <= x < region.x + region.w and region.y <= y < region.y + region.h
+            ), None)
+            if self._move_region is not None:
+                region = self._move_region
+                self._move_start = (event.x, event.y)
+                self._rect_id = self.canvas.create_rectangle(
+                    region.x * scale, region.y * scale,
+                    (region.x + region.w) * scale, (region.y + region.h) * scale,
+                    outline="#ffcc00", width=2,
+                )
+                self.canvas.configure(cursor="fleur")
             return
         self._rect_start = (event.x, event.y)
         self._rect_id = self.canvas.create_rectangle(
@@ -854,12 +956,33 @@ class VideoTab(ttk.Frame):
         )
 
     def _on_canvas_drag(self, event) -> None:
+        if self._move_region is not None:
+            region = self._move_region
+            start_x, start_y = self._move_start
+            scale = self.display_scale
+            x = region.x * scale + event.x - start_x
+            y = region.y * scale + event.y - start_y
+            self.canvas.coords(self._rect_id, x, y, x + region.w * scale, y + region.h * scale)
+            return
         if not self._draw_mode or self._rect_id is None:
             return
         x0, y0 = self._rect_start
         self.canvas.coords(self._rect_id, x0, y0, event.x, event.y)
 
     def _on_canvas_release(self, event) -> None:
+        if self._move_region is not None:
+            region = self._move_region
+            start_x, start_y = self._move_start
+            x = region.x + round((event.x - start_x) / self.display_scale)
+            y = region.y + round((event.y - start_y) / self.display_scale)
+            self.canvas.delete(self._rect_id)
+            self._rect_id = None
+            self._move_region = None
+            self._move_start = None
+            self.canvas.configure(cursor="")
+            if (x, y) != (region.x, region.y):
+                self.controller.move_region(region, x, y)
+            return
         if not self._draw_mode or self._rect_id is None:
             return
         x0, y0 = self._rect_start

@@ -5,12 +5,14 @@ export type Direction = typeof DIRECTIONS[number];
 export interface PlayerState {
   username?: string | null;
   score: number | null;
+  runningScore?: number | null;
   combo: number | null;
   hits: number;
   unassignedHits?: number;
   unassignedMisses?: number;
   misses?: number | null;
   hitsByDirection?: Record<Direction, number> | null;
+  missesByDirection?: Record<Direction, number> | null;
   hitPace?: number | null;
   averageResponseTimeMs?: number | null;
   responseSamples?: number;
@@ -33,10 +35,26 @@ function numberOrNull(value: unknown): value is number | null {
   return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
 }
 
+function isDirectionCounts(value: unknown): value is Record<Direction, number> {
+  return isRecord(value) && DIRECTIONS.every(direction => {
+    const count = value[direction];
+    return typeof count === 'number' && numberOrNull(count);
+  });
+}
+
+function copyDirectionCounts(counts: Record<Direction, number>): Record<Direction, number> {
+  return {
+    'Up-Right': counts['Up-Right'], 'Up-Left': counts['Up-Left'],
+    'Down-Right': counts['Down-Right'], 'Down-Left': counts['Down-Left'],
+    Center: counts.Center,
+  };
+}
+
 function isPlayer(value: unknown): value is PlayerState {
   if (!isRecord(value)) return false;
   const directions = value.hitsByDirection;
   return isRecord(value) && numberOrNull(value.score) && numberOrNull(value.combo)
+    && (value.runningScore == null || numberOrNull(value.runningScore))
     && (value.username == null || (
       typeof value.username === 'string' && value.username.trim().length > 0 && value.username.length <= 80
     ))
@@ -64,12 +82,8 @@ function isPlayer(value: unknown): value is PlayerState {
     && (value.hitPace == null || (
       typeof value.hitPace === 'number' && Number.isFinite(value.hitPace) && value.hitPace >= 0
     ))
-    && (directions == null || (
-      isRecord(directions) && DIRECTIONS.every(direction => {
-        const count = directions[direction];
-        return typeof count === 'number' && numberOrNull(count);
-      })
-    ));
+    && (directions == null || isDirectionCounts(directions))
+    && (value.missesByDirection == null || isDirectionCounts(value.missesByDirection));
 }
 
 export function parseSnapshot(value: unknown): BoardSnapshot {
@@ -89,6 +103,7 @@ function cleanPlayer(player: PlayerState): PlayerState {
   return {
     username: player.username ?? null,
     score: player.score, combo: player.combo, hits: player.hits,
+    ...(player.runningScore != null ? { runningScore: player.runningScore } : {}),
     unassignedHits: player.unassignedHits ?? 0,
     unassignedMisses: player.unassignedMisses ?? 0,
     misses: player.misses ?? null,
@@ -96,23 +111,24 @@ function cleanPlayer(player: PlayerState): PlayerState {
     averageResponseTimeMs: player.averageResponseTimeMs ?? null,
     responseSamples: player.responseSamples ?? 0,
     observedScore: player.observedScore, lastVideoTimeMs: player.lastVideoTimeMs,
-    hitsByDirection: player.hitsByDirection ? {
-      'Up-Right': player.hitsByDirection['Up-Right'], 'Up-Left': player.hitsByDirection['Up-Left'],
-      'Down-Right': player.hitsByDirection['Down-Right'], 'Down-Left': player.hitsByDirection['Down-Left'],
-      Center: player.hitsByDirection.Center,
-    } : null,
+    hitsByDirection: player.hitsByDirection ? copyDirectionCounts(player.hitsByDirection) : null,
+    ...(player.missesByDirection != null
+      ? { missesByDirection: copyDirectionCounts(player.missesByDirection) } : {}),
   };
 }
 
-export function arrowBalance(player?: PlayerState): Record<Direction, number> | null {
+export function arrowAccuracy(player?: PlayerState): Record<Direction, number | null> | null {
   const hits = player?.hitsByDirection;
-  if (!hits) return null;
-  const total = DIRECTIONS.reduce((sum, direction) => sum + hits[direction], 0);
-  if (total === 0) return null;
+  const misses = player?.missesByDirection;
+  if (!hits || !misses || !DIRECTIONS.some(direction => hits[direction] + misses[direction] > 0)) return null;
+  const rate = (direction: Direction) => {
+    const total = hits[direction] + misses[direction];
+    return total > 0 ? hits[direction] / total * 100 : null;
+  };
   return {
-    'Up-Right': hits['Up-Right'] / total * 100, 'Up-Left': hits['Up-Left'] / total * 100,
-    'Down-Right': hits['Down-Right'] / total * 100, 'Down-Left': hits['Down-Left'] / total * 100,
-    Center: hits.Center / total * 100,
+    'Up-Right': rate('Up-Right'), 'Up-Left': rate('Up-Left'),
+    'Down-Right': rate('Down-Right'), 'Down-Left': rate('Down-Left'),
+    Center: rate('Center'),
   };
 }
 

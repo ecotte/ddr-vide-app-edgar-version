@@ -18,6 +18,11 @@ only the current game's `GamePlayerSession` player/name fields for the scoreboar
 names remain available after event relay and are cleared for unregistered slots in
 a new game. Signed-in scoreboard viewers see those names, but never PINs or
 registration records. Older snapshots without names keep the Player 1/2 labels.
+Side-by-side player panels share section and metric-row heights: names, scores,
+combos, totals, arrows, matching tiles, hit pace, and balance stay aligned even
+when a field is missing or text wraps. Missing values remain hidden rather than
+being replaced with invented data. On narrow screens the panels stack normally
+without reserving gaps for the other player.
 Both screens use the supplied white Microsoft Fabric logo asset, preserving its
 colors, aspect ratio, and transparent clear space on the dark background.
 Check-in uses a compact, single-column card for tablets in portrait or landscape,
@@ -243,6 +248,16 @@ Connection/publish errors appear in the desktop Events tab.
 
 ## Fixed event rules
 
+- The main **Running score** comes from desktop snapshot `runningScore`, not OCR:
+  Good +10, Great +20, Perfect +40, Miss 0 per matched arrow. Simultaneous arrows
+  score individually; unknown-direction judgments score once. Ungraded legacy
+  hits receive no points. No score region is required.
+- Running scores start at zero for each game and reset with New Session/game-end
+  rotation. Event-ID deduplication prevents retry inflation; OCR values cannot
+  overwrite the calculated total. Enable desktop sharing before gameplay:
+  starting/restarting sharing creates fresh state, not a replay of earlier events.
+- Older snapshots without `runningScore` retain the accepted-OCR score display.
+  Rebuild/restart the desktop publisher and deploy the frontend for the new display.
 - Only explicit session resets change the active session. Events cannot switch it.
 - Event IDs are deduplicated for the entire active sharing session.
 - Numeric fields use sequence order, not arrival time or maximum numeric value.
@@ -262,33 +277,57 @@ Connection/publish errors appear in the desktop Events tab.
   outcomes in the current game. Undetected notes do not count; missing miss
   calibration can overstate performance. Old snapshots without miss totals do
   not show this card.
-- Optional **Add Appearance** lane calibration in the desktop enables
-  `arrow_appeared` events and positive `response_time_ms` samples on uniquely
-  paired hits. The average uses first-observed source timestamps for confirmed
-  appearance and hit states, not confirmation, network, or wall-clock delay.
-  Misses, overlapping appearances, zero-time pairs, seeks, recording toggles,
-  stopping analysis, recalibration, and new sessions clear pending pairings.
-  Response totals reset with the game, not with playback pause.
-- Animal comparisons use the [mouse visual-escape reference of approximately
+- Appearance calibration and new response timing have been removed from the
+  desktop. Old `appeared` references are ignored. New games have no response
+  samples, so time-to-answer and animal-comparison cards stay hidden. Older
+  snapshots with valid timing remain readable.
+- Legacy animal comparisons use the [mouse visual-escape reference of approximately
   250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/) and the [goldfish
   auditory C-start mean of 10.64 ms, 0-30 cm from the
   speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). Sources and test
   conditions appear on the card. They are different tasks/senses, not
   equivalent tests or a universal animal speed ranking.
-- The unique most-hit lane receives Left-Step Legend (Up-Left), Right-Step
-  Royalty (Up-Right), Forward-Step Phenom (Down-Left), Back-Step Boss
-  (Down-Right), or Center-Step Superstar (Center). A positive five-way tie is
-  All-Step Ace. Zero counts and partial ties have no title.
+- The unique lane with the highest `hits / (hits + misses)` receives Up-Left
+  Legend, Up-Right Royalty, Down-Left Dynamo, Down-Right Champion, or
+  Center-Step Superstar, with the corresponding direction symbol. The card shows
+  its percentage and detected outcome count. Unplayed lanes are excluded; no
+  minimum sample count is required. Equal positive accuracy across all five lanes
+  awards All-Step Ace; partial ties show Joint leaders with the tied directions.
+  During active games the Step Title tile always stays visible, showing Warming up
+  for zero accuracy, unplayed lanes, or unavailable per-lane hit/miss data.
+  Desktop snapshots now include `missesByDirection` alongside `hitsByDirection`.
+  Older snapshots without lane-miss counts show Warming up rather than guessing a title. Restart
+  the desktop publisher and deploy the updated frontend; old games are not replayed.
+- Two extra player tiles add playful captions without changing the numbers:
+  **Most-hit lane** lists every lane tied for the highest positive hit count
+  This is hit volume, unlike the accuracy-based step title. Unknown-direction hits
+  are excluded; zero or unavailable lane counts hide the tile.
+  **Total detected steps** is player hits + misses, including unknown-direction
+  outcomes once. It counts detected outcomes, not unique physical steps:
+  simultaneous matched arrows count separately. A real zero is shown; missing
+  miss totals hide the tile. Each tile has 50 unique playful captions, rotating
+  every 15 seconds while the feed is active, connected, and healthy. A shuffled
+  session-specific order prevents repeats until all 50 are used; the players use
+  different positions in the deck so their simultaneous captions differ.
+  Polling and metric changes do not restart the rotation. Inactive, stale, and
+  failed feeds pause it, and a new game resets the cycle. Captions are playful,
+  not additional measurements; tile numbers and lane names do not change with them.
 - Cards without data are omitted, including score/combo, response timing,
-  animal comparisons, percentages, pace, directional breakdown, and titles.
+  animal comparisons, percentages, pace, and directional breakdown.
+  Step Title is retained with a Warming up state during active games.
   A real zero (for example 0% after detected misses) is not missing data.
 - Optional desktop `judgment` regions correlate each player's captured success/MISS
   images with arrow activity. Unique directions remain `arrow_hit` / `arrow_miss`.
   Uncertain directions produce `judgment_hit` / `judgment_miss` with null direction,
   counted once per observed judgment in player totals, percentage and hit pace.
-  `unassignedHits` / `unassignedMisses` expose these counts separately; the viewer
-  explains why they are absent from directional counts and response timing.
-  Arrow balance and lane titles use direction-assigned hits only. Legacy snapshots
+  `unassignedHits` / `unassignedMisses` retain these counts in snapshots. The viewer
+  omits the scoring-rules explanation and unknown-direction summary; totals,
+  scoring, directional counts, and response timing calculations are unchanged.
+  Arrow accuracy and lane titles use direction-assigned hits and misses only.
+  Accuracy is `lane hits / (lane hits + lane misses)`, not a distribution of hit
+  counts across lanes. Unplayed lanes show No attempts rather than 0%; real
+  misses without hits show 0%. Snapshots without per-lane miss data omit this section.
+  Legacy snapshots
   default the new counters to zero, and arrow-only layouts keep their original behavior.
 - The SDK worker rejects revisions older than its last acknowledged revision.
 

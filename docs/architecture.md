@@ -17,7 +17,7 @@ flowchart TB
     RULES["Validation + desktop display<br/>raw / candidate / accepted<br/>source frame retained"]
     BUS["EventBus<br/>event_id + session_id + sequence<br/>Record events gate"]
     LOCAL["Local Events table<br/>optional JSONL export"]
-    LIVE["Desktop scoreboard publisher<br/>current scores, combos, arrow counts<br/>arrow balance + hit pace"]
+    LIVE["Desktop scoreboard publisher<br/>current scores, combos, arrow counts<br/>arrow accuracy + hit pace"]
     SDK["Desktop-managed Rayfin SDK worker<br/>private stdin/stdout pipes<br/>one current-state write at a time"]
     OUTBOX["Durable SQLite outbox<br/>data/eventstream-outbox.sqlite3"]
     SEND["Background Event Hub sender<br/>up to 100 already-waiting events<br/>no batch-collection timer"]
@@ -171,19 +171,31 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - `score_changed` and `combo_changed`: accepted numeric changes.
 - `score_observed`: unconfirmed score candidates, shown separately.
 - Arrow references identify activity using fresh `active` samples; old `hit`/`miss`
-  arrow images are ignored with a recalibration warning. Optional `appeared` samples
-  retain response timing. Without Active Arrow calibration no lane evidence is produced.
+  arrow images are ignored with a recalibration warning. Old `appeared` samples
+  are also ignored. Optional per-region `empty` references suppress look-alike
+  receptors: Active must pass the configured similarity threshold and exceed the
+  best Empty similarity by more than 0.02. Ties and near-ties remain idle.
+  All five directions for each player have independent Active/Empty capture,
+  thumbnail, clear, gallery, and individual deletion controls. Both reference sets
+  serialize and rescale with layouts. Active-only layouts preserve prior behavior.
+  The arrow preview reports Active similarity and explains Empty overrides in status.
+  Without Active Arrow calibration no lane evidence is produced.
 - `arrow_hit` and `arrow_miss`: judgment-correlated outcomes only. Arrow activity
   alone never determines success or failure, even without a judgment box.
 - Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
   at source-frame rate. Their new pulses determine outcome type, with arrow
-  activity matched within +/-150 ms of source time. A 300 ms settling interval
+  activity matched from 500 ms before to 150 ms after the word's source-time onset.
+  A 650 ms settling interval after the word
   detects competing judgments. Ambiguous directions produce `judgment_hit` or
   `judgment_miss` with `direction: null`, never a guessed lane. A lingering judgment
   cannot validate repeated arrows; 250 ms of source-video time without an outcome
   match must rearm the box before any next judgment, including a different word.
   Ambiguous strong matches and crop/calibration errors restart that interval. Pending
   evidence is cleared on seek, stop, recording/layout/source changes and new games.
+  Arrow evidence remains eligible for retention through the full delayed-word and
+  settling interval (up to 1,150 ms). Payloads include `correlation_lookback_ms`
+  and `correlation_lookahead_ms`; legacy `correlation_window_ms` is the maximum
+  of these allowances, not a symmetric window.
   Perfect, Great, and Good emit hit outcomes, retaining their tier in `payload.judgment`;
   Miss retains the miss outcome. Legacy Success references remain ungraded until
   tier calibration starts. Legacy Blank references are ignored; no background
@@ -197,18 +209,31 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   unassigned. Each event has its own ID for delivery deduplication plus a shared
   `payload.judgment_id`, `step_directions`, and `step_arrow_count` for step grouping.
   Existing arrow totals count each arrow; distinct judgment IDs count judged steps.
+  The desktop also accumulates `runningScore` per player: Good 10, Great 20,
+  Perfect 40, Miss 0 points per outcome event. Unknown-direction judgments score
+  once; legacy ungraded hits score zero. Event-ID deduplication and game resets
+  apply to points as well as counts. OCR score fields remain separate; the React
+  scoreboard prefers `runningScore`, including zero, and falls back to accepted
+  OCR score only for older snapshots. Sharing must be enabled before gameplay;
+  restarting sharing starts fresh state without replaying prior events.
   Player totals and pace include directionless outcomes; lane counts/titles and
   response timing exclude them. Desktop snapshots carry `unassignedHits` and
   `unassignedMisses` for the viewer. Calibration references serialize inside layouts.
-  The desktop enables P1-owned calibration: matching P2 regions receive P1 image
-  references and digit templates (including review/version metadata). Arrow matching
-  is by direction; other kinds match by kind. Geometry, trackers and per-player
-  preprocessing remain independent. Adding/removing/loading regions and recalibration
-  refresh the shared copies; missing P1 regions clear P2 references instead of reusing
-  stale player-specific calibration.
-- Optional `arrow_appeared`: a user-calibrated appearance state in the same lane
-  crop as its outcome. Unique subsequent hits carry source-time appearance,
-  hit-onset, and response-duration fields; misses and ambiguous pairings do not.
+  The desktop keeps calibration independent for each player: arrow activity,
+  Perfect/Great/Good/Miss images, and taught score/combo digit templates (including
+  review/version metadata). Capturing, clearing, or teaching one region never modifies
+  the other player's samples. Matching P2 boxes still adopt P1 width and
+  height when drawn or loaded; resizing retains their centers where frame bounds
+  permit. The Regions size-matching action also applies this to the current layout.
+  With drawing disabled, existing boxes can be dragged without resizing; release
+  updates their position, resets recognition tracking, and refreshes previews.
+  Positions, trackers and per-player preprocessing remain independent. Adding regions
+  starts them without calibration; loading retains each region's saved samples.
+  Old layouts containing copied shared samples are not cleared automatically;
+  recapture each player's examples as needed and save the layout.
+- Appearance calibration is removed. New events do not emit `arrow_appeared`
+  or appearance-based response-duration fields; legacy layout images remain
+  stored but are ignored.
 - `new_session`: sequence 0, announcing the in-memory game GUID shared by both
   players. Payload includes the new and previous IDs, `is_new_session: true`,
   and the reason (`initial`, `video_loaded`, `hdmi_connected`, `manual`, or `game_end`).
@@ -244,17 +269,10 @@ The viewer rejects old four-direction snapshots instead of inventing a mapping.
 Pause holds the source-time rate; seeks clear recent pace; New Session clears
 session totals. Network arrival time does not determine hit pace.
 
-**Time to answer** averages positive, uniquely paired appearance-to-hit
-intervals per player this game. The analysis layer timestamps the first observed
-frames of confirmed states and places the evidence on hit events. Duplicate
-frame processing cannot advance confirmation. Multiple appearances before one
-outcome are ambiguous and excluded. Misses, seeks, calibration changes, recording
-toggles, analysis stops, and session resets clear outstanding pairings.
-The aggregator validates timestamp ordering and duration equality before adding
-a sample, while preserving valid hit counts if timing is invalid.
-The snapshot carries `misses`, `averageResponseTimeMs`, and `responseSamples`;
-the typed SDK publisher preserves them. Older snapshots remain readable without
-inventing these measurements.
+**Time to answer** is now legacy-only: new analysis events carry no response
+timing, so new game snapshots have null `averageResponseTimeMs` and zero
+`responseSamples`. The viewer hides timing and animal cards without samples.
+Historical snapshots and event consumers retain timing validation for compatibility.
 
 Animal comparisons cite the [mouse visual-escape reference, approximately
 250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/) and [goldfish auditory
@@ -262,9 +280,14 @@ C-start mean, 10.64 ms at 0-30 cm from the
 speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). The UI identifies the
 different tasks/senses and does not present them as equivalent tests or a
 universal speed ranking.
-The most-hit lane determines a step title using the configured display mapping;
-a positive five-way tie is All-Step Ace, while partial ties award no title.
-All metric cards without supporting data are omitted rather than left empty.
+The highest per-lane hit percentage determines the step title and its matching
+direction symbol, using `hitsByDirection` and `missesByDirection`. Unknown-direction
+outcomes and unplayed lanes are excluded. A positive five-way accuracy tie is
+All-Step Ace; partial ties show Joint leaders with the matching directions.
+The Step Title tile remains visible during active games, using Warming up for zero
+accuracy or missing lane data rather than inventing a winner. No minimum sample
+count is required. Legacy snapshots without lane misses also show Warming up.
+Other metric cards without supporting data are omitted rather than left empty.
 
 The live state rejects old numeric sequences, deduplicates event IDs for the
 active sharing session, and changes sessions through manual/video-load resets

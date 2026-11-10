@@ -51,7 +51,7 @@ COMBO_MAX_INCREASE_PER_SECOND = 60
 COMBO_MIN_CONFIDENCE = 0.90
 
 # Recognized region "kinds" for milestone 1+. Each numeric kind maps to an
-# event type; "arrow" is handled separately (see ARROW_EVENT_TYPES below).
+# event type; arrow outcomes are determined by judgment correlation.
 FIELD_EVENT_TYPES = {
     "score": "score_changed",
     "combo": "combo_changed",
@@ -59,8 +59,11 @@ FIELD_EVENT_TYPES = {
 SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow", "judgment", "game_end"]
-JUDGMENT_CORRELATION_WINDOW_MS = 150
+JUDGMENT_CORRELATION_LOOKBACK_MS = 500
+JUDGMENT_CORRELATION_LOOKAHEAD_MS = 150
+SIMULTANEOUS_STEP_WINDOW_MS = 150
 JUDGMENT_REARM_MS = 250
+JUDGMENT_POINTS = {"good": 10, "great": 20, "perfect": 40, "miss": 0}
 NEW_SESSION_EVENT_TYPE = "new_session"
 SESSION_END_EVENT_TYPE = "session_end"
 DEFAULT_GAME_END_SIMILARITY_THRESHOLD = 0.95
@@ -70,13 +73,11 @@ PLAYER_CHOICES = ["P1", "P2", "Unknown"]
 
 # --- Arrow activity detection -------------------------------------------
 # One region per (player, direction) is compared against user-captured
-# reference snapshots ("active", optional "appeared"). Only a matched player
+# reference snapshots ("active"). Only a matched player
 # judgment determines hit/miss; activity never implies an outcome.
 ARROW_DIRECTIONS = ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
-ARROW_STATES = ["active", "appeared"]
-ARROW_EVENT_TYPES = {
-    "appeared": "arrow_appeared",
-}
+ARROW_STATES = ["active", "empty"]
+ARROW_EMPTY_REFERENCE_MARGIN = 0.02
 
 # Similarity score (0..1, see app.image_utils.similarity) above which a live
 # crop is considered a match for a captured reference. Configurable from the

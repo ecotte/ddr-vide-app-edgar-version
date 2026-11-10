@@ -20,9 +20,9 @@ class Region:
 
     ``direction`` is only used when ``kind == "arrow"`` and is one of config.ARROW_DIRECTIONS
     ("Up-Right"/"Up-Left"/"Down-Right"/"Down-Left"/"Center"), and ``reference_images`` holds
-    user-captured example crops (base64 PNG) grouped by state name ("active",
-    optional "appeared") that the arrow classifier compares live frames against.
-    Legacy arrow "hit"/"miss" images are ignored and require fresh activity calibration. These
+    user-captured example crops (base64 PNG) grouped under "active" and optional
+    "empty" examples. Active matches must clearly beat Empty examples when supplied.
+    Legacy arrow "hit"/"miss"/"appeared" images are ignored and require fresh activity calibration. These
     are never pre-supplied by the app - only what the user captures from
     their own footage. ``game_end`` regions use ``reference_images["ended"]``
     for a shared, game-wide end indicator.
@@ -143,29 +143,33 @@ class LayoutProfile:
         )
 
 
-def p1_reference_source(region: Region, regions: list[Region]) -> Optional[Region]:
-    """Resolve the matching P1 box without sharing geometry or tracking state."""
-    if region.player != "P2" or region.kind not in ("arrow", "judgment", "score", "combo"):
+def shared_reference_source(region: Region, regions: list[Region]) -> Region:
+    """Use P1 as shared storage when present, otherwise retain P2 calibration."""
+    if region.player not in ("P1", "P2") or region.kind not in ("arrow", "judgment", "score", "combo"):
         return region
-    key = f"P1:{region.kind}"
-    if region.kind == "arrow":
-        key += f":{region.direction}"
-    return next((candidate for candidate in regions if candidate.key() == key), None)
+    for player in ("P1", "P2"):
+        key = f"{player}:{region.kind}"
+        if region.kind == "arrow":
+            key += f":{region.direction}"
+        source = next((candidate for candidate in regions if candidate.key() == key), None)
+        if source is not None:
+            return source
+    return region
 
 
-def share_p1_references(regions: list[Region]) -> None:
+def share_player_references(regions: list[Region]) -> None:
     for region in regions:
-        source = p1_reference_source(region, regions)
+        source = shared_reference_source(region, regions)
         if source is region:
             continue
         region.reference_images = {
             state: list(images) for state, images in source.reference_images.items()
-        } if source else {}
+        }
         region.digit_templates = {
             digit: list(images) for digit, images in source.digit_templates.items()
-        } if source else {}
-        region.digit_templates_reviewed = source.digit_templates_reviewed if source else False
-        region.score_template_version = source.score_template_version if source else 0
+        }
+        region.digit_templates_reviewed = source.digit_templates_reviewed
+        region.score_template_version = source.score_template_version
 
 
 @dataclass

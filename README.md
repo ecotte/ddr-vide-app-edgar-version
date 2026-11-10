@@ -25,6 +25,17 @@ request completes; latency is not guaranteed to be sub-second.
 Sharing is off at startup, excludes synthetic samples, and does not change
 the existing durable Fabric publishing path. - Milestone 1 (recorded video)
 
+The scoreboard's main **Running score** is calculated from recognized judgments:
+Good = 10, Great = 20, Perfect = 40, Miss = 0. Points are awarded per matched arrow
+(two simultaneous Perfect arrows = 80); an unknown-direction judgment earns its
+points once. Legacy ungraded hits earn no points. No OCR score box is needed.
+Each player's total starts at zero and resets with New Session/game-end rotation.
+Duplicate event IDs cannot add points twice. Score/observation OCR events do not
+change the running score. Enable sharing before play; enabling/restarting sharing
+starts a fresh snapshot and does not replay earlier events.
+Deploy the updated scoreboard frontend and restart the desktop publisher to use
+this display; older publisher snapshots retain their accepted-OCR score display.
+
 The same Rayfin app includes a shared-device **Player check-in kiosk** at
 `#register`. An organizer signs in once (and again if the Microsoft session
 expires); players generate a Fabric-themed name and unique six-digit PIN without
@@ -67,15 +78,18 @@ activity. General judgment-text OCR remains future work.
 
 **Does:**
 - Open a local `.mp4`/`.avi`/`.mov`/`.mkv` file, play/pause/step through it frame by frame, and seek with a slider.
+- Backward steps and seeks keep the preview responsive while background OCR is busy. Tracking resets without blocking the UI once recognition locks become available; only the newest requested frame is retained, and old-generation OCR results do not overwrite its recognition cards.
 - Select **HDMI input**, choose a named HDMI-to-USB capture device such as **Hagibis**, and analyze its live frames without recording a video file.
 - Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per direction - Up-Right/Up-Left/Down-Right/Down-Left/Center - per player), plus a shared `game_end` indicator.
+- The **Add region** dialog asks only for player, field kind, and arrow direction when applicable. Region names are generated automatically, for example `P1 Score`, `P2 Center`, or `Game end`; no free-text name is required. Existing saved region labels remain readable.
 - Save/load named layout profiles (JSON files under `layouts/`), tied to a specific source resolution, with an explicit warning (never a silent guess) if you load a layout onto a differently-sized video. If you continue, regions are fitted with one uniform scale and centered so different aspect ratios do not distort them. Arrow-lane reference snapshots (see below) travel with the layout and are resized by the same scale.
-- **Save Layout** and **Save Layout As...** embed all captured arrow activity/appearance, judgment, and game-end references, plus taught score/combo digit samples, in the same JSON file. Load that file to restore them; no separate reference files are needed. Save again after teaching or changing references.
+- **Save Layout** and **Save Layout As...** embed all captured arrow activity, judgment, and game-end references, plus taught score/combo digit samples, in the same JSON file. Load that file to restore them; no separate reference files are needed. Save again after teaching or changing references.
 - Recognition cards pair P1 and P2 on shared rows: score, combo, then matching arrow directions. Different preview sizes, wrapped status text, missing regions, and drawing order do not shift unrelated cards beside one another.
+- Matching P1/P2 recognition boxes use identical width and height: P1 supplies the size for each kind (and each arrow direction). Drawing or loading a matching pair resizes P2 around its center, shifting inside the source frame if needed; P1, unpaired boxes, and shared game-end boxes are unchanged. P2 boxes are not created automatically: draw and label each one normally, then its size matches P1. **Regions > Match P2 sizes to P1** also applies this to the current layout. With **Draw Region: OFF**, drag an existing box on the video to move it without resizing; release commits the position within frame bounds. Check the resized crop alignment and recapture examples if needed; existing references and per-player settings are retained. **Save Layout** persists the changed coordinates.
 - Run OCR (EasyOCR, CPU) on each `score`/`combo` region once you click **Start Analysis**. Recognition runs on a single-threaded background worker without blocking source-rate playback. After each job it immediately processes the newest available frame, using a retained neighboring frame only when a result actually needs confirmation. It never builds an unbounded backlog.
 - Teach score or combo digit references with one input: pause on a clear number, click **Teach score...** or **Teach combo...** in its region card, and enter all visible digits (including leading zeros). Draw the region tightly around the digits, excluding the COMBO label and arrows. References support background OCR verification; they never emit numeric events on their own. Combo yellow-digit and fast-live settings still apply, and low-confidence readings still need repeated evidence. Advance/play to analyze new frames after teaching. Save the layout to retain each region's samples.
 - Combo teaching detects dark digit outlines on bright/detailed backgrounds separately from score digits. If automatic boxes are wrong, choose **Draw digit boxes manually** and drag one tight, non-overlapping box around each digit from left to right; a crosshair and live green rectangle show the box while dragging. Enter all digits, then **Learn**. **Use automatic boxes** restores detection. Live template verification uses the same combo outline preprocessing. Older score-style combo templates need reteaching; score templates remain valid. Manual boxes label teaching samples only, not fixed live positions, so changing combo lengths remains supported.
-- For `arrow` regions: capture multiple **Active Arrow** snapshots on P1 to identify activity in that direction. Perfect/Great/Good/Miss comes only from the player's judgment box, never from arrow images.
+- For `arrow` regions: capture multiple **Active Arrow** snapshots on either player to identify activity in that direction. Perfect/Great/Good/Miss comes only from the player's judgment box, never from arrow images.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo and a separate edge-triggered activity detector for arrows; matched judgment pulses determine the outcomes - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
@@ -237,50 +251,69 @@ Combo OCR allows the engine to recognize surrounding words such as "combo", then
 
 For fresher combo updates, enable **Fast live combo** in that region's card and **Save Layout**. This opt-in mode runs recognition directly on the crop and never invokes slow text detection, even when the reading is uncertain. It works with or without the yellow filter. Readable candidates that differ from the accepted value are labeled **unconfirmed**; readings below 0.90 confidence cannot replace the accepted combo or emit combo-change events. Non-numeric/mixed results remain unreadable with a visible explanation. Existing jump and correction rules still apply. Keep the crop tight around the digits: this mode can miss readings the full detector would recover and can still make confident mistakes. Disable it to restore detector fallback. Old layouts default to off; saving/loading or rescaling preserves the choice. Toggling clears pending evidence without erasing accepted values or events. Score OCR remains unchanged and still contributes to the worker's total latency.
 
-### 5b. Arrow lanes (activity identification and optional response timing)
+### 5b. Arrow lanes (activity identification)
 
 1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up-Right/Up-Left/Down-Right/Down-Left/Center). Repeat for each of the 5 directions, and again for the other player if needed (up to 10 arrow boxes total for 2 players).
-2. On P1, select **Add Active Arrow ref** on frames that show activity in that direction, not the always-visible idle receptor. Add multiple appearances as needed; P2 uses the matching P1 references. **Clear Active Arrow refs** removes these examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
+2. On each player, select **Add Active Arrow ref** on frames that show activity in that direction, not the always-visible idle receptor. Capture multiple appearances separately for P1 and P2; examples are not shared. **Clear Active Arrow refs** removes only that card's examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
+   For every direction on either player, **Add Empty ref** captures the unused
+   receptor with no note overlapping it. These optional negative examples prevent
+   look-alike empty tiles from being treated as active. Active must meet the
+   similarity threshold and beat the best Empty match by more than **0.02**.
+   Ties and near-ties stay idle. Capture multiple empty appearances if the receptor
+   animates. Each card has independent Empty preview, clear, and **View / delete
+   Empty refs...** controls; deleting Empty samples never removes Active samples.
 3. Adjust **Arrow similarity threshold** (default 0.90; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
-5. Add a judgment box for each player and teach Perfect/Great/Good/Miss on P1. Only a matching judgment produces an outcome; activity alone never counts a hit or miss. Existing layout coordinates and judgment/digit samples are retained during recalibration.
+   **View / delete refs...** opens a scrollable gallery of every Active Arrow sample
+   for that box. Delete individual examples without clearing the rest or changing
+   the other player. Recognition and the card preview refresh immediately; close
+   the gallery and **Save Layout** to persist deletions.
+   Active and Empty examples are both saved, loaded, and rescaled with the layout.
+   Existing active-only layouts retain their original matching behavior until you
+   capture Empty samples. The displayed **active similarity** still measures the
+   best Active match; status explains when an Empty example overrides it.
+5. Add a judgment box for each player and teach Perfect/Great/Good/Miss separately on each player's card. Only a matching judgment produces an outcome; activity alone never counts a hit or miss. Existing layout coordinates and judgment/digit samples are retained during recalibration.
 
-For **Time to answer**, optionally pause on a distinct, newly visible arrow
-before its hit and select **Add Appearance** for that lane. The region must
-include both that appearance and the later activity indicator; a receptor-only
-crop that never shows the incoming arrow cannot measure this interval.
-Do not use the same image for appearance and activity. **Clear Appearance**
-removes the optional references; retained Appearance samples still require a fresh Active Arrow reference.
-
-An `arrow_appeared` event records each confirmed appearance. A uniquely paired
-subsequent `arrow_hit` in the same lane carries `appearance_video_time_ms`,
-`hit_video_time_ms`, and `response_time_ms`. Timing uses the first video frame
-of each confirmed state, not wall-clock or network time. Duplicate frames cannot
-confirm states. Misses, multiple appearances before an outcome, zero-time pairs,
-seeks, calibration changes, stopping analysis, recording toggles, and session
-resets cannot produce a response sample from an old appearance.
-
-The scoreboard shows each player's average over valid timed hits this game.
-This is a calibrated, video-detected appearance-to-hit interval, not a pure
-neurological reaction-time or accuracy measurement.
-The animal card compares it with explicitly labeled published test references:
-[mouse visual looming escape, approximately 250 ms](https://pmc.ncbi.nlm.nih.gov/articles/PMC3809337/)
-and [goldfish auditory C-start, mean 10.64 ms at 0-30 cm from the speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/).
-Tasks, senses, and capture resolution differ; the comparison is not a
-like-for-like test or a universal ranking of animals.
+There is no Appearance calibration. Old `appeared` references remain in saved
+layouts but are ignored by recognition and previews. New events do not include
+`arrow_appeared` or appearance-based response timing. The scoreboard's time-to-answer
+and animal-comparison cards have no samples for new games and stay hidden;
+older snapshots remain compatible. Active Arrow and judgment calibration are
+all that is needed for outcomes and running points.
 
 **Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
 outcomes in the current game. Undetected notes are not counted. Missing data
 hides its card rather than showing an empty placeholder; the same applies to
-timing, animal comparisons, hit pace, arrow balance, and step titles.
+timing, animal comparisons, hit pace, and per-lane arrow accuracy.
+Step Title stays visible during active games, using Warming up until a title is available.
+**Arrow accuracy** uses each lane's `hits / (hits + misses)`, not its share of total
+hits. Unplayed lanes show **No attempts**; detected misses without hits show **0.0%**.
+Unknown-direction outcomes do not alter lane accuracy. Older snapshots without
+per-lane miss counts omit this section.
 Without Miss references in the judgment box, misses cannot be detected, so this percentage may
 overstate actual performance.
 
-The most-hit lane earns one title: Up-Left is **Left-Step Legend**, Up-Right
-is **Right-Step Royalty**, Down-Left is **Forward-Step Phenom**, Down-Right
-is **Back-Step Boss**, and Center is **Center-Step Superstar**.
-**All-Step Ace** requires equal positive hit counts in all five lanes.
-Zero counts and partial ties award no title until a unique leader emerges.
+The lane with the highest detected hit percentage (`lane hits / (lane hits + lane misses)`)
+earns one title: **Up-Left Legend**, **Up-Right Royalty**, **Down-Left Dynamo**,
+**Down-Right Champion**, or **Center-Step Superstar**, with its matching direction symbol.
+The card shows the percentage and detected outcome counts. Unplayed lanes and
+unknown-direction judgments are excluded. **All-Step Ace** requires equal positive
+hit percentages in all five lanes. A two-, three-, or four-way accuracy tie shows
+**Joint leaders** with the tied directions. The Step Title tile remains visible
+during active games, showing **Warming up** when no directional hit can earn a title
+or per-lane data is unavailable. No minimum sample count is required.
+Restart the desktop publisher and deploy the
+updated scoreboard to use the new lane-accuracy titles; previous games are not replayed.
+
+Two playful tiles add **Most-hit lane** and **Total detected steps**, each with
+50 captions that rotate every 15 seconds of live feed time without repeating
+until the deck is exhausted. Players get different simultaneous captions.
+Inactive, stale, and failed feeds pause rotation; new games reset it. These
+captions never change the underlying numbers. Most-hit lane uses hit
+counts, not accuracy, and lists ties. Total detected steps adds player hits and
+misses, including unknown-direction outcomes once; simultaneous arrows count
+separately, so it is a detected-outcome count, not a physical step count. Missing
+data hides a tile; a known total of zero remains visible.
 
 **Existing four-direction layouts:** loading a layout with Up/Down/Left/Right
 arrow regions shows a warning and removes those unsupported arrow regions from
@@ -339,7 +372,7 @@ app restarts; exported events and queued Fabric messages retain their original I
 #### Playback and event review
 
 1. (Recommended) Give the layout a name in **Layout profile > Name** and click **Save Layout** so you don't have to redo calibration next time - this always saves into the app's built-in `layouts/` folder, keyed by that name, and shows up in the **Load** dropdown. If you'd rather choose exactly where the file goes (e.g. a USB drive, a project folder, alongside the video itself), use **Save Layout As...** instead, which opens a normal Windows file-save dialog defaulting to the `layouts/` folder. To load a layout saved that way (or from anywhere else on disk), use **Load Layout From...**, which opens a file-open dialog - as opposed to **Load Layout**, which only loads from the Name dropdown of layouts saved in the built-in folder. Loading a saved layout on a video of a different resolution will show an explicit prompt asking whether to fit the coordinates and arrow reference snapshots. The fit uses one uniform scale and centers the old coordinate space in the new frame, so wide, square, and portrait videos do not distort regions. It will never silently apply the wrong coordinates, whichever way you loaded it.
-2. Click **Start Analysis**. Now step or play through the video. The right-hand panel shows, per region, the current crop and either (score/combo) raw OCR text/candidate/accepted value, or (arrow) the observed state (idle/active/appeared), similarity score, and reference thumbnails, plus a status line.
+2. Click **Start Analysis**. Now step or play through the video. The right-hand panel shows, per region, the current crop and either (score/combo) raw OCR text/candidate/accepted value, or (arrow) the observed state (idle/active), similarity score, and reference thumbnails, plus a status line.
 
    Recognition is arranged in two compact columns: **Player 1** on the left and **Player 2** on the right. Each card stacks its aspect-ratio-preserving crop preview above its readings and wraps long status messages. Teaching, yellow-digit filters, and arrow-reference controls remain in the matching player's card. Regions assigned to **Unknown** appear in a separate section below both columns. Scroll the recognition panel to reach additional cards.
 
@@ -373,29 +406,35 @@ app restarts; exported events and queued Fabric messages retain their original I
 
 **Correlating arrow activity with Perfect / Great / Good / Miss:**
 
-**Shared calibration:** P1 is the reference source for both players in the desktop app.
-Arrow images are shared by direction; judgment images and score/combo digit templates
-are shared by region kind. Capture, clear, or teach references on P1; P2 controls are
-read-only and its reference previews update automatically. Each player keeps separate
-screen coordinates, tracking, events, and combo preprocessing settings. Keep corresponding
-crops tightly and similarly framed: different padding/aspect ratios can reduce accuracy.
-Missing P1 boxes leave P2 without references (numeric OCR still runs); create/calibrate
-the matching P1 box first. Loading an older layout replaces its P2 references in memory
-with P1's, and Save Layout persists those copies. Existing files are unchanged until saved.
+**Independent player calibration:** P1 and P2 keep separate arrow activity images,
+Perfect/Great/Good/Miss examples, and taught score/combo digits (including review/version
+metadata). Capturing, clearing, or teaching on one card never changes the other player's
+calibration. Matching box dimensions remain automatic, but equal sizes do not guarantee
+equal framing, orientation, background, or animation. Align each player's crop and
+capture examples from that player's footage. P2 can be calibrated without a P1 box.
+Loading layouts retains each region's own samples. Layouts saved while sharing was
+enabled may still contain identical copied samples: clear and recapture P2's references
+and reteach its digits as needed. Nothing is deleted automatically.
+**Save Layout** persists both sets; existing files are unchanged until saved.
 
 1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
 2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. No built-in text OCR or color interpretation is used.
 3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 250 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
-4. Keep each P1 arrow's reference calibration too. P2 uses the matching P1 references
+4. Keep each player's arrow reference calibration too. Each player uses its own references
    with its own screen boxes. **Save Layout** includes judgment regions and all their examples.
 
 For players with a judgment region, receptor flashes alone no longer count outcomes.
 A new confirmed judgment determines hit versus miss. Matching arrow
-activity within **150 ms before or after** that judgment assigns its direction,
+activity within **500 ms before** or **150 ms after** that judgment assigns its direction,
 without inferring success from the receptor's appearance. Correlation waits
-**300 ms of source-video time** to check for competing judgments; confirmation
+**650 ms of source-video time** after the judgment onset to check for competing judgments; confirmation
 frames and frame delivery can add delay. Processing order and wall-clock speed
 do not change the source-time window.
+The same bounds apply to Perfect, Great, Good, Miss, and legacy ungraded success.
+Arrow evidence is retained for up to 1,150 ms so early activity survives both a
+delayed word and the settling interval. Event payloads expose
+`correlation_lookback_ms` and `correlation_lookahead_ms`; the legacy
+`correlation_window_ms` reports the larger allowance (500 ms).
 
 For simultaneous steps, the same judgment applies to every matched arrow.
 Each distinct direction emits one `arrow_hit` or `arrow_miss`, with its full
@@ -404,7 +443,7 @@ match only this judgment. The events have separate `event_id` values and a share
 `payload.judgment_id`, `step_directions`, and `step_arrow_count`. Two arrows with
 PERFECT therefore count as two hits but one judgment. Deduplicate deliveries by
 `event_id`; count distinct `payload.judgment_id` for judgment totals.
-Response timing remains per arrow when its appearance is uniquely known.
+No appearance-based response timing is generated.
 
 If no arrow, repeated activity in one direction, widely spaced arrows, or competing judgments make the direction uncertain,
 one `judgment_hit` / `judgment_miss` event is recorded for that player with
@@ -551,7 +590,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **Playback looks slow/choppy while analysis is running** - numeric OCR runs in the background and skips samples rather than slowing the video to OCR speed. Preview playback skips late frames to stay near source time and reuses video/crop images and unchanged region overlays to reduce rendering overhead. Heavy video decoding/rendering can still cause choppiness. Use frame-stepping for careful calibration. The last OCR-pass time describes recognition latency, not playback speed.
 - **Values seem clearly wrong even though the app "accepted" them** - check the raw OCR text shown in the recognition panel next to the accepted value; a consistent misread will still pass the consistency filter (see section 6/7). Try a tighter crop around just the digits, excluding glow/outline effects.
 - **Nothing appears in the Events tab** - confirm **Record events** is checked (Events tab) and that you clicked **Start Analysis** (Video & Regions tab, in the scrollable "Analysis" box - see the scrolling note above if you can't find it) - the app never runs OCR or emits events unless analysis is explicitly started. Also note that a continuously-animating on-screen score display can genuinely take a couple dozen frames before two consecutive OCR readings match and the first event is accepted - this is expected, not a bug (see section 6/7).
-- **Arrow row requests fresh calibration** - use **Add Active Arrow ref** on the matching P1 box. Old Hit/Miss references are ignored. Also calibrate the player's judgment box before expecting outcomes.
+- **Arrow row requests fresh calibration** - use **Add Active Arrow ref** on either player's matching direction. Old Hit/Miss references are ignored. Also calibrate the player's judgment box before expecting outcomes.
 - **Arrow events never fire even after capturing references** - check the live "similarity" number in the panel against your **Arrow similarity threshold**; if real frames never get close to your captured reference, try a tighter/cleaner crop, a lower threshold, or re-capturing the reference from a clearer example frame.
 - **Arrow events fire constantly / seem spurious** - your threshold may be too low, or the idle appearance is naturally close to your reference. Raise the threshold, tighten the crop, or raise "Arrow confirm frames" slightly.
 

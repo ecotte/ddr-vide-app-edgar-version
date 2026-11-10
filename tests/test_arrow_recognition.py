@@ -111,8 +111,35 @@ def test_classify_with_no_references_is_always_idle():
     assert score == 0.0
 
 
-def test_optional_appearance_reference_is_classified_and_outcome_wins_a_tie():
-    assert classify_arrow_state(GREY, {"appeared": [GREY]}, 0.99)[0] == "appeared"
+@pytest.mark.parametrize("active_score,empty_score,expected", [
+    (.81, .95, "idle"),
+    (.95, .95, "idle"),
+    (.91, .90, "idle"),
+    (.92, .90, "idle"),
+    (.93, .90, "active"),
+    (.89, .10, "idle"),
+    (.90, .10, "active"),
+])
+def test_active_must_pass_threshold_and_clearly_beat_empty_reference(monkeypatch, active_score, empty_score, expected):
+    monkeypatch.setattr(
+        image_utils, "similarity",
+        lambda crop, reference: active_score if reference is WHITE else empty_score,
+    )
+    state, score = classify_arrow_state(GREY, {"active": [WHITE], "empty": [BLACK]}, .90)
+    assert state == expected
+    assert score == active_score
+
+
+def test_empty_examples_use_the_best_match_and_do_not_replace_active_calibration():
+    assert classify_arrow_state(GREY, {"active": [WHITE]}, .45)[0] == "active"
+    assert classify_arrow_state(GREY, {"active": [WHITE], "empty": [BLACK, GREY]}, .45)[0] == "idle"
+    assert classify_arrow_state(WHITE, {"active": [BLACK, WHITE], "empty": GREY}, .45)[0] == "active"
+    assert classify_arrow_state(WHITE, {"empty": [WHITE]}, .45) == ("idle", 0.0)
+    assert classify_arrow_state(WHITE, {"active": [WHITE], "idle": [WHITE]}, .9)[0] == "active"
+
+
+def test_legacy_appearance_reference_is_ignored_even_when_it_matches():
+    assert classify_arrow_state(GREY, {"appeared": [GREY]}, 0.99)[0] == "idle"
     assert classify_arrow_state(WHITE, {"active": [WHITE], "appeared": [WHITE]}, 0.99)[0] == "active"
 
 
@@ -127,21 +154,21 @@ def _timed_session():
     return session, bus, region
 
 
-def test_appearance_to_hit_timing_uses_first_observed_video_frames_not_confirmation_delay():
+def test_legacy_appearance_does_not_emit_events_or_response_timing():
     from app.ui.events_tab import EventsTab
 
     session, bus, _ = _timed_session()
     session.set_arrow_min_confirm_frames(2)
     for index, (patch, timestamp) in enumerate([(GREY, 100), (GREY, 133), (WHITE, 300), (WHITE, 333)]):
         session.process_frame(_frame_with_patch(patch), index, timestamp)
-    session.process_frame(_frame_with_patch(WHITE), 4, 600)
-    assert [event.event_type for event in bus.events] == ["new_session", "arrow_appeared", "arrow_hit"]
+    session.process_frame(_frame_with_patch(WHITE), 4, 950)
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
     hit = bus.events[-1]
-    assert hit.video_time_ms == 600
-    assert hit.payload["appearance_video_time_ms"] == 100
-    assert hit.payload["hit_video_time_ms"] == 300
-    assert hit.payload["response_time_ms"] == 200
-    assert EventsTab._format_detail(hit).endswith("200 ms response")
+    assert hit.video_time_ms == 950
+    assert "appearance_video_time_ms" not in hit.payload
+    assert "hit_video_time_ms" not in hit.payload
+    assert "response_time_ms" not in hit.payload
+    assert "response" not in EventsTab._format_detail(hit)
 
 
 def test_repeated_processing_of_one_frame_cannot_confirm_an_appearance():
@@ -151,14 +178,14 @@ def test_repeated_processing_of_one_frame_cannot_confirm_an_appearance():
         session.process_frame(_frame_with_patch(GREY), 1, 100)
     assert not any(event.event_type == "arrow_appeared" for event in bus.events)
     session.process_frame(_frame_with_patch(GREY), 2, 133)
-    assert bus.events[-1].event_type == "arrow_appeared"
+    assert [event.event_type for event in bus.events] == ["new_session"]
 
 
 def test_same_timestamp_appearance_and_hit_do_not_claim_instant_reaction():
     session, bus, _ = _timed_session()
     session.process_frame(_frame_with_patch(GREY), 1, 100)
     session.process_frame(_frame_with_patch(WHITE), 2, 100)
-    session.process_frame(_frame_with_patch(WHITE), 3, 400)
+    session.process_frame(_frame_with_patch(WHITE), 3, 750)
     assert bus.events[-1].event_type == "arrow_hit"
     assert "response_time_ms" not in bus.events[-1].payload
 
@@ -186,7 +213,7 @@ def test_unmatched_or_interrupted_appearances_do_not_invent_response_times(reaso
         session.stop()
         session.start()
     session.process_frame(_frame_with_patch(WHITE), 20, 2000)
-    session.process_frame(_frame_with_patch(WHITE), 21, 2300)
+    session.process_frame(_frame_with_patch(WHITE), 21, 2650)
     assert bus.events[-1].event_type == "arrow_hit"
     assert "response_time_ms" not in bus.events[-1].payload
 
@@ -202,7 +229,7 @@ def test_activity_without_judgment_never_invents_a_hit():
     assert result.region_results[0].arrow_state == "active"
 
 
-def test_response_timing_flows_from_calibration_through_events_to_live_snapshot():
+def test_new_outcomes_keep_response_metrics_unavailable_even_with_legacy_appearance_refs():
     from app.live_scoreboard import LiveScoreboard
 
     session, bus, _ = _timed_session()
@@ -214,14 +241,14 @@ def test_response_timing_flows_from_calibration_through_events_to_live_snapshot(
             (GREY, 100), (WHITE, 300), (WHITE, 600),
             (GREY, 700), (GREY, 950), (WHITE, 1001), (WHITE, 1301),
             (_solid((0, 0, 255)), 1400), (_solid((0, 0, 255)), 1650),
-            (BLACK, 1700), (BLACK, 2000),
+            (BLACK, 1700), (BLACK, 2350),
         ]):
             session.process_frame(_frame_with_patch(patch), index, timestamp)
         player = board.snapshot()["players"]["P1"]
         assert player["hits"] == 2
         assert player["misses"] == 1
-        assert player["responseSamples"] == 2
-        assert player["averageResponseTimeMs"] == 250.5
+        assert player["responseSamples"] == 0
+        assert player["averageResponseTimeMs"] is None
     finally:
         board.stop()
 
@@ -326,7 +353,7 @@ def test_arrow_region_emits_hit_event_through_full_pipeline(direction, player):
     session.start()
 
     result = session.process_frame(_frame_with_patch(WHITE), 0, 0)
-    session.process_frame(_frame_with_patch(WHITE), 1, 300)
+    session.process_frame(_frame_with_patch(WHITE), 1, 650)
     assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
     assert bus.events[1].payload["direction"] == direction
     assert bus.events[1].player == player
@@ -344,7 +371,7 @@ def test_arrow_region_emits_miss_event_and_does_not_repeat(direction):
     session.process_frame(_frame_with_patch(BLACK), 0, 0)
     session.process_frame(_frame_with_patch(BLACK), 1, 33)
     session.process_frame(_frame_with_patch(BLACK), 2, 66)
-    session.process_frame(_frame_with_patch(BLACK), 3, 300)
+    session.process_frame(_frame_with_patch(BLACK), 3, 650)
 
     miss_events = [e for e in bus.events if e.event_type == "arrow_miss"]
     assert len(miss_events) == 1  # not one per frame
@@ -378,20 +405,20 @@ def test_legacy_arrow_images_require_fresh_calibration_and_cannot_assign_a_judgm
     session.set_regions([region, _judgment_region()])
     session.start()
     result = session.process_frame(_frame_with_patch(WHITE), 1, 100)
-    session.process_frame(_frame_with_patch(WHITE), 2, 400)
+    session.process_frame(_frame_with_patch(WHITE), 2, 750)
     assert "fresh Active Arrow" in result.region_results[0].error
     assert [event.event_type for event in bus.events] == ["new_session", "judgment_hit"]
     assert bus.events[-1].payload["direction"] is None
     assert region.to_dict() == original
     region.reference_images["active"] = [image_utils.encode_crop_to_base64_png(WHITE)]
     session.set_regions([region, _judgment_region()])
-    session.process_frame(_frame_with_patch(WHITE), 3, 500)
-    session.process_frame(_frame_with_patch(WHITE), 4, 800)
+    session.process_frame(_frame_with_patch(WHITE), 3, 850)
+    session.process_frame(_frame_with_patch(WHITE), 4, 1500)
     assert bus.events[-1].event_type == "arrow_hit"
     assert bus.events[-1].payload["direction"] == "Down-Left"
 
 
-def test_active_arrow_controls_capture_only_activity_and_appearance():
+def test_all_arrow_controls_support_independent_active_and_empty_references():
     import tkinter as tk
     from tkinter import ttk
     from app.ui.video_tab import VideoTab
@@ -400,7 +427,10 @@ def test_active_arrow_controls_capture_only_activity_and_appearance():
     root.withdraw()
     controller = Mock()
     tab = VideoTab(root, controller)
-    regions = [_arrow_region_with_refs(player=player) for player in ("P1", "P2")]
+    regions = [
+        _arrow_region_with_refs(direction, player)
+        for player in ("P1", "P2") for direction in config.ARROW_DIRECTIONS
+    ]
     try:
         tab.refresh_region_list(regions)
         for region in regions:
@@ -411,25 +441,99 @@ def test_active_arrow_controls_capture_only_activity_and_appearance():
                 for widget in group.winfo_children() if isinstance(widget, ttk.Button)
             }
             assert set(buttons) == {
-                "Add Active Arrow ref", "Clear Active Arrow refs", "Add Appearance", "Clear Appearance",
+                "Add Active Arrow ref", "Clear Active Arrow refs", "View / delete refs...",
+                "Add Empty ref", "Clear Empty refs", "View / delete Empty refs...",
             }
             assert "active_ref_label" in data
+            assert "empty_ref_label" in data
             assert "hit_ref_label" not in data and "miss_ref_label" not in data
+            assert "appeared_ref_label" not in data
             for title, state, action in (
                 ("Add Active Arrow ref", "active", controller.capture_arrow_reference),
                 ("Clear Active Arrow refs", "active", controller.clear_arrow_reference),
-                ("Add Appearance", "appeared", controller.capture_arrow_reference),
-                ("Clear Appearance", "appeared", controller.clear_arrow_reference),
+                ("Add Empty ref", "empty", controller.capture_arrow_reference),
+                ("Clear Empty refs", "empty", controller.clear_arrow_reference),
             ):
                 action.reset_mock()
                 buttons[title].invoke()
-                if region.player == "P1":
-                    action.assert_called_once_with(region, state)
-                else:
-                    assert buttons[title].instate(["disabled"])
-                    action.assert_not_called()
+                assert not buttons[title].instate(["disabled"])
+                action.assert_called_once_with(region, state)
+            controller.show_arrow_reference_gallery.reset_mock()
+            buttons["View / delete refs..."].invoke()
+            controller.show_arrow_reference_gallery.assert_called_once_with(region, "active")
+            controller.show_arrow_reference_gallery.reset_mock()
+            buttons["View / delete Empty refs..."].invoke()
+            controller.show_arrow_reference_gallery.assert_called_once_with(region, "empty")
     finally:
         root.destroy()
+
+
+@pytest.mark.parametrize("direction", config.ARROW_DIRECTIONS)
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_empty_reference_suppresses_false_lane_hits_but_allows_real_activity(direction, player):
+    bus = EventBus()
+    session = AnalysisSession(bus, OcrEngine())
+    region = _arrow_region_with_refs(direction, player)
+    region.reference_images = {
+        "active": [image_utils.encode_crop_to_base64_png(WHITE)],
+        "empty": [image_utils.encode_crop_to_base64_png(GREY)],
+    }
+    session.set_regions([region, _judgment_region(player)])
+    session.set_arrow_similarity_threshold(.45)
+    session.start()
+    empty_frame = _frame_with_patch(GREY)
+    empty_frame[:20, 20:40] = WHITE
+    first = session.process_frame(empty_frame, 0, 100)
+    session.process_frame(empty_frame, 1, 750)
+    arrow_result = first.region_results[0]
+    assert arrow_result.arrow_state == "idle"
+    assert arrow_result.confidence >= .45
+    assert "Empty reference" in arrow_result.validation_note
+    assert not session._pending_lanes
+    assert [event.event_type for event in bus.events] == ["new_session", "judgment_hit"]
+    assert bus.events[-1].payload["direction"] is None
+    session.new_session()
+    session.process_frame(_frame_with_patch(WHITE), 2, 1000)
+    session.process_frame(_frame_with_patch(WHITE), 3, 1650)
+    hits = [event for event in bus.events if event.event_type == "arrow_hit"]
+    assert len(hits) == 1
+    assert hits[0].player == player and hits[0].payload["direction"] == direction
+
+
+def test_active_and_empty_matching_survives_layout_save_load_and_rescale(tmp_path):
+    from app import layout_store
+    from app.models import LayoutProfile
+
+    p1 = Region("P1 Center", "P1", "arrow", 0, 0, 20, 20, direction="Center",
+                reference_images={
+                    "active": [image_utils.encode_crop_to_base64_png(WHITE)],
+                    "empty": [image_utils.encode_crop_to_base64_png(GREY)],
+                })
+    p2 = Region("P2 Center", "P2", "arrow", 20, 0, 20, 20, direction="Center",
+                reference_images={
+                    "active": [image_utils.encode_crop_to_base64_png(BLACK)],
+                    "empty": [image_utils.encode_crop_to_base64_png(GREY)],
+                })
+    path = str(tmp_path / "active-empty.json")
+    layout_store.save_layout_to_path(LayoutProfile("active-empty", 40, 20, [p1, p2]), path)
+    loaded = layout_store.load_layout_from_path(path)
+    scaled = layout_store.rescale_profile(loaded, 80, 40)
+    session = AnalysisSession(EventBus())
+    session.set_regions(scaled.regions)
+    session.set_arrow_similarity_threshold(.45)
+    session.start()
+    empty_frame = np.full((40, 80, 3), 128, dtype=np.uint8)
+    empty_result = session.process_arrow_frame(empty_frame, 0, 0)
+    assert all(result.arrow_state == "idle" for result in empty_result.region_results)
+    assert all("Empty reference" in result.validation_note for result in empty_result.region_results)
+    active_frame = empty_frame.copy()
+    active_frame[:, :40] = 255
+    active_frame[:, 40:] = 0
+    active_result = session.process_arrow_frame(active_frame, 1, 17)
+    assert all(result.arrow_state == "active" for result in active_result.region_results)
+    for region in scaled.regions:
+        assert set(region.reference_images) == {"active", "empty"}
+        assert session._arrow_references[region.key()]["empty"][0].shape[:2] == (40, 40)
 
 
 def test_new_regions_resets_arrow_tracking():
@@ -455,7 +559,7 @@ def test_all_ten_arrow_regions_track_independently_with_one_game_guid():
     session.set_regions(regions + [_judgment_region("P1"), _judgment_region("P2")])
     session.start()
     for index, (patch, timestamp) in enumerate((
-        (WHITE, 0), (WHITE, 300), (GREY, 400), (GREY, 650), (BLACK, 700), (BLACK, 1000),
+        (WHITE, 0), (WHITE, 650), (GREY, 750), (GREY, 1000), (BLACK, 1050), (BLACK, 1700),
     )):
         session.process_frame(_frame_with_patch(patch), index, timestamp)
     gameplay = [event for event in bus.events if event.event_type != "new_session"]

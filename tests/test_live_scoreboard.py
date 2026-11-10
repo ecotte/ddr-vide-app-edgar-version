@@ -26,6 +26,84 @@ def event(bus, kind="combo_changed", value=10, player="P1", direction="Up-Right"
     }, 1, 17, player, 0.99)
 
 
+def test_running_score_uses_judgment_points_per_arrow_and_once_for_unassigned():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    bus.set_live_sink(board.record)
+    board.start(bus.session_id)
+    try:
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 0
+        rows = []
+        for tier, kind, direction in (
+            ("good", "arrow_hit", "Center"),
+            ("great", "arrow_hit", "Up-Left"),
+            ("perfect", "arrow_hit", "Down-Left"),
+            ("perfect", "arrow_hit", "Up-Right"),
+            ("miss", "arrow_miss", "Center"),
+            ("great", "judgment_hit", None),
+        ):
+            row = event(bus, kind, direction=direction)
+            row.payload.update(judgment=tier, judgment_id="same-simultaneous-step" if tier == "perfect" else tier)
+            rows.append(row)
+        for row in reversed(rows):
+            bus.record(row)
+        for row in rows:
+            bus.record(row)
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 130
+        p2 = event(bus, "arrow_hit", player="P2")
+        p2.payload["judgment"] = "perfect"
+        bus.record(p2)
+        assert board.snapshot()["players"]["P2"]["runningScore"] == 40
+        bus.record(event(bus, "score_changed", value=999999))
+        bus.record(event(bus, "score_observed", value=888888))
+        bus.record(event(bus, "arrow_hit"))
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 130
+        bus.new_session()
+        assert [p["runningScore"] for p in board.snapshot()["players"].values()] == [0, 0]
+        bus.record(rows[0])
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("tier,kind", [
+    ("unknown", "arrow_hit"), ([], "arrow_hit"), (123, "arrow_hit"),
+    ("miss", "arrow_hit"), ("perfect", "arrow_miss"),
+])
+def test_invalid_judgment_does_not_change_score_or_outcome_counts(tier, kind):
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        row = event(bus, kind)
+        row.payload["judgment"] = tier
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid judgment tier" in board.status()
+    finally:
+        board.stop()
+
+
+def test_running_score_excludes_synthetic_events_and_guards_safe_integer_range():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        row = event(bus, "arrow_hit")
+        row.payload["judgment"] = "perfect"
+        row.source_mode = "synthetic"
+        board.record(row, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 0
+        row.source_mode = "replay"
+        board._state["players"]["P1"]["runningScore"] = 9007199254740990
+        board.record(row, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 9007199254740990
+        assert "supported range" in board.status()
+    finally:
+        board.stop()
+
+
 def test_hit_directions_are_separate_and_misses_still_go_to_fabric(tmp_path):
     board = LiveScoreboard(FakeSender)
     bus = EventBus()
@@ -59,6 +137,36 @@ def test_hit_directions_are_separate_and_misses_still_go_to_fabric(tmp_path):
         bus.record(event(bus, "arrow_hit", direction="Up"))
         assert "invalid arrow direction" in board.status()
         assert board.snapshot()["players"]["P1"]["hits"] == 0
+    finally:
+        board.stop()
+
+
+def test_lane_misses_are_independent_deduplicated_and_reset_with_the_game():
+    board = LiveScoreboard(FakeSender)
+    bus = EventBus()
+    bus.set_live_sink(board.record)
+    board.start(bus.session_id)
+    try:
+        miss = event(bus, "arrow_miss", direction="Down-Left")
+        bus.record(miss)
+        bus.record(miss)
+        bus.record(event(bus, "arrow_miss", direction="Down-Left"))
+        bus.record(event(bus, "arrow_miss", player="P2", direction="Up-Right"))
+        bus.record(event(bus, "judgment_miss", direction=None))
+        p1, p2 = board.snapshot()["players"].values()
+        assert p1["misses"] == 3 and p1["unassignedMisses"] == 1
+        assert p1["missesByDirection"] == {
+            "Up-Right": 0, "Up-Left": 0, "Down-Right": 0, "Down-Left": 2, "Center": 0,
+        }
+        assert p2["missesByDirection"] == {
+            "Up-Right": 1, "Up-Left": 0, "Down-Right": 0, "Down-Left": 0, "Center": 0,
+        }
+        assert all(value == 0 for value in p1["hitsByDirection"].values())
+        bus.record(event(bus, "arrow_miss", direction="invalid"))
+        assert board.snapshot()["players"]["P1"]["missesByDirection"] == p1["missesByDirection"]
+        bus.new_session()
+        for player in board.snapshot()["players"].values():
+            assert all(value == 0 for value in player["missesByDirection"].values())
     finally:
         board.stop()
 

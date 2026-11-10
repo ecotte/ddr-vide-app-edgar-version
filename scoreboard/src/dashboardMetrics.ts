@@ -1,32 +1,63 @@
-import { DIRECTIONS, type Direction, type PlayerState } from './state';
+import { arrowAccuracy, DIRECTIONS, type Direction, type PlayerState } from './state';
 
 const STEP_TITLES: Record<Direction, { title: string; symbol: string }> = {
-  'Up-Left': { title: 'Left-Step Legend', symbol: '\u2190' },
-  'Up-Right': { title: 'Right-Step Royalty', symbol: '\u2192' },
-  'Down-Left': { title: 'Forward-Step Phenom', symbol: '\u2191' },
-  'Down-Right': { title: 'Back-Step Boss', symbol: '\u2193' },
+  'Up-Left': { title: 'Up-Left Legend', symbol: '\u2196' },
+  'Up-Right': { title: 'Up-Right Royalty', symbol: '\u2197' },
+  'Down-Left': { title: 'Down-Left Dynamo', symbol: '\u2199' },
+  'Down-Right': { title: 'Down-Right Champion', symbol: '\u2198' },
   Center: { title: 'Center-Step Superstar', symbol: '\u25a3' },
 };
 
 export function stepTitle(player: PlayerState) {
   const counts = player.hitsByDirection;
-  if (!counts) return null;
-  const maximum = Math.max(...DIRECTIONS.map(direction => counts[direction]));
-  if (maximum === 0) return null;
-  const leaders = DIRECTIONS.filter(direction => counts[direction] === maximum);
+  const misses = player.missesByDirection;
+  const accuracy = arrowAccuracy(player);
+  const warmingUp = {
+    title: 'Warming up', symbol: '\u266a',
+    detail: !counts || !misses
+      ? 'Waiting for per-lane hit and miss data.'
+      : 'Waiting for a recognized hit with a direction.',
+  };
+  if (!counts || !misses || !accuracy) return warmingUp;
+  const maximum = Math.max(...DIRECTIONS.map(direction => accuracy[direction] ?? 0));
+  if (maximum === 0) return warmingUp;
+  const leaders = DIRECTIONS.filter(direction => accuracy[direction] === maximum);
+  const percentage = maximum.toFixed(1);
   if (leaders.length === DIRECTIONS.length) {
-    return { title: 'All-Step Ace', symbol: '\u2190 \u2191 \u25a3 \u2193 \u2192',
-      detail: 'All five directions tied for most hits.' };
+    return { title: 'All-Step Ace', symbol: '\u2196 \u2197 \u25a3 \u2199 \u2198',
+      detail: `All five directions tied at ${percentage}% hit rate.` };
   }
-  if (leaders.length !== 1) return null;
+  if (leaders.length !== 1) {
+    return {
+      title: 'Joint leaders',
+      symbol: leaders.map(direction => STEP_TITLES[direction].symbol).join(' '),
+      detail: `Best hit rate: ${leaders.join(', ')} (${percentage}% each).`,
+    };
+  }
   const direction = leaders[0];
-  return { ...STEP_TITLES[direction], detail: `Most-hit lane: ${direction} (${maximum.toLocaleString()} hits).` };
+  const outcomes = counts[direction] + misses[direction];
+  return {
+    ...STEP_TITLES[direction],
+    detail: `Best hit rate: ${direction} (${percentage}%; ${counts[direction].toLocaleString()} hits / ${outcomes.toLocaleString()} detected outcomes).`,
+  };
+}
+
+export function mostHitLanes(player: PlayerState) {
+  const counts = player.hitsByDirection;
+  if (!counts) return null;
+  const hits = Math.max(...DIRECTIONS.map(direction => counts[direction]));
+  if (hits === 0) return null;
+  return { directions: DIRECTIONS.filter(direction => counts[direction] === hits), hits };
+}
+
+export function totalDetectedSteps(player: PlayerState): number | null {
+  if (player.misses == null) return null;
+  return player.hits + player.misses;
 }
 
 export function cumulativeHitPercentage(player: PlayerState): number | null {
-  if (player.misses == null) return null;
-  const outcomes = player.hits + player.misses;
-  return outcomes === 0 ? null : player.hits / outcomes * 100;
+  const outcomes = totalDetectedSteps(player);
+  return outcomes == null || outcomes === 0 ? null : player.hits / outcomes * 100;
 }
 
 export const ANIMAL_BENCHMARKS = [

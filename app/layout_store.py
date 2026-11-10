@@ -13,7 +13,7 @@ import re
 from typing import List
 
 from app import config
-from app.models import LayoutProfile
+from app.models import LayoutProfile, Region, shared_reference_source
 
 
 class ResolutionMismatchError(Exception):
@@ -101,6 +101,27 @@ def load_layout_from_path_checked(path: str, current_width: int, current_height:
     if profile.source_width != current_width or profile.source_height != current_height:
         raise ResolutionMismatchError(profile, current_width, current_height)
     return profile
+
+
+def match_player_region_sizes(regions: List[Region], width: int, height: int) -> List[Region]:
+    """Match P2 sizes to P1, retaining centers unless a frame edge prevents it."""
+    if width <= 0 or height <= 0:
+        raise ValueError("Source dimensions must be positive.")
+    changes = []
+    for region in regions:
+        if region.player != "P2":
+            continue
+        source = shared_reference_source(region, regions)
+        if source is region or (region.w, region.h) == (source.w, source.h):
+            continue
+        if not 0 < source.w <= width or not 0 < source.h <= height:
+            raise ValueError(f"The matching P1 box for '{region.label}' cannot fit inside the source frame.")
+        x = min(max(0, region.x + (region.w - source.w) // 2), width - source.w)
+        y = min(max(0, region.y + (region.h - source.h) // 2), height - source.h)
+        changes.append((region, x, y, source.w, source.h))
+    for region, x, y, w, h in changes:
+        region.x, region.y, region.w, region.h = x, y, w, h
+    return [region for region, *_ in changes]
 
 
 def rescale_profile(profile: LayoutProfile, new_width: int, new_height: int) -> LayoutProfile:
