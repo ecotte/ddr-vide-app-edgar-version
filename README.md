@@ -398,6 +398,13 @@ app restarts; exported events and queued Fabric messages retain their original I
    Recognition is arranged in two compact columns: **Player 1** on the left and **Player 2** on the right. Each card stacks its aspect-ratio-preserving crop preview above its readings and wraps long status messages. Teaching, yellow-digit filters, and arrow-reference controls remain in the matching player's card. Regions assigned to **Unknown** appear in a separate section below both columns. Scroll the recognition panel to reach additional cards.
 
    To reduce playback overhead, unchanged arrow cards refresh their crop, similarity, and pending-count display at most ten times per second. Arrow-state changes, errors, unreadable crops, and tracking resets update immediately. This only paces the recognition panel: arrow analysis and event recording still run on every displayed video frame, and completed score/combo OCR results are displayed immediately.
+   Detailed arrow/judgment diagnostics are collapsed by default. Select **Show
+   diagnostics** on a card to inspect its latest details. Closed panels cache
+   the latest text without updating Tk labels; open panels refresh at most four
+   times per second. Opening a panel immediately displays its latest cached
+   reading. Label wrapping is recalculated only when the card width changes,
+   not whenever status text changes its height. Recognition, correlation and
+   event delivery are unchanged.
 
    Each numeric card shows **OCR frame** and its video timestamp. Its crop and readings belong to that completed OCR job, not necessarily the frame currently playing on the left. OCR latency still applies, but unnecessary confirmation passes no longer hold the panel on older footage; pausing lets the worker catch up to the final displayed frame. Confirmation jobs process only pending fields, so confirming a score does not rerun unrelated combo OCR on the older frame.
 3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo` / `judgement` / `arrow` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
@@ -458,6 +465,9 @@ and reteach its digits as needed. Nothing is deleted automatically.
 
 **Independent similarity thresholds and diagnostics**
 
+- Select **Show diagnostics** on an arrow or judgment card to expand its details.
+  Keep panels collapsed during normal play for lower UI overhead. State, score,
+  status and error displays remain available while details are collapsed.
 - **Letter-shape matching is the default judgment engine**, not an opt-in mode.
   It learns saturated lettering masks from each player's references, removes tiny
   components, and searches several sizes and positions at half resolution.

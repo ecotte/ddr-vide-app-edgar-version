@@ -267,7 +267,13 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   clear alongside pending correlation on tracking/lifecycle resets; they do not
   change event payloads or relax direction-assignment rules.
   Calibration and crop failures remain explicit. These diagnostics stay in the
-  UI, share preview pacing, and are not added to event payloads. Thresholds are
+  UI and are not added to event payloads. Detailed panels are collapsed by
+  default and retain only their latest Python-side text while hidden; expanding
+  a panel displays that text immediately and refreshes it at most four times
+  per second. Card wrapping responds only to width changes, avoiding repeated
+  relayout on diagnostic-height changes. Unchanged state/status text and reused
+  PhotoImage bindings are not needlessly reconfigured. Recognition/event
+  processing and immediate state/error updates are unaffected. Thresholds are
   runtime settings rather than persisted layout calibration.
   Their new pulses determine outcome type, with arrow
   activity matched only in the 500 ms leading up to the word's source-time onset,

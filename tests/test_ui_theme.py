@@ -196,7 +196,7 @@ def test_separate_threshold_controls_route_to_independent_analysis_settings(root
         tab.destroy()
 
 
-def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_player(root):
+def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_player(root, monkeypatch):
     from app.models import Region
 
     controller = Mock()
@@ -205,18 +205,110 @@ def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_play
         Region(player, player, "judgment", 0, 0, 100, 30) for player in ("P1", "P2")
     ]
     try:
+        clock = [1.0]
+        monkeypatch.setattr("app.ui.video_tab.time.perf_counter", lambda: clock[0])
         tab.refresh_region_list(regions)
         tab.set_judgment_diagnostics("P1:judgment", "Latch blocked PERFECT; no-match 33/50 ms.")
+        tab._region_rows["P1:judgment"]["diagnostics_toggle"].invoke()
         assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
             "diagnostics: Latch blocked PERFECT; no-match 33/50 ms."
         )
         assert tab._region_rows["P2:judgment"]["diagnostics_var"].get() == (
             "diagnostics: Advance/play to inspect judgment matching."
         )
+        clock[0] += .3
         tab.set_judgment_diagnostics("P1:judgment", None)
         assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
             "diagnostics: No frame diagnostics available."
         )
+    finally:
+        tab.destroy()
+
+
+@pytest.mark.parametrize("kind", ["arrow", "judgment"])
+def test_diagnostics_stay_cached_when_collapsed_and_refresh_at_four_hz_when_open(root, monkeypatch, kind):
+    from app.models import Region
+
+    tab = VideoTab(root, Mock())
+    region = Region("Center", "P1", kind, 0, 0, 80, 80, direction="Center")
+    clock = [1.0]
+    monkeypatch.setattr("app.ui.video_tab.time.perf_counter", lambda: clock[0])
+    try:
+        tab.refresh_region_list([region])
+        row = tab._region_rows[region.key()]
+        setter = tab.set_arrow_diagnostics if kind == "arrow" else tab.set_judgment_diagnostics
+        writes = []
+        token = row["diagnostics_var"].trace_add("write", lambda *_: writes.append(True))
+        assert not row["diagnostics_label"].winfo_manager()
+        for i in range(100):
+            setter(region.key(), f"Frame {i}")
+        assert writes == []
+        row["diagnostics_toggle"].invoke()
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 99"
+        assert row["diagnostics_label"].winfo_manager() == "pack"
+        assert len(writes) == 1
+        clock[0] = 1.1
+        setter(region.key(), "Frame 100")
+        assert len(writes) == 1
+        clock[0] = 1.25
+        setter(region.key(), "Frame 101")
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 101"
+        assert len(writes) == 2
+        row["diagnostics_toggle"].invoke()
+        assert not row["diagnostics_label"].winfo_manager()
+        clock[0] = 2
+        setter(region.key(), "Frame 102")
+        assert len(writes) == 2
+        row["diagnostics_toggle"].invoke()
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 102"
+        assert len(writes) == 3
+        row["diagnostics_var"].trace_remove("write", token)
+    finally:
+        tab.destroy()
+
+
+def test_card_height_changes_do_not_reconfigure_label_wrapping():
+    label = Mock(spec=ttk.Label)
+    row = Mock()
+    row.winfo_children.return_value = [label]
+    VideoTab._wrap_card_labels(row)
+    callback = row.bind.call_args.args[1]
+    label.configure.reset_mock()
+    callback(SimpleNamespace(width=300, height=100))
+    label.configure.assert_called_once_with(wraplength=288)
+    callback(SimpleNamespace(width=300, height=500))
+    callback(SimpleNamespace(width=300, height=50))
+    assert label.configure.call_count == 1
+    callback(SimpleNamespace(width=400, height=50))
+    assert label.configure.call_count == 2
+    label.configure.assert_called_with(wraplength=388)
+
+
+def test_unchanged_arrow_text_and_photo_do_not_trigger_tk_reconfiguration(root):
+    from app.models import Region
+    from PIL import Image, ImageTk
+    from unittest.mock import patch
+
+    tab = VideoTab(root, Mock())
+    region = Region("Center", "P1", "arrow", 0, 0, 80, 80, direction="Center")
+    try:
+        tab.refresh_region_list([region])
+        row = tab._region_rows[region.key()]
+        photo = ImageTk.PhotoImage(Image.new("RGB", (20, 20)))
+        tab.update_arrow_recognition_row(region.key(), photo, "active", .8, "activity")
+        with patch.object(row["thumb_label"], "configure") as configure, \
+                patch.object(row["state_var"], "set") as state, \
+                patch.object(row["confidence_var"], "set") as confidence, \
+                patch.object(row["status_var"], "set") as status:
+            for _ in range(20):
+                tab.update_arrow_recognition_row(region.key(), photo, "active", .8, "activity")
+            configure.assert_not_called()
+            state.assert_not_called()
+            confidence.assert_not_called()
+            status.assert_not_called()
+            tab.update_arrow_recognition_row(region.key(), None, "idle", .1, "empty")
+            state.assert_called_once_with("state: idle")
+            status.assert_called_once_with("status: empty")
     finally:
         tab.destroy()
 

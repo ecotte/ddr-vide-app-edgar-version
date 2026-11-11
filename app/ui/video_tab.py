@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import time
 from tkinter import filedialog, ttk
 from typing import List, Optional
 
@@ -655,14 +656,67 @@ class VideoTab(ttk.Frame):
                     self._build_numeric_row(r, parent, grid_row=grid_row)
 
     @staticmethod
-    def _wrap_card_labels(row) -> None:
+    def _wrap_card_labels(row, extra_labels=()) -> None:
         labels = [widget for widget in row.winfo_children() if isinstance(widget, ttk.Label)]
+        labels.extend(extra_labels)
         for label in labels:
             label.configure(wraplength=240)
-        row.bind(
-            "<Configure>",
-            lambda event: [label.configure(wraplength=max(40, event.width - 12)) for label in labels],
-        )
+        previous_width = 240
+
+        def resize(event):
+            nonlocal previous_width
+            width = max(40, event.width - 12)
+            if width == previous_width:
+                return
+            previous_width = width
+            for label in labels:
+                label.configure(wraplength=width)
+
+        row.bind("<Configure>", resize)
+
+    @staticmethod
+    def _add_diagnostics(row, grid_row, kind):
+        frame = ttk.Frame(row)
+        frame.grid(row=grid_row, column=0, sticky="ew", pady=(4, 0))
+        text = f"diagnostics: Advance/play to inspect {kind} matching."
+        variable = tk.StringVar(value=text)
+        expanded = tk.BooleanVar(value=False)
+        label = ttk.Label(frame, textvariable=variable, justify="left")
+        data = {
+            "diagnostics_var": variable, "diagnostics_label": label,
+            "diagnostics_text": text, "diagnostics_visible": False,
+            "diagnostics_updated_at": 0.0,
+        }
+
+        def toggle():
+            data["diagnostics_visible"] = expanded.get()
+            if data["diagnostics_visible"]:
+                variable.set(data["diagnostics_text"])
+                data["diagnostics_updated_at"] = time.perf_counter()
+                label.pack(anchor="w", fill="x")
+            else:
+                label.pack_forget()
+
+        button = ttk.Checkbutton(frame, text="Show diagnostics", variable=expanded, command=toggle)
+        button.pack(anchor="w")
+        return {
+            "diagnostics": data, "diagnostics_var": variable,
+            "diagnostics_label": label, "diagnostics_toggle": button,
+        }
+
+    @staticmethod
+    def _update_diagnostics(row, diagnostics):
+        row = row["diagnostics"]
+        text = f"diagnostics: {diagnostics}" if diagnostics else "diagnostics: No frame diagnostics available."
+        row["diagnostics_text"] = text
+        if not row["diagnostics_visible"]:
+            return
+        now = time.perf_counter()
+        if now - row["diagnostics_updated_at"] < .25:
+            return
+        row["diagnostics_updated_at"] = now
+        if row["diagnostics_var"].get() != text:
+            row["diagnostics_var"].set(text)
 
     def _build_numeric_row(self, r, parent=None, *, grid_row=None) -> None:
         row = ttk.Frame(parent if parent is not None else self.recognition_container, relief="groove", padding=4)
@@ -794,17 +848,14 @@ class VideoTab(ttk.Frame):
         if r.player in ("P1", "P2"):
             ttk.Label(row, text="Capture this player's arrow separately. "
                       "Adding or clearing references does not change the other player.").grid(row=8, column=0, sticky="w")
-        diagnostics = tk.StringVar(value="diagnostics: Advance/play to inspect arrow matching.")
-        ttk.Label(row, textvariable=diagnostics, justify="left").grid(
-            row=9, column=0, sticky="w", pady=(4, 0),
-        )
+        diagnostics = VideoTab._add_diagnostics(row, 9, "arrow")
         ttk.Label(
             row, text="Colored-shape matching: capture the colored note, not the white flash. "
             "Cyan dashed bounds search half a box-height below the receptor. "
             "Empty examples are compared in the same learned-color space.",
         ).grid(row=10, column=0, sticky="w", pady=(4, 0))
 
-        VideoTab._wrap_card_labels(row)
+        VideoTab._wrap_card_labels(row, (diagnostics["diagnostics_label"],))
         self._region_rows[r.key()] = {
             "kind": "arrow",
             "thumb_label": thumb_label,
@@ -813,7 +864,7 @@ class VideoTab(ttk.Frame):
             "status_var": status_var,
             "active_ref_label": active_ref_label,
             "empty_ref_label": empty_ref_label,
-            "diagnostics_var": diagnostics,
+            **diagnostics,
         }
 
     def _build_judgment_row(self, region, parent, *, grid_row=None) -> None:
@@ -835,14 +886,11 @@ class VideoTab(ttk.Frame):
         status = tk.StringVar(value="status: Capture Perfect, Great, Good, and Miss examples.")
         for index, variable in enumerate((state, confidence, status), 2):
             ttk.Label(row, textvariable=variable).grid(row=index, column=0, sticky="w")
-        diagnostics = tk.StringVar(value="diagnostics: Advance/play to inspect judgment matching.")
-        ttk.Label(row, textvariable=diagnostics, justify="left").grid(
-            row=5, column=0, sticky="w", pady=(4, 0),
-        )
+        diagnostics = VideoTab._add_diagnostics(row, 5, "judgment")
         data = {
             "kind": "judgment", "thumb_label": thumb, "state_var": state,
             "confidence_var": confidence, "status_var": status,
-            "diagnostics_var": diagnostics,
+            **diagnostics,
         }
         categories = (
             ("perfect", "Perfect"), ("great", "Great"), ("good", "Good"),
@@ -882,7 +930,7 @@ class VideoTab(ttk.Frame):
         if region.player in ("P1", "P2"):
             ttk.Label(row, text="Capture this player's judgments separately. "
                       "Adding or clearing references does not change the other player.").grid(row=7 + len(categories), column=0, sticky="w")
-        VideoTab._wrap_card_labels(row)
+        VideoTab._wrap_card_labels(row, (diagnostics["diagnostics_label"],))
         self._region_rows[region.key()] = data
 
     def _build_game_end_row(self, region, parent) -> None:
@@ -943,29 +991,28 @@ class VideoTab(ttk.Frame):
         row = self._region_rows.get(region_key)
         if row is None or row.get("kind") not in ("arrow", "judgment", "game_end"):
             return
-        if crop_photo is not None:
+        if crop_photo is not None and self._region_thumb_refs.get(region_key) is not crop_photo:
             self._region_thumb_refs[region_key] = crop_photo
             row["thumb_label"].configure(image=crop_photo)
-        row["state_var"].set(f"state: {observed_state if observed_state is not None else 'unreadable'}")
         similarity_label = "active shape similarity" if row["kind"] == "arrow" else "similarity"
-        row["confidence_var"].set(
-            f"{similarity_label}: {confidence:.2f}" if confidence is not None else f"{similarity_label}: -"
-        )
-        row["status_var"].set(f"status: {status_text}")
+        values = {
+            "state_var": f"state: {observed_state if observed_state is not None else 'unreadable'}",
+            "confidence_var": f"{similarity_label}: {confidence:.2f}" if confidence is not None else f"{similarity_label}: -",
+            "status_var": f"status: {status_text}",
+        }
+        for key, text in values.items():
+            if row[key].get() != text:
+                row[key].set(text)
 
     def set_arrow_diagnostics(self, region_key: str, diagnostics: Optional[str]) -> None:
         row = self._region_rows.get(region_key)
         if row is not None and row.get("kind") == "arrow":
-            row["diagnostics_var"].set(
-                f"diagnostics: {diagnostics}" if diagnostics else "diagnostics: No frame diagnostics available."
-            )
+            VideoTab._update_diagnostics(row, diagnostics)
 
     def set_judgment_diagnostics(self, region_key: str, diagnostics: Optional[str]) -> None:
         row = self._region_rows.get(region_key)
         if row is not None and row.get("kind") == "judgment":
-            row["diagnostics_var"].set(
-                f"diagnostics: {diagnostics}" if diagnostics else "diagnostics: No frame diagnostics available."
-            )
+            VideoTab._update_diagnostics(row, diagnostics)
 
     def set_arrow_reference_thumbnail(self, region_key: str, state: str, photo, count: int) -> None:
         row = self._region_rows.get(region_key)
