@@ -21,7 +21,7 @@ it('finds the most-hit lane by count without confusing it with lane accuracy or 
     missesByDirection: { ...player.missesByDirection!, 'Down-Left': 3 },
   };
   expect(mostHitLanes(state)).toEqual({ directions: ['Down-Left'], hits: 6 });
-  expect(stepTitle(state)?.title).toBe('Up-Right Royalty');
+  expect(stepTitle(state)?.title).toBe('Down-Left Dynamo');
 });
 
 it('includes every tied most-hit lane and omits unavailable or zero counts', () => {
@@ -47,10 +47,10 @@ it.each([
 ] as const)('awards %s the title %s with its matching symbol %s', (direction, title, symbol) => {
   expect(stepTitle({
     ...player, hits: 2, hitsByDirection: { ...player.hitsByDirection!, [direction]: 2 },
-  })).toEqual({ title, symbol, detail: `Best hit rate: ${direction} (100.0%; 2 hits / 2 detected outcomes).` });
+  })).toEqual({ title, symbol, detail: `Most hits: ${direction} (2 hits).` });
 });
 
-it('keeps a warming-up tile instead of inventing titles for unavailable or zero accuracy', () => {
+it('keeps a warming-up tile instead of inventing titles for unavailable or zero hits', () => {
   for (const state of [
     { ...player, hitsByDirection: null },
     { ...player, missesByDirection: undefined },
@@ -59,45 +59,54 @@ it('keeps a warming-up tile instead of inventing titles for unavailable or zero 
   ]) {
     expect(stepTitle(state)).toMatchObject({ title: 'Warming up', symbol: '\u266a' });
   }
-  expect(stepTitle({ ...player, missesByDirection: undefined }).detail).toBe(
-    'Waiting for per-lane hit and miss data.',
+  expect(stepTitle({ ...player, hitsByDirection: undefined }).detail).toBe(
+    'Waiting for per-lane hit data.',
   );
 });
 
-it.each([2, 3, 4])('keeps a Joint leaders tile when %s lanes tie for best accuracy', count => {
+it.each([2, 3, 4])('keeps a Joint leaders tile when %s lanes tie for most hits', count => {
   const leaders = DIRECTIONS.slice(0, count);
   const hitsByDirection = { ...player.hitsByDirection! };
   for (const direction of leaders) hitsByDirection[direction] = 1;
   expect(stepTitle({ ...player, hits: count, hitsByDirection })).toMatchObject({
     title: 'Joint leaders',
-    detail: `Best hit rate: ${leaders.join(', ')} (100.0% each).`,
+    detail: `Most hits: ${leaders.join(', ')} (1 hit each).`,
   });
   expect(stepTitle({ ...player, hits: count, hitsByDirection }).symbol.split(' ')).toHaveLength(count);
 });
 
-it('awards All-Step Ace for equal positive accuracy even with different hit counts', () => {
+it('awards All-Step Ace only for equal positive hit counts regardless of misses', () => {
   expect(stepTitle({
     ...player, hits: 10, hitsByDirection: {
-      'Up-Left': 1, 'Up-Right': 2, 'Down-Left': 3, 'Down-Right': 4, Center: 5,
+      'Up-Left': 2, 'Up-Right': 2, 'Down-Left': 2, 'Down-Right': 2, Center: 2,
     }, missesByDirection: {
       'Up-Left': 1, 'Up-Right': 2, 'Down-Left': 3, 'Down-Right': 4, Center: 5,
     },
-  })).toMatchObject({ title: 'All-Step Ace', detail: 'All five directions tied at 50.0% hit rate.' });
+  })).toMatchObject({ title: 'All-Step Ace', detail: 'All five directions tied at 2 hits each.' });
   expect(DIRECTIONS).toHaveLength(5);
 });
 
-it('chooses accuracy over hit volume and excludes unassigned outcomes', () => {
+it('chooses hit volume over accuracy and excludes unassigned outcomes', () => {
   const result = stepTitle({
     ...player, hits: 110, misses: 100, unassignedHits: 100, unassignedMisses: 97,
     hitsByDirection: { ...player.hitsByDirection!, 'Down-Left': 6, 'Up-Right': 4 },
     missesByDirection: { ...player.missesByDirection!, 'Down-Left': 3 },
   });
   expect(result).toEqual({
-    title: 'Up-Right Royalty', symbol: '\u2197',
-    detail: 'Best hit rate: Up-Right (100.0%; 4 hits / 4 detected outcomes).',
+    title: 'Down-Left Dynamo', symbol: '\u2199',
+    detail: 'Most hits: Down-Left (6 hits).',
   });
 });
 
+it('awards Down-Left for the reported scoreboard counts even without per-lane misses', () => {
+  expect(stepTitle({
+    ...player, hits: 45, misses: 4, unassignedHits: 4,
+    hitsByDirection: { 'Up-Right': 5, 'Up-Left': 10, 'Down-Right': 10, 'Down-Left': 11, Center: 5 },
+    missesByDirection: undefined,
+  })).toEqual({
+    title: 'Down-Left Dynamo', symbol: '\u2199', detail: 'Most hits: Down-Left (11 hits).',
+  });
+});
 it('does not reward zero-percent or unplayed lanes', () => {
   expect(stepTitle({
     ...player, misses: 2, missesByDirection: { ...player.missesByDirection!, Center: 2 },

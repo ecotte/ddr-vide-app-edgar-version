@@ -121,6 +121,83 @@ def test_unfiltered_combo_keeps_detector_path():
     assert "allowlist" not in engine._reader.readtext.call_args.kwargs
 
 
+@pytest.mark.parametrize("first_confidence,expected_calls", [(0.99, 1), (0.65, 2)])
+def test_wide_combo_digits_use_aspect_corrected_ocr_before_detection(monkeypatch, first_confidence, expected_calls):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    original = crop.copy()
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48], [120, 165, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = [
+        [_detection(0, 540, "013", first_confidence)], [_detection(0, 540, "013", .98)],
+    ]
+    result = engine.recognize_digits(crop)
+    assert result.raw_text == "013"
+    assert result.confidence == (first_confidence if expected_calls == 1 else .98)
+    assert result.error is None
+    calls = engine._reader.recognize.call_args_list
+    assert len(calls) == expected_calls
+    assert calls[0].args[0].shape == (300, 540)
+    if expected_calls == 2:
+        assert calls[1].args[0].shape == (225, 540)
+    assert all("allowlist" not in call.kwargs for call in calls)
+    engine._reader.readtext.assert_not_called()
+    np.testing.assert_array_equal(crop, original)
+
+
+@pytest.mark.parametrize("text,confidence", [("013", .89), ("COMBO", .99), ("0I3", .99), ("013", None)])
+@pytest.mark.parametrize("fast_mode", [False, True])
+def test_weak_or_nonnumeric_corrected_combos_preserve_existing_fallback(monkeypatch, text, confidence, fast_mode):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = [
+        [_detection(0, 540, text, confidence)], [_detection(0, 540, text, confidence)],
+        [_detection(0, 540, "008", .85)],
+    ]
+    engine._reader.readtext.return_value = [_detection(0, 540, "008", .85)]
+    result = engine.recognize_digits(crop, fast_mode=fast_mode)
+    assert result.raw_text == "008"
+    assert result.confidence == .85
+    if fast_mode:
+        engine._reader.readtext.assert_not_called()
+    else:
+        engine._reader.readtext.assert_called_once()
+
+
+@pytest.mark.parametrize("boxes", [
+    [], [[5, 50, 2, 48]],
+    [[5, 25, 2, 48], [60, 80, 2, 48]],
+    [[5, 30, 2, 20], [60, 85, 2, 20]],
+])
+def test_combo_aspect_correction_requires_multiple_large_wide_glyphs(monkeypatch, boxes):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (crop[:, :, 0], boxes, []))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.readtext.return_value = []
+    assert engine.recognize_digits(crop).raw_text == ""
+    engine._reader.recognize.assert_not_called()
+
+
+def test_combo_aspect_correction_surfaces_recognizer_errors(monkeypatch):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = RuntimeError("recognizer failed")
+    result = engine.recognize_digits(crop)
+    assert "recognizer failed" in result.error
+    engine._reader.readtext.assert_not_called()
+
+
 @pytest.mark.parametrize("yellow_filter", [False, True])
 def test_combo_ignores_nearby_words_and_mixed_alphanumeric_detections(yellow_filter):
     engine = OcrEngine()

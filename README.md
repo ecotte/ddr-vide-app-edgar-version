@@ -250,7 +250,16 @@ a second connection; wait and retry.
 
 For yellow combo digits with a white glow, try **Yellow-digit filter** in that combo's recognition row, then **Save Layout**. This optional per-region filter subtracts blue from the weaker of red and green, emphasizing yellow fill while suppressing white outlines and red/pink arrows. It is off by default, is restored when the layout is loaded (including rescaled layouts), and never affects score OCR. Turning it on or off clears pending evidence but preserves accepted values and existing events. It can improve `3`/`8` confusion on this skin, but can worsen other crops and cannot restore pixels hidden by an arrow. OCR confidence and acceptance thresholds are unchanged; a correctly read but low-confidence candidate remains unaccepted. Disable it for non-yellow digits or if recognition worsens.
 
-With this filter enabled, combo OCR first tries recognition directly on the crop, avoiding the expensive text-detection stage. It uses that result only for a single digits-only reading within the combo length limit and with at least 0.90 confidence. Otherwise it falls back to the existing detector on the same filtered crop. Confidence is never increased artificially, and normal confirmation and jump checks still apply. Clear crops can be much faster; obstructed or uncertain crops still incur detector latency, and either OCR path can make mistakes. Unfiltered combos and scores keep their existing OCR paths.
+Combo OCR automatically checks for multiple large, wide outlined digits. When
+present, it first tries vertically stretched copies (2x, then 1.5x if needed) to
+restore proportions for the text model. The saved calibration and displayed crop
+are unchanged. Only a digits-only reading with at least 0.90 confidence can use
+this shortcut; weak or mixed readings continue through the existing OCR path.
+This applies without enabling any option, including to existing layouts.
+It can recover wide digits that normal OCR misses or misreads, but confidence
+is not an accuracy guarantee and obscured digits can still be missed.
+
+With the yellow filter enabled, combo OCR also tries recognition directly on the original-proportion filtered crop, avoiding the expensive text-detection stage. It uses that result only for a single digits-only reading within the combo length limit and with at least 0.90 confidence. Otherwise it falls back to the existing detector on the same filtered crop. Confidence is never increased artificially, and normal confirmation and jump checks still apply. Clear crops can be much faster; obstructed or uncertain crops still incur detector latency, and either OCR path can make mistakes. Score OCR is unchanged.
 
 Combo OCR allows the engine to recognize surrounding words such as "combo", then ignores text and mixed letter/number detections instead of forcing letters into digits. Spaces between digits are removed (`6 5` becomes `65`), but letters are never substituted or stripped out of mixed detections to manufacture a number. This applies with and without the yellow filter, including the fast path. A mixed detection is left unreadable until a clearer frame separates the number from the text; OCR can still mistake a letter for a digit. Score glyph OCR retains its digit allowlist.
 
@@ -311,17 +320,17 @@ per-lane miss counts show a waiting state in this section.
 Without Miss references in the judgment box, misses cannot be detected, so this percentage may
 overstate actual performance.
 
-The lane with the highest detected hit percentage (`lane hits / (lane hits + lane misses)`)
+The lane with the most detected hits
 earns one title: **Up-Left Legend**, **Up-Right Royalty**, **Down-Left Dynamo**,
 **Down-Right Champion**, or **Center-Step Superstar**, with its matching direction symbol.
-The card shows the percentage and detected outcome counts. Unplayed lanes and
+The card shows the winning hit count, matching the Most-hit lane tile. Unplayed lanes and
 unknown-direction judgments are excluded. **All-Step Ace** requires equal positive
-hit percentages in all five lanes. A two-, three-, or four-way accuracy tie shows
+hit counts in all five lanes. A two-, three-, or four-way hit-count tie shows
 **Joint leaders** with the tied directions. The Step Title tile remains visible
 during active games, showing **Warming up** when no directional hit can earn a title
 or per-lane data is unavailable. No minimum sample count is required.
-Restart the desktop publisher and deploy the
-updated scoreboard to use the new lane-accuracy titles; previous games are not replayed.
+Deploy the updated scoreboard to use hit-count titles. Existing snapshots with
+per-lane hit counts are supported; per-lane miss data is not required for titles.
 
 Two playful tiles add **Most-hit lane** and **Total detected steps**, each with
 50 captions that rotate every 15 seconds of live feed time without repeating

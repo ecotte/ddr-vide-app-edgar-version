@@ -296,20 +296,19 @@ Connection/publish errors appear in the desktop Events tab.
   speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). Sources and test
   conditions appear on the card. They are different tasks/senses, not
   equivalent tests or a universal animal speed ranking.
-- The unique lane with the highest `hits / (hits + misses)` receives Up-Left
+- The unique lane with the highest `hitsByDirection` count receives Up-Left
   Legend, Up-Right Royalty, Down-Left Dynamo, Down-Right Champion, or
   Center-Step Superstar, with the corresponding direction symbol. The card shows
-  its percentage and detected outcome count. Unplayed lanes are excluded; no
-  minimum sample count is required. Equal positive accuracy across all five lanes
+  its hit count, matching the Most-hit lane tile. Unplayed lanes are excluded; no
+  minimum sample count is required. Equal positive hit counts across all five lanes
   awards All-Step Ace; partial ties show Joint leaders with the tied directions.
   During active games the Step Title tile always stays visible, showing Warming up
-  for zero accuracy, unplayed lanes, or unavailable per-lane hit/miss data.
-  Desktop snapshots now include `missesByDirection` alongside `hitsByDirection`.
-  Older snapshots without lane-miss counts show Warming up rather than guessing a title. Restart
-  the desktop publisher and deploy the updated frontend; old games are not replayed.
+  for zero hits, unplayed lanes, or unavailable per-lane hit data.
+  Older snapshots without lane-miss counts can still earn titles.
+  Deploy the updated frontend to use hit-count titles; accuracy calculations are unchanged.
 - Two extra player tiles add playful captions without changing the numbers:
   **Most-hit lane** lists every lane tied for the highest positive hit count
-  This is hit volume, unlike the accuracy-based step title. Unknown-direction hits
+  This uses the same hit-volume ranking as the step title. Unknown-direction hits
   are excluded; zero or unavailable lane counts show Waiting for data.
   **Total detected steps** is player hits + misses, including unknown-direction
   outcomes once. It counts detected outcomes, not unique physical steps:

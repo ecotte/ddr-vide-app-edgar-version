@@ -380,13 +380,13 @@ C-start mean, 10.64 ms at 0-30 cm from the
 speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). The UI identifies the
 different tasks/senses and does not present them as equivalent tests or a
 universal speed ranking.
-The highest per-lane hit percentage determines the step title and its matching
-direction symbol, using `hitsByDirection` and `missesByDirection`. Unknown-direction
-outcomes and unplayed lanes are excluded. A positive five-way accuracy tie is
+The highest per-lane hit count determines the step title and its matching
+direction symbol, using the same `mostHitLanes` helper as the Most-hit lane tile.
+Unknown-direction outcomes and unplayed lanes are excluded. A positive five-way hit-count tie is
 All-Step Ace; partial ties show Joint leaders with the matching directions.
 The Step Title tile remains visible during active games, using Warming up for zero
-accuracy or missing lane data rather than inventing a winner. No minimum sample
-count is required. Legacy snapshots without lane misses also show Warming up.
+hits or missing lane data rather than inventing a winner. No minimum sample
+count is required. Legacy snapshots without lane misses can still earn titles.
 The four main tiles and score, arrow-count, pace, and accuracy sections remain
 visible before data arrives and while inactive. Missing data shows waiting text,
 known zero values remain zero, and no percentage is invented before attempts.

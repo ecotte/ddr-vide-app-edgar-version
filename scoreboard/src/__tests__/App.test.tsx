@@ -407,7 +407,7 @@ it('keeps stable alignment slots without inventing missing names, scores, combos
   expect(screen.queryByText('--')).not.toBeInTheDocument();
 });
 
-it('matches titles and symbols to each player highest lane accuracy and updates after misses', async () => {
+it('matches titles and symbols to each player most-hit lane and updates after hits', async () => {
   const accurate = {
     ...player, hits: 10, misses: 2,
     hitsByDirection: { 'Up-Right': 4, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 6, Center: 0 },
@@ -421,28 +421,28 @@ it('matches titles and symbols to each player highest lane accuracy and updates 
   const { client, execute } = fakeClient({ ...snapshot, players: { P1: accurate, P2: p2 } });
   await act(async () => { render(<App client={client} />); });
   const p1Title = screen.getByLabelText('Player 1 step title');
-  expect(p1Title).toHaveTextContent('Up-Right Royalty');
+  expect(p1Title).toHaveTextContent('Down-Left Dynamo');
   expect(screen.getByLabelText('Player 1 most-hit lane')).toHaveTextContent('Down-Left');
-  expect(p1Title.querySelector('.step-title-symbol')).toHaveTextContent('\u2197');
-  expect(p1Title).toHaveTextContent('Best hit rate: Up-Right (100.0%; 4 hits / 4 detected outcomes).');
+  expect(p1Title.querySelector('.step-title-symbol')).toHaveTextContent('\u2199');
+  expect(p1Title).toHaveTextContent('Most hits: Down-Left (6 hits).');
   const p2Title = screen.getByLabelText('Player 2 step title');
   expect(p2Title).toHaveTextContent('Down-Left Dynamo');
   expect(p2Title.querySelector('.step-title-symbol')).toHaveTextContent('\u2199');
-  expect(p2Title).toHaveTextContent('Best hit rate: Down-Left (75.0%; 6 hits / 8 detected outcomes).');
+  expect(p2Title).toHaveTextContent('Most hits: Down-Left (6 hits).');
   execute.mockResolvedValue([{
     id: 'board', publishedAt: new Date(),
     snapshot: JSON.stringify({
       ...snapshot, revision: 2, players: {
-        P1: { ...accurate, misses: 10, missesByDirection: { ...accurate.missesByDirection, 'Up-Right': 8 } },
+        P1: { ...accurate, hits: 13, hitsByDirection: { ...accurate.hitsByDirection, 'Up-Right': 7 } },
         P2: p2,
       },
     }),
   }]);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Down-Left Dynamo');
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Up-Right Royalty');
 });
 
-it('keeps all four main tiles when P2 has tied accuracy leaders and updates the title without removing it', async () => {
+it('keeps all four main tiles when P2 has tied hit-count leaders and updates the title without removing it', async () => {
   const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
   const p1 = { ...player, averageResponseTimeMs: null, responseSamples: 0 };
   const p2 = {
@@ -460,12 +460,12 @@ it('keeps all four main tiles when P2 has tied accuracy leaders and updates the 
     }
   }
   expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Joint leaders');
-  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Up-Right, Up-Left (100.0% each)');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Up-Right, Up-Left, Center (1 hit each)');
   execute.mockResolvedValue([{
     id: 'board', publishedAt: new Date(),
     snapshot: JSON.stringify({
       ...snapshot, revision: 2, players: {
-        P1: p1, P2: { ...p2, misses: 2, missesByDirection: { ...zero, 'Up-Left': 1, Center: 1 } },
+        P1: p1, P2: { ...p2, hits: 4, hitsByDirection: { ...p2.hitsByDirection, 'Up-Right': 2 } },
       },
     }),
   }]);
@@ -473,12 +473,12 @@ it('keeps all four main tiles when P2 has tied accuracy leaders and updates the 
   expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Up-Right Royalty');
 });
 
-it('keeps the title tile warming up for older snapshots without per-lane misses', async () => {
+it('awards hit-count titles for older snapshots without per-lane misses', async () => {
   const { missesByDirection: _misses, ...legacy } = player;
   const { client } = fakeClient({ ...snapshot, players: { P1: legacy, P2: legacy } });
   await act(async () => { render(<App client={client} />); });
-  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Warming up');
-  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Waiting for per-lane hit and miss data.');
+  expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
+  expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Most hits: Center (10 hits).');
 });
 
 it('omits unknown-direction explanations without changing displayed totals or lane counts', async () => {

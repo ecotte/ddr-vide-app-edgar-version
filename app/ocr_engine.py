@@ -90,11 +90,25 @@ class OcrEngine:
                     raw_text="", confidence=None,
                     error="No yellow digit signal. Use a clearer frame or disable the yellow-digit filter.",
                 )
+            _, boxes, _ = _extract_combo_glyphs(crop_bgr)
+            wide_digits = (
+                2 <= len(boxes) <= config.FIELD_MAX_DIGITS["combo"]
+                and np.median([(right - left) / (bottom - top) for left, right, top, bottom in boxes]) >= .75
+                and np.median([bottom - top for _, _, top, bottom in boxes]) >= crop_bgr.shape[0] * .6
+            )
             with self._recognition_lock:
+                # Outlined HUD digits can be too wide for the text model. Correct
+                # their proportions for OCR only, without forcing letters into digits.
+                direct_images = [
+                    cv2.resize(processed, None, fx=1, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    for scale in (2, 1.5)
+                ] if wide_digits else []
                 if yellow_filter or fast_mode:
-                    height, width = processed.shape
+                    direct_images.append(processed)
+                for image in direct_images:
+                    height, width = image.shape
                     direct = self._reader.recognize(
-                        processed,
+                        image,
                         horizontal_list=[[0, width, 0, height]],
                         free_list=[],
                         decoder="beamsearch",
@@ -107,14 +121,17 @@ class OcrEngine:
                             0 < len(text) <= config.FIELD_MAX_DIGITS["combo"]
                             and all(digit in config.OCR_DIGIT_ALLOWLIST for digit in text)
                             and confidence is not None
-                            and (fast_mode or confidence >= config.COMBO_MIN_CONFIDENCE)
+                            and (
+                                (fast_mode and image is processed)
+                                or confidence >= config.COMBO_MIN_CONFIDENCE
+                            )
                         ):
                             return OcrResult(raw_text=text, confidence=float(confidence))
-                    if fast_mode:
-                        return OcrResult(
-                            raw_text="", confidence=None,
-                            error="Fast combo OCR could not isolate a number; slow detection is disabled.",
-                        )
+                if fast_mode:
+                    return OcrResult(
+                        raw_text="", confidence=None,
+                        error="Fast combo OCR could not isolate a number; slow detection is disabled.",
+                    )
                 detections = self._reader.readtext(
                     processed,
                     detail=1,
