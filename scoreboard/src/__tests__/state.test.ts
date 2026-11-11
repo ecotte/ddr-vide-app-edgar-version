@@ -167,6 +167,29 @@ describe('scoreboard state', () => {
 });
 
 afterEach(() => vi.useRealTimers());
+it('supports immediate sequential refresh and response-dependent retry delay', async () => {
+  vi.useFakeTimers();
+  let finish!: () => void;
+  let delay = 0;
+  const task = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+  const stop = poll(task, () => delay);
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(task).toHaveBeenCalledTimes(1);
+  finish();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(task).toHaveBeenCalledTimes(2);
+  delay = 1000;
+  finish();
+  await vi.advanceTimersByTimeAsync(999);
+  expect(task).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(task).toHaveBeenCalledTimes(3);
+  stop();
+  finish();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(task).toHaveBeenCalledTimes(3);
+});
+
 it('polls after completion, never overlaps and stops cleanly', async () => {
   vi.useFakeTimers();
   let finish!: () => void;

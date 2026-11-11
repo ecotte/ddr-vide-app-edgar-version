@@ -133,14 +133,15 @@ export function arrowAccuracy(player?: PlayerState): Record<Direction, number | 
 }
 
 // Schedule after completion, so slow queries never create overlapping requests.
-export function poll(task: () => Promise<void>, milliseconds = 1000): () => void {
+export function poll(task: () => Promise<void>, milliseconds: number | (() => number) = 1000): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout>;
   const run = async () => {
     try {
       await task();
     } finally {
-      if (!stopped) timer = setTimeout(() => { void run(); }, milliseconds);
+      if (!stopped) timer = setTimeout(() => { void run(); },
+        typeof milliseconds === 'function' ? milliseconds() : milliseconds);
     }
   };
   void run();

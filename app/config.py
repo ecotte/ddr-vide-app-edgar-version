@@ -60,7 +60,8 @@ SCORE_OBSERVED_EVENT_TYPE = "score_observed"
 
 REGION_KINDS = ["score", "combo", "arrow", "judgment", "game_end"]
 JUDGMENT_CORRELATION_LOOKBACK_MS = 500
-JUDGMENT_CORRELATION_LOOKAHEAD_MS = 150
+# Arrow activity cannot start after the judgment it explains.
+JUDGMENT_CORRELATION_LOOKAHEAD_MS = 0
 SIMULTANEOUS_STEP_WINDOW_MS = 150
 JUDGMENT_REARM_MS = 50
 JUDGMENT_POINTS = {"good": 10, "great": 20, "perfect": 40, "miss": 0}

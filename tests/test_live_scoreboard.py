@@ -584,6 +584,170 @@ def test_direct_publisher_reads_latest_state_after_slow_request_not_a_backlog():
         board.stop(5)
 
 
+class ObservedPublisherWakeup:
+    def __init__(self):
+        self.event = threading.Event()
+        self.waiting = threading.Event()
+
+    def set(self):
+        self.event.set()
+
+    def clear(self):
+        self.event.clear()
+
+    def wait(self, timeout=None):
+        self.waiting.set()
+        return self.event.wait(timeout)
+
+
+@pytest.mark.parametrize("change", ["combo", "judgement", "miss", "new-session", "pace"])
+def test_changed_state_interrupts_idle_heartbeat_wait_immediately(change):
+    sender = FakeSender()
+    published_change = threading.Event()
+    original = sender.publish
+
+    def publish(snapshot):
+        original(snapshot)
+        if len(sender.published) >= 2:
+            published_change.set()
+
+    sender.publish = publish
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert wakeup.waiting.wait(5)
+        if change == "combo":
+            board.record(event(bus, value=42), bus.session_id)
+        elif change in ("judgement", "miss"):
+            board.record(judgement_event(bus, tier="miss" if change == "miss" else "perfect"), bus.session_id)
+        elif change == "new-session":
+            board.record(None, "next-game")
+        else:
+            with board._lock:
+                board._recent_hits["P1"] = [17]
+                board._state["players"]["P1"]["hitPace"] = .2
+            board.advance_video(5017)
+        # A fixed one-second post-send sleep cannot satisfy this deadline.
+        assert published_change.wait(.75)
+        assert sender.published[1]["revision"] > sender.published[0]["revision"]
+        if change == "combo":
+            assert sender.published[1]["players"]["P1"]["combo"] == 42
+        if change == "new-session":
+            assert sender.published[1]["sessionId"] == "next-game"
+    finally:
+        board.stop(5)
+
+
+def test_update_during_send_is_published_without_sleep_or_overlapping_requests():
+    sender = FakeSender()
+    entered, release, next_send = threading.Event(), threading.Event(), threading.Event()
+    active_requests = [0]
+    original = sender.publish
+
+    def delayed(snapshot):
+        active_requests[0] += 1
+        try:
+            assert active_requests[0] == 1
+            original(snapshot)
+            if len(sender.published) == 1:
+                entered.set()
+                assert release.wait(5)
+            else:
+                next_send.set()
+        finally:
+            active_requests[0] -= 1
+
+    sender.publish = delayed
+    board = LiveScoreboard(lambda: sender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert entered.wait(5)
+        for value in range(100):
+            board.record(event(bus, value=value), bus.session_id)
+        release.set()
+        assert next_send.wait(.75)
+        assert sender.published[1]["players"]["P1"]["combo"] == 99
+        assert len(sender.published) == 2
+    finally:
+        release.set()
+        board.stop(5)
+
+
+def test_failed_publishes_keep_retry_backoff_even_when_new_data_arrives():
+    sender = FakeSender()
+    failed, retry = threading.Event(), threading.Event()
+    attempts = []
+
+    def fail(snapshot):
+        attempts.append(snapshot)
+        if len(attempts) > 1:
+            retry.set()
+        failed.set()
+        raise ScoreboardPublishError("offline")
+
+    sender.publish = fail
+    board = LiveScoreboard(lambda: sender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert failed.wait(5)
+        board.record(event(bus, value=42), bus.session_id)
+        assert not retry.wait(.15)
+        assert retry.wait(2)
+        assert attempts[1]["players"]["P1"]["combo"] == 42
+    finally:
+        board.stop(5)
+
+
+def test_stop_wakes_idle_publisher_and_clears_remote_scores_promptly():
+    sender = FakeSender()
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    board.start("game")
+    assert wakeup.waiting.wait(5)
+    board.stop(.75)
+    try:
+        assert board._thread is None
+        assert sender.closed
+        assert not sender.published[-1]["active"]
+    finally:
+        board.stop(5)
+
+
+def test_activity_and_unchanged_pace_do_not_trigger_extra_publishes():
+    sender = FakeSender()
+    extra_publish = threading.Event()
+    original = sender.publish
+
+    def publish(snapshot):
+        original(snapshot)
+        if len(sender.published) > 1:
+            extra_publish.set()
+
+    sender.publish = publish
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert wakeup.waiting.wait(5)
+        for timestamp in range(10):
+            board.record(bus.make_event("arrow", {
+                "direction": "Center", "state": "active", "evidence": "arrow_activity",
+            }, timestamp, timestamp, "P1"), bus.session_id)
+            board.advance_video(timestamp)
+        assert not extra_publish.wait(.15)
+        assert len(sender.published) == 1
+    finally:
+        board.stop(5)
+
+
 def test_publish_failure_is_visible_then_retry_uses_new_state():
     sender = FakeSender()
     attempts = []

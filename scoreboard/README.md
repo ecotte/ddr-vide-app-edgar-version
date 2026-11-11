@@ -234,10 +234,19 @@ DDR desktop events -> durable Eventstream publisher -> Eventhouse (unchanged)
 ```
 
 Only one latest-state snapshot is sent at a time through private process pipes.
-The Python worker reads the newest state after each completed request and waits
-one second between attempts; failed requests do not create a replay backlog.
-The hosted viewer independently waits one second after each completed query.
-OCR and network time still add latency; this is not a sub-second guarantee.
+The Python worker publishes changed state immediately when idle, and reads the
+newest state as soon as an in-flight request completes if more changes arrived.
+There is no fixed delay after successful sends. Unchanged state receives a
+one-second heartbeat; failed requests retain a one-second retry delay rather
+than spinning or creating a replay backlog. Only one request runs at a time,
+and intermediate states coalesce to the latest snapshot.
+The hosted scoreboard starts its next query immediately after a successful
+response, yielding to the browser event loop without adding a fixed delay.
+Only one query runs at a time; failed queries preserve the last data and retry
+after one second. Unmounting/signing out stops scheduling even if a request is
+still in flight. Kiosk polling remains at its existing one-second cadence.
+Continuous scoreboard polling increases read traffic. Recognition/correlation
+and network time still add latency; this is not a sub-second guarantee.
 
 The `LiveBoard` SQL table contains a single current-state row. It does not replace
 the durable event history in Eventhouse. Publishing is off at app startup.

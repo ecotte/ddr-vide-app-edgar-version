@@ -146,10 +146,10 @@ def test_default_engine_emits_only_judgement_after_confirmation_and_settling():
     session = AnalysisSession(bus)
     session.set_regions([region])
     session.start()
-    for index, timestamp in enumerate((0, 33, 649)):
+    for index, timestamp in enumerate((0, 33, 499)):
         session.process_arrow_frame(make_frame(region, word()), index, timestamp)
         assert not any(e.event_type == "judgement" for e in bus.events)
-    session.process_arrow_frame(make_frame(region, word()), 3, 650)
+    session.process_arrow_frame(make_frame(region, word()), 3, 500)
     event, = [e for e in bus.events if e.event_type == "judgement"]
     assert event.payload["judgment"] == "miss"
     assert event.payload["outcome"] == "miss"

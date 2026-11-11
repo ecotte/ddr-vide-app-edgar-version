@@ -201,6 +201,7 @@ function Scoreboard({ client }: { client: Client }) {
   useEffect(() => {
     let disposed = false;
     let previousStamp = '';
+    let refreshDelay = 0;
     const stop = poll(async () => {
       try {
         const rows = await client.data.LiveBoard.select(['id', 'snapshot', 'publishedAt'])
@@ -213,10 +214,12 @@ function Scoreboard({ client }: { client: Client }) {
         setPublished(stamp);
         if (stamp !== previousStamp) { setLastChange(Date.now()); previousStamp = stamp; }
         setError('');
+        refreshDelay = 0;
       } catch (e) {
+        refreshDelay = 1000;
         if (!disposed) setError(`Unable to refresh: ${message(e)}`);
       }
-    });
+    }, () => refreshDelay);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => { disposed = true; stop(); clearInterval(clock); };
   }, [client]);
@@ -239,7 +242,7 @@ function Scoreboard({ client }: { client: Client }) {
       <Player key={`${snapshot?.sessionId}:P2`} name="Player 2" state={snapshot?.players.P2}
         waiting={!snapshot?.active} sessionId={snapshot?.sessionId ?? ''} live={live} />
     </div>
-    <div className="booth-feed-notes"><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
+    <div className="booth-feed-notes"><span>Refresh: next query after each response; one-second retry on errors. Recognition and network latency still apply.</span>
       <span>{published ? 'Connected to DDR Scoreboard on Fabric' : 'No scoreboard state published yet'}</span></div>
   </BoothShell>;
 }

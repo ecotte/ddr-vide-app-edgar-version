@@ -5,12 +5,18 @@ import type { AppSchema } from '../../rayfin/data/schema';
 import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import App from '../App';
 import { initializeOperator, signIn } from '../client';
+import { poll } from '../state';
 import { DETECTED_STEPS_CAPTIONS, MOST_HIT_LANE_CAPTIONS, sessionCaptionDecks } from '../dashboardCaptions';
 
 vi.mock('../client', () => ({
   initializeOperator: vi.fn(),
   signIn: vi.fn(),
 }));
+
+vi.mock('../state', async importOriginal => {
+  const actual = await importOriginal<typeof import('../state')>();
+  return { ...actual, poll: vi.fn(actual.poll) };
+});
 
 const player = { score: 1200, combo: 65, hits: 20, misses: 5,
   hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
@@ -35,7 +41,10 @@ function fakeClient(value: unknown = snapshot) {
   return { client, execute, select };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  const actual = await vi.importActual<typeof import('../state')>('../state');
+  // Caption/metric tests use bounded polling; transport cadence has dedicated tests.
+  vi.mocked(poll).mockImplementation(task => actual.poll(task));
   window.history.replaceState(null, '', '/');
   window.location.hash = '';
   vi.useFakeTimers();
@@ -43,6 +52,44 @@ beforeEach(() => {
   vi.mocked(signIn).mockReset();
 });
 afterEach(() => { cleanup(); window.location.hash = ''; vi.useRealTimers(); });
+
+it('requests immediate scoreboard refresh after success and backs off after query errors', async () => {
+  const { client, execute } = fakeClient();
+  await act(async () => { render(<App client={client} />); });
+  const delay = vi.mocked(poll).mock.lastCall?.[1];
+  if (typeof delay !== 'function') throw new Error('Scoreboard must supply a response-dependent delay');
+  expect(delay()).toBe(0);
+  execute.mockRejectedValueOnce(new Error('Network unavailable'));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(delay()).toBe(1000);
+  expect(screen.getByRole('alert')).toHaveTextContent('Network unavailable');
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(delay()).toBe(0);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByText(/next query after each response/)).toBeInTheDocument();
+});
+
+it('starts the next real scoreboard query without a one-second pause and never overlaps', async () => {
+  const actual = await vi.importActual<typeof import('../state')>('../state');
+  vi.mocked(poll).mockImplementation(actual.poll);
+  const { client, execute } = fakeClient();
+  type Rows = Awaited<ReturnType<typeof execute>>;
+  let finish: ((rows: Rows) => void) | undefined;
+  execute.mockImplementation(() => new Promise<Rows>(resolve => { finish = resolve; }));
+  const view = await act(async () => render(<App client={client} />));
+  expect(execute).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(execute).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    finish?.([{ id: 'board', snapshot: JSON.stringify(snapshot), publishedAt: new Date() }]);
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(execute).toHaveBeenCalledTimes(2);
+  view.unmount();
+  finish?.([]);
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(execute).toHaveBeenCalledTimes(2);
+});
 
 it('themes the organizer sign-in without querying data or changing the Microsoft sign-in flow', async () => {
   window.history.replaceState(null, '', '/?player=2#register');

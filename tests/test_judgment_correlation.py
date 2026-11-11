@@ -115,7 +115,7 @@ def test_new_contract_emits_immediate_activity_then_one_judgement(tier, player, 
             "evidence": "judgment_and_arrow" if directions else "judgment_only",
             "judgment_video_time_ms": 100,
             "correlation_window_ms": 500,
-            "correlation_lookback_ms": 500, "correlation_lookahead_ms": 150,
+            "correlation_lookback_ms": 500, "correlation_lookahead_ms": 0,
         }
         assert judgment.player == player
         assert (judgment.frame_index, judgment.video_time_ms) == (2, 750)
@@ -162,7 +162,7 @@ def test_new_contract_emits_immediate_activity_then_one_judgement(tier, player, 
 
 
 @pytest.mark.parametrize("outcome", ["hit", "perfect", "great", "good", "miss"])
-@pytest.mark.parametrize("offset", [-501, -500, -499, -300, -151, -150, 0, 150, 151])
+@pytest.mark.parametrize("offset", [-501, -500, -499, -300, -151, -150, -1, 0, 1, 150, 151])
 def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(outcome, offset):
     session, bus, _, frame = setup(graded=outcome != "hit")
     arrow = {"P1:arrow:Up-Right": "miss" if outcome == "hit" else "hit"}
@@ -176,11 +176,11 @@ def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(out
         frame(1000, **judgment)
         frame(1000 + offset, **arrow)
     assert outcomes(bus) == []
-    frame(1649)
+    frame(1499)
     assert outcomes(bus) == []
-    resolved = frame(1650)
+    resolved = frame(1500)
     event, = outcomes(bus)
-    known = -500 <= offset <= 150
+    known = -500 <= offset <= 0
     expected_outcome = "miss" if outcome == "miss" else "hit"
     assert event.event_type == "judgement"
     assert event.payload["outcome"] == expected_outcome
@@ -193,7 +193,7 @@ def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(out
     assert event.payload["state"] == expected_outcome
     assert event.payload["judgment_video_time_ms"] == 1000
     assert event.payload["correlation_lookback_ms"] == 500
-    assert event.payload["correlation_lookahead_ms"] == 150
+    assert event.payload["correlation_lookahead_ms"] == 0
     assert event in resolved.new_events
     assert session._pending_judgments == []
 
@@ -208,10 +208,10 @@ def test_early_arrow_survives_delayed_word_and_full_settling_interval(tier, play
     frame(550)
     frame(600, **{f"{player}:judgment": tier})
     frame(1000)
-    frame(1249)
+    frame(1099)
     assert outcomes(bus) == []
     assert len(session._pending_lanes) == 1
-    frame(1250)
+    frame(1100)
     event, = outcomes(bus)
     assert event.player == player
     assert event.event_type == "judgement"
@@ -223,26 +223,43 @@ def test_early_arrow_survives_delayed_word_and_full_settling_interval(tier, play
 
 def test_waits_for_a_competing_delayed_judgment_at_the_last_allowed_instant():
     _, bus, _, frame = setup(graded=True)
-    frame(1000, **{"P1:judgment": "perfect"})
+    frame(1000, **{"P1:judgment": "perfect", "P1:arrow:Up-Right": "hit"})
     frame(1100)
-    frame(1150, **{"P1:arrow:Up-Right": "hit"})
+    frame(1150)
     frame(1400)
-    frame(1649)
+    frame(1499)
     assert outcomes(bus) == []
-    frame(1650, **{"P1:judgment": "good"})
+    frame(1500, **{"P1:judgment": "good"})
     first, = outcomes(bus)
     assert first.event_type == "judgement" and first.payload["direction"] is None
-    frame(2300)
+    frame(2000)
     assert len(outcomes(bus)) == 2
     assert all(event.payload["direction"] is None for event in outcomes(bus))
+
+
+def test_future_arrow_is_not_consumed_by_earlier_word_and_can_explain_a_later_word():
+    _, bus, _, frame = setup(graded=True)
+    frame(1000, **{"P1:judgment": "perfect"})
+    frame(1050, **{"P1:arrow:Up-Right": "hit"})
+    frame(1100)
+    frame(1200, **{"P1:judgment": "great"})
+    frame(1500)
+    first, = outcomes(bus)
+    assert first.payload["judgment"] == "perfect"
+    assert first.payload["step_directions"] == []
+    frame(1700)
+    second = outcomes(bus)[1]
+    assert second.payload["judgment"] == "great"
+    assert second.payload["step_directions"] == ["Up-Right"]
+    assert second.payload["correlation_lookahead_ms"] == 0
 
 
 def test_expired_arrow_evidence_is_pruned_after_the_full_retention_interval():
     session, _, regions, _ = setup()
     session._pending_lanes = [LaneEvidence(regions[0], 100, .99)]
-    assert session._correlate_judgments(50, 1250) == []
+    assert session._correlate_judgments(50, 1100) == []
     assert len(session._pending_lanes) == 1
-    assert session._correlate_judgments(51, 1251) == []
+    assert session._correlate_judgments(51, 1101) == []
     assert not session._pending_lanes
 
 
@@ -290,10 +307,10 @@ def test_live_scoreboard_waits_for_outcome_while_activity_is_delivered_immediate
         before = board.snapshot()
         assert before["players"][player]["hits"] == before["players"][player]["misses"] == 0
         frame(200, **{f"{player}:judgment": tier})
-        frame(849)
+        frame(699)
         assert outcomes(bus) == []
         assert board.snapshot()["players"] == before["players"]
-        settled = frame(850)
+        settled = frame(700)
         judgment, = settled.new_events
         assert judgment.event_type == "judgement"
         assert judgment.payload["direction"] == "Center"
@@ -933,8 +950,8 @@ def test_simultaneous_group_requires_close_onsets_not_just_proximity_to_word(spr
     session, bus, regions, _ = setup(directions=("Center", "Up-Right"), graded=True)
     session._pending_judgments = [JudgmentEvidence(regions[-1], "great", 200, .99)]
     session._pending_lanes = [
-        LaneEvidence(regions[0], 125, .98),
-        LaneEvidence(regions[1], 125 + spread, .97),
+        LaneEvidence(regions[0], 200 - spread, .98),
+        LaneEvidence(regions[1], 200, .97),
     ]
     events = session._correlate_judgments(50, 850)
     assert len(events) == 1
@@ -953,7 +970,7 @@ def test_repeated_direction_does_not_get_counted_as_simultaneous_step():
     session._pending_judgments = [JudgmentEvidence(regions[-1], "perfect", 200, .99)]
     session._pending_lanes = [
         LaneEvidence(regions[0], 180, .99),
-        LaneEvidence(regions[0], 220, .99),
+        LaneEvidence(regions[0], 200, .99),
     ]
     event, = session._correlate_judgments(50, 850)
     assert event.event_type == "judgement"
@@ -967,8 +984,8 @@ def test_competing_judgments_cannot_assign_same_simultaneous_arrows():
         JudgmentEvidence(regions[-1], "miss", 300, .99),
     ]
     session._pending_lanes = [
-        LaneEvidence(regions[0], 225, .99),
-        LaneEvidence(regions[1], 250, .99),
+        LaneEvidence(regions[0], 175, .99),
+        LaneEvidence(regions[1], 200, .99),
     ]
     events = session._correlate_judgments(50, 950)
     assert [e.event_type for e in events] == ["judgement", "judgement"]
@@ -1037,7 +1054,7 @@ def test_correlation_diagnostics_explain_competing_words():
 def test_correlation_diagnostics_show_wait_then_persist_last_decision_until_reset():
     session, _, _, frame = setup(graded=True)
     pending = frame(100, **{"P1:judgment": "perfect"}).region_results[-1]
-    assert "Pending judgment: 650 ms" in pending.judgment_diagnostics
+    assert "Pending judgment: 500 ms" in pending.judgment_diagnostics
     assert "Last direction decision:" not in pending.judgment_diagnostics
     settled = frame(750).region_results[-1]
     assert "Last direction decision: PERFECT at 100 ms." in settled.judgment_diagnostics

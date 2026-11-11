@@ -27,6 +27,7 @@ class LiveScoreboard:
         self._sender_factory = sender_factory
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._publish_wakeup = threading.Event()
         self._thread = None
         self._error = ""
         self._seen = set()
@@ -68,6 +69,8 @@ class LiveScoreboard:
         self._video_time_ms = 0
         self._playback_clock = False
 
+        self._publish_wakeup.set()
+
     def advance_video(self, video_time_ms: int, *, is_seek: bool = False):
         """Age hit pace with playback, even when no events are recorded."""
         if type(video_time_ms) is not int or video_time_ms < 0:
@@ -88,6 +91,7 @@ class LiveScoreboard:
             if self._state["players"][name]["hitPace"] != pace:
                 self._state["players"][name]["hitPace"] = pace
                 self._state["revision"] += 1
+                self._publish_wakeup.set()
 
     def record(self, event: Event | None, session_id: str):
         with self._lock:
@@ -207,6 +211,7 @@ class LiveScoreboard:
                         for lane in directions:
                             player["missesByDirection"][lane] += 1
                     self._state["revision"] += 1
+                    self._publish_wakeup.set()
                     return
                 player["hits"] += outcome_count
                 if unassigned:
@@ -251,6 +256,7 @@ class LiveScoreboard:
             if type(event.video_time_ms) is int and event.video_time_ms >= 0:
                 player["lastVideoTimeMs"] = max(player["lastVideoTimeMs"] or 0, event.video_time_ms)
             self._state["revision"] += 1
+            self._publish_wakeup.set()
 
     def start(self, session_id: str):
         with self._lock:
@@ -283,12 +289,17 @@ class LiveScoreboard:
                             + (str(exc) if isinstance(exc, ScoreboardRegistrationError)
                                else "Check connectivity and publishing permissions.")
                         )
+                    self._stop.wait(1)
                 else:
                     with self._lock:
                         self._connection_status = (
                             f"Live scoreboard: connected | last acknowledged revision: {state['revision']}"
                         )
-                self._stop.wait(1)
+                        # Clear only when this acknowledgment includes every change.
+                        # Updates arriving during the request keep the publisher awake.
+                        if self._state["revision"] == state["revision"]:
+                            self._publish_wakeup.clear()
+                    self._publish_wakeup.wait(1)
             sender.publish(self.snapshot())
             with self._lock:
                 self._connection_status = "Live scoreboard: off - shared scores cleared"
@@ -315,6 +326,7 @@ class LiveScoreboard:
             if self._thread is not None and self._thread.is_alive():
                 self._connection_status = "Live scoreboard: stopping - clearing shared scores"
         self._stop.set()
+        self._publish_wakeup.set()
         if self._thread is not None:
             self._thread.join(timeout)
             if not self._thread.is_alive():

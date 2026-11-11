@@ -20,8 +20,13 @@ scores, combos, and per-arrow hit counts without waiting for Eventhouse ingestio
 It requires Microsoft sign-in (anonymous data access is blocked by this tenant).
 Enable **Events > Share live scoreboard**. The desktop manages its Rayfin SDK
 connection automatically; there is no local server, snapshot file, or broadcaster
-tab to run. The publisher and viewer each wait one second after the previous
-request completes; latency is not guaranteed to be sub-second.
+tab to run. Changed scoreboard state wakes the publisher immediately; changes
+arriving during a request are sent as soon as it finishes, without a one-second
+post-send delay. Idle publishing keeps a one-second heartbeat, and failed
+requests retain a one-second retry delay. The viewer starts its next query as
+soon as the prior successful query finishes, without overlapping requests.
+Query failures retain a one-second retry delay. This increases read traffic;
+recognition, correlation, network time and browser throttling still add latency.
 Sharing is off at startup, excludes synthetic samples, and does not change
 the existing durable Fabric publishing path. - Milestone 1 (recorded video)
 
@@ -513,15 +518,17 @@ and reteach its digits as needed. Nothing is deleted automatically.
 
 For players with a judgment region, receptor flashes alone no longer count outcomes.
 A new confirmed judgment determines hit versus miss. Matching arrow
-activity within **500 ms before** or **150 ms after** that judgment assigns its direction,
+activity within **500 ms before** that judgment (including the same timestamp)
+assigns its direction. There is **no lookahead**: activity starting after the
+word's onset cannot be assigned to that word,
 without inferring success from the receptor's appearance. Correlation waits
-**650 ms of source-video time** after the judgment onset to check for competing judgments; confirmation
+**500 ms of source-video time** after the judgment onset to check for competing judgments; confirmation
 frames and frame delivery can add delay. Processing order and wall-clock speed
 do not change the source-time window.
 The same bounds apply to Perfect, Great, Good, Miss, and legacy ungraded success.
-Arrow evidence is retained for up to 1,150 ms so early activity survives both a
+Arrow evidence is retained for up to 1,000 ms so early activity survives both a
 delayed word and the settling interval. Event payloads expose
-`correlation_lookback_ms` and `correlation_lookahead_ms`; the legacy
+`correlation_lookback_ms: 500` and `correlation_lookahead_ms: 0`; the legacy
 `correlation_window_ms` reports the larger allowance (500 ms).
 
 For simultaneous steps, the same judgment applies to every matched arrow.
@@ -814,7 +821,7 @@ and matched directions in the payload instead of previous/new values.
     "judgment_video_time_ms": 41309,
     "correlation_window_ms": 500,
     "correlation_lookback_ms": 500,
-    "correlation_lookahead_ms": 150
+    "correlation_lookahead_ms": 0
   },
   "confidence": 0.97
 }

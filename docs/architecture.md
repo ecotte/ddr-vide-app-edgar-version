@@ -83,8 +83,8 @@ It is not in the live workshop data path.
 | Local state | Latest in-memory player state | Durable SQLite queue of unsent events |
 | Cloud target | Rayfin SQL `LiveBoard` current-state row | Eventstream -> Eventhouse `raw_events` |
 | Delivery | Latest state after each completed request; no replay queue | Original events, ordered within a session, retained until acknowledged |
-| Cadence | One-second wait between completed publish cycles | Immediate send; groups only events already waiting |
-| Consumer | Hosted React scoreboard, one-second query cycle | DDR Live KQL dashboard, ten-second auto-refresh |
+| Cadence | Changed state wakes publishing immediately; one-second idle heartbeat and error retry | Immediate send; groups only events already waiting |
+| Consumer | Hosted React scoreboard, next query immediately after success; one-second error retry | DDR Live KQL dashboard, ten-second auto-refresh |
 | On failure | Visible desktop error; retain latest state for retry | Durable retry/backoff; duplicate deliveries possible |
 | What remains running | DDR desktop app | DDR desktop app |
 
@@ -270,8 +270,9 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   UI, share preview pacing, and are not added to event payloads. Thresholds are
   runtime settings rather than persisted layout calibration.
   Their new pulses determine outcome type, with arrow
-  activity matched from 500 ms before to 150 ms after the word's source-time onset.
-  A 650 ms settling interval after the word
+  activity matched only in the 500 ms leading up to the word's source-time onset,
+  including equal timestamps. Lookahead is zero; later arrow activations cannot
+  explain an earlier word. A 500 ms settling interval after the word
   detects competing judgments. Ambiguous judgments have `direction: null`,
   empty `step_directions` and `step_arrow_count: 0`, never a guessed lane.
   Their player outcome still counts once. A lingering judgment
@@ -280,8 +281,8 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   Ambiguous strong matches and crop/calibration errors restart that interval. Pending
   evidence is cleared on seek, stop, recording/layout/source changes and new games.
   Arrow evidence remains eligible for retention through the full delayed-word and
-  settling interval (up to 1,150 ms). Payloads include `correlation_lookback_ms`
-  and `correlation_lookahead_ms`; legacy `correlation_window_ms` is the maximum
+  settling interval (up to 1,000 ms). Payloads include `correlation_lookback_ms: 500`
+  and `correlation_lookahead_ms: 0`; legacy `correlation_window_ms` is the maximum
   of these allowances, not a symmetric window.
   Perfect, Great, and Good emit hit outcomes, retaining their tier in `payload.judgment`;
   Miss retains the miss outcome. Legacy Success references remain ungraded until
@@ -420,7 +421,14 @@ Live display age = OCR/acceptance delay + publish cycle/network + viewer query c
 History display age = OCR/acceptance delay + outbox/network + ingestion + dashboard refresh
 ```
 
-A one-second polling setting is not a one-second end-to-end guarantee.
+Removing polling pauses is not a sub-second end-to-end guarantee.
+Desktop publishing has no fixed wait after successful sends: changes wake an
+idle sender, and updates accumulated during a request are sent immediately after
+it completes. The single-flight worker retains only latest state. An unchanged
+snapshot is sent on a one-second heartbeat; failed requests back off one second.
+Browser scoreboard queries run sequentially with no fixed delay after successful
+responses, and a one-second retry after errors. This increases read traffic;
+kiosk mode polling remains unchanged. Scheduling stops when the component unmounts.
 Viewer tabs can be throttled in the background. Last values are marked stale
 when the desktop publish heartbeat stops changing for fifteen seconds.
 

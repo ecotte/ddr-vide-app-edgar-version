@@ -86,7 +86,7 @@
   <text x="73" y="900" class="label">Cloud storage - DDR Scoreboard SQL Database</text>
   <text x="73" y="928" class="body">One LiveBoard row: latest snapshot + publishedAt heartbeat</text>
   <text x="73" y="953" class="body">Current values and insights, not a second copy of event history</text>
-  <text x="73" y="979" class="small">Publisher waits one second after each completed request; latest state wins locally</text>
+  <text x="73" y="979" class="small">Publish changes immediately; one-second idle heartbeat / error retry; latest state wins</text>
   <rect x="965" y="710" width="780" height="110" class="history"/>
   <text x="983" y="741" class="label">DDR-events - Eventstream</text>
   <text x="983" y="769" class="body">Event Hub-compatible source -> Direct ingestion + JSON mapping</text>
@@ -105,7 +105,7 @@
   <rect x="55" y="1080" width="780" height="110" class="live"/>
   <text x="73" y="1110" class="label">Scoreboard web page - runs in the viewer's browser (React)</text>
   <text x="73" y="1138" class="body">Laptop / tablet / display PC: reads the API and displays scores</text>
-  <text x="73" y="1165" class="small">Microsoft sign-in; one-second query cycle; no video analysis or Eventhouse queries</text>
+  <text x="73" y="1165" class="small">Microsoft sign-in; sequential queries without pause; one-second error retry</text>
   <rect x="965" y="1080" width="780" height="110" class="history"/>
   <text x="983" y="1110" class="label">DDR Live - Real-Time Dashboard</text>
   <text x="983" y="1138" class="body">14 KQL tiles; ten-second refresh; trends, accepted values and events</text>
