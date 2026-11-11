@@ -280,4 +280,4 @@ def test_live_gameplay_and_following_session_announcements_keep_live_source_mode
     controller.analysis.new_session(9, 160, reason="game_end", clear_events=False)
     assert all(event.source_mode == "live" for event in controller.event_bus.events)
     assert controller.event_bus.events[-1].payload["previous_session_id"] == original_id
-    assert controller.event_bus.events[1].event_type == "combo_changed"
+    assert controller.event_bus.events[1].event_type == "combo"

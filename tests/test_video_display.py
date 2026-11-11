@@ -91,6 +91,40 @@ def test_overlays_reuse_unchanged_regions_and_refresh_after_edits(display):
     assert len(view._overlay_ids) == 2
 
 
+def test_judgment_search_bounds_are_visible_and_refresh_on_frame_resize(display):
+    _, view = display
+    region = Region("Word", "P1", "judgment", 40, 20, 286, 53)
+    VideoTab.show_frame_image(view, Image.new("RGB", (400, 100)), 1.0)
+    VideoTab.redraw_region_overlays(view, [region])
+    assert len(view._overlay_ids) == 4
+    assert view.canvas.coords(view._overlay_ids[0]) == [40, 20, 326, 73]
+    assert view.canvas.coords(view._overlay_ids[2]) == [0, 8, 366, 85]
+    assert view.canvas.itemcget(view._overlay_ids[2], "dash")
+    assert view.canvas.itemcget(view._overlay_ids[3], "text") == "P1:letter search"
+    original = tuple(view._overlay_ids)
+    VideoTab.redraw_region_overlays(view, [region])
+    assert tuple(view._overlay_ids) == original
+    VideoTab.show_frame_image(view, Image.new("RGB", (160, 40)), .5)
+    VideoTab.redraw_region_overlays(view, [region])
+    assert view.canvas.coords(view._overlay_ids[2]) == [0, 4, 160, 40]
+
+
+def test_arrow_search_overlay_extends_downward_without_moving_capture_box(display):
+    _, view = display
+    region = Region("Center", "P1", "arrow", 10, 20, 80, 80, direction="Center")
+    VideoTab.show_frame_image(view, Image.new("RGB", (200, 150)), 1.0)
+    VideoTab.redraw_region_overlays(view, [region])
+    assert len(view._overlay_ids) == 4
+    assert view.canvas.coords(view._overlay_ids[0]) == [10, 20, 90, 100]
+    assert view.canvas.coords(view._overlay_ids[2]) == [10, 20, 90, 140]
+    assert view.canvas.itemcget(view._overlay_ids[2], "dash")
+    assert view.canvas.itemcget(view._overlay_ids[3], "text") == "P1:arrow search"
+    VideoTab.show_frame_image(view, Image.new("RGB", (100, 60)), .5)
+    VideoTab.redraw_region_overlays(view, [region])
+    assert view.canvas.coords(view._overlay_ids[2]) == [5, 10, 45, 60]
+    assert (region.x, region.y, region.w, region.h) == (10, 20, 80, 80)
+
+
 @pytest.mark.parametrize("scale", [1.0, 0.5])
 def test_dragging_existing_p2_box_moves_without_resizing(tk_root, scale):
     controller = Mock()

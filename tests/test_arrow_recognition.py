@@ -21,6 +21,8 @@ from app.models import Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowStateTracker, classify_arrow_state
 
+pytestmark = pytest.mark.usefixtures("synthetic_judgment_matching")
+
 
 def _solid(color_bgr, w=20, h=20):
     arr = np.zeros((h, w, 3), dtype=np.uint8)
@@ -162,9 +164,10 @@ def test_legacy_appearance_does_not_emit_events_or_response_timing():
     for index, (patch, timestamp) in enumerate([(GREY, 100), (GREY, 133), (WHITE, 300), (WHITE, 333)]):
         session.process_frame(_frame_with_patch(patch), index, timestamp)
     session.process_frame(_frame_with_patch(WHITE), 4, 950)
-    assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
-    hit = bus.events[-1]
-    assert hit.video_time_ms == 950
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow", "judgement"]
+    hit = bus.events[1]
+    assert hit.video_time_ms == 333
+    assert hit.payload["activity_video_time_ms"] == 300
     assert "appearance_video_time_ms" not in hit.payload
     assert "hit_video_time_ms" not in hit.payload
     assert "response_time_ms" not in hit.payload
@@ -186,8 +189,8 @@ def test_same_timestamp_appearance_and_hit_do_not_claim_instant_reaction():
     session.process_frame(_frame_with_patch(GREY), 1, 100)
     session.process_frame(_frame_with_patch(WHITE), 2, 100)
     session.process_frame(_frame_with_patch(WHITE), 3, 750)
-    assert bus.events[-1].event_type == "arrow_hit"
-    assert "response_time_ms" not in bus.events[-1].payload
+    assert bus.events[-1].event_type == "judgement"
+    assert "response_time_ms" not in bus.events[1].payload
 
 
 @pytest.mark.parametrize("reason", ["miss", "overlap", "seek", "reset", "recording", "stop"])
@@ -214,18 +217,23 @@ def test_unmatched_or_interrupted_appearances_do_not_invent_response_times(reaso
         session.start()
     session.process_frame(_frame_with_patch(WHITE), 20, 2000)
     session.process_frame(_frame_with_patch(WHITE), 21, 2650)
-    assert bus.events[-1].event_type == "arrow_hit"
+    assert bus.events[-1].event_type == "judgement"
     assert "response_time_ms" not in bus.events[-1].payload
 
 
-def test_activity_without_judgment_never_invents_a_hit():
+def test_activity_without_judgment_is_recorded_immediately_without_inventing_an_outcome():
     bus = EventBus()
     session = AnalysisSession(bus, OcrEngine())
     session.set_regions([_arrow_region_with_refs()])
     session.start()
     result = session.process_frame(_frame_with_patch(WHITE), 0, 100)
-    assert [event.event_type for event in bus.events] == ["new_session"]
-    assert "judgment box" in result.region_results[0].error
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow"]
+    assert bus.events[1].payload["state"] == "active"
+    assert bus.events[1].payload["evidence"] == "arrow_activity"
+    assert "outcome" not in bus.events[1].payload
+    assert bus.events[1] in result.new_events
+    assert result.region_results[0].error is None
+    assert "judgment box" in result.region_results[0].validation_note
     assert result.region_results[0].arrow_state == "active"
 
 
@@ -354,9 +362,10 @@ def test_arrow_region_emits_hit_event_through_full_pipeline(direction, player):
 
     result = session.process_frame(_frame_with_patch(WHITE), 0, 0)
     session.process_frame(_frame_with_patch(WHITE), 1, 650)
-    assert [event.event_type for event in bus.events] == ["new_session", "arrow_hit"]
+    assert [event.event_type for event in bus.events] == ["new_session", "arrow", "judgement"]
     assert bus.events[1].payload["direction"] == direction
     assert bus.events[1].player == player
+    assert bus.events[1].video_time_ms == 0
     assert result.region_results[0].arrow_state == "active"
 
 
@@ -373,7 +382,7 @@ def test_arrow_region_emits_miss_event_and_does_not_repeat(direction):
     session.process_frame(_frame_with_patch(BLACK), 2, 66)
     session.process_frame(_frame_with_patch(BLACK), 3, 650)
 
-    miss_events = [e for e in bus.events if e.event_type == "arrow_miss"]
+    miss_events = [e for e in bus.events if e.event_type == "judgement" and e.payload["outcome"] == "miss"]
     assert len(miss_events) == 1  # not one per frame
     assert miss_events[0].payload["direction"] == direction
 
@@ -407,14 +416,14 @@ def test_legacy_arrow_images_require_fresh_calibration_and_cannot_assign_a_judgm
     result = session.process_frame(_frame_with_patch(WHITE), 1, 100)
     session.process_frame(_frame_with_patch(WHITE), 2, 750)
     assert "fresh Active Arrow" in result.region_results[0].error
-    assert [event.event_type for event in bus.events] == ["new_session", "judgment_hit"]
+    assert [event.event_type for event in bus.events] == ["new_session", "judgement"]
     assert bus.events[-1].payload["direction"] is None
     assert region.to_dict() == original
     region.reference_images["active"] = [image_utils.encode_crop_to_base64_png(WHITE)]
     session.set_regions([region, _judgment_region()])
     session.process_frame(_frame_with_patch(WHITE), 3, 850)
     session.process_frame(_frame_with_patch(WHITE), 4, 1500)
-    assert bus.events[-1].event_type == "arrow_hit"
+    assert bus.events[-1].event_type == "judgement"
     assert bus.events[-1].payload["direction"] == "Down-Left"
 
 
@@ -490,12 +499,12 @@ def test_empty_reference_suppresses_false_lane_hits_but_allows_real_activity(dir
     assert arrow_result.confidence >= .45
     assert "Empty reference" in arrow_result.validation_note
     assert not session._pending_lanes
-    assert [event.event_type for event in bus.events] == ["new_session", "judgment_hit"]
+    assert [event.event_type for event in bus.events] == ["new_session", "judgement"]
     assert bus.events[-1].payload["direction"] is None
     session.new_session()
     session.process_frame(_frame_with_patch(WHITE), 2, 1000)
     session.process_frame(_frame_with_patch(WHITE), 3, 1650)
-    hits = [event for event in bus.events if event.event_type == "arrow_hit"]
+    hits = [event for event in bus.events if event.event_type == "arrow"]
     assert len(hits) == 1
     assert hits[0].player == player and hits[0].payload["direction"] == direction
 
@@ -564,8 +573,13 @@ def test_all_ten_arrow_regions_track_independently_with_one_game_guid():
         session.process_frame(_frame_with_patch(patch), index, timestamp)
     gameplay = [event for event in bus.events if event.event_type != "new_session"]
     expected = {(region.player, region.direction) for region in regions}
-    for event_type in ("arrow_hit", "arrow_miss"):
-        matching = [event for event in gameplay if event.event_type == event_type]
-        assert len(matching) == 10
-        assert {(event.player, event.payload["direction"]) for event in matching} == expected
+    matching = [event for event in gameplay if event.event_type == "arrow"]
+    assert len(matching) == 20
+    assert {(event.player, event.payload["direction"]) for event in matching} == expected
+    misses = [event for event in gameplay if event.event_type == "judgement" and event.payload["outcome"] == "miss"]
+    assert len(misses) == 2
+    assert {
+        (event.player, direction) for event in misses for direction in event.payload["step_directions"]
+    } == expected
+    assert not any(event.event_type == "arrow_miss" for event in gameplay)
     assert {event.session_id for event in bus.events} == {bus.session_id}

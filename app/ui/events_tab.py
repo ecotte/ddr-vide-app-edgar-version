@@ -1,4 +1,4 @@
-"""Events table for unconfirmed observations and confirmed numeric/arrow events."""
+"""Events table for observations, numeric changes, judgments and arrow activity."""
 from __future__ import annotations
 
 import tkinter as tk
@@ -140,13 +140,18 @@ class EventsTab(ttk.Frame):
             return f"Session ended ({payload['reason']}): {event.session_id}"
         if event.event_type == "score_observed":
             return f"UNCONFIRMED: {payload.get('observed_value')}"
+        if event.event_type == "combo":
+            return str(payload["value"])
         if "previous_value" in payload or "new_value" in payload:
             prev = payload.get("previous_value")
             new = payload.get("new_value")
             return f"{prev if prev is not None else 'unknown'} -> {new}"
         if payload.get("field") in ("arrow", "judgment"):
             judgment = payload.get("judgment") or payload.get("state", "?")
-            direction = payload.get("direction") or "Direction unknown"
+            directions = payload.get("step_directions", [])
+            direction = payload.get("direction") or (
+                ", ".join(directions) if directions else "Direction unknown"
+            )
             detail = f"{direction} - {judgment.upper()}"
             if payload.get("step_arrow_count", 0) > 1:
                 detail += f" | {payload['step_arrow_count']}-arrow step"

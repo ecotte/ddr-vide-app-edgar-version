@@ -106,12 +106,57 @@ def test_high_confidence_combo_advances_without_repeated_values(confidence):
     session.start()
 
     session.process_numeric_frame(_frame(), 0, 0)
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [4]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [4]
     session.process_numeric_frame(_frame(), 1, 33)
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [4, 5]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [4, 5]
     session.process_numeric_frame(_frame(), 2, 66)
 
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [4, 5]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [4, 5]
+
+
+@pytest.mark.parametrize("player", ["P1", "P2"])
+def test_combo_current_value_contract_reaches_table_export_and_outbox(player, tmp_path):
+    from app.eventstream import Outbox
+    from app.ui.events_tab import EventsTab
+
+    bus = EventBus()
+    session = AnalysisSession(bus, FakeOcrEngine(["4", "4", "5", "0", "0"], confidence=.99))
+    region = _combo_region()
+    region.player = player
+    session.set_regions([region])
+    session.start()
+    outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "example.servicebus.windows.net/events")
+    delivered = []
+
+    def enqueue(event):
+        delivered.append(event)
+        outbox.enqueue(event)
+
+    bus.set_delivery_sink(enqueue)
+    try:
+        for index in range(5):
+            session.process_numeric_frame(_frame(), index, index * 33)
+        combos = _confirmed_events(bus)
+        assert [event.event_type for event in combos] == ["combo"] * 3
+        assert [event.payload for event in combos] == [
+            {"field": "combo", "region_label": "Combo", "value": value} for value in (4, 5, 0)
+        ]
+        assert [EventsTab._format_detail(event) for event in combos] == ["4", "5", "0"]
+        assert all(event.player == player for event in combos)
+        assert delivered == bus.events
+        path = tmp_path / "combo.jsonl"
+        bus.export_jsonl(str(path))
+        exported = [json.loads(line) for line in path.read_text().splitlines()]
+        assert exported == [event.to_dict() for event in delivered]
+        queued = []
+        while outbox.count():
+            row_id, _, body = outbox.next_event()
+            queued.append(json.loads(body))
+            outbox.acknowledge(row_id)
+        assert queued == exported
+        assert session.tracker_for(region).accepted_value == 0
+    finally:
+        outbox.close()
 
 
 def test_low_confidence_initial_combo_does_not_poison_baseline(monkeypatch):
@@ -133,7 +178,7 @@ def test_low_confidence_initial_combo_does_not_poison_baseline(monkeypatch):
     session.process_numeric_frame(_frame(), 3, 99)
 
     assert session.tracker_for(region).accepted_value == 11
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [10, 11]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [10, 11]
 
 
 def test_fast_score_templates_require_three_examples_of_every_digit():
@@ -495,7 +540,7 @@ def test_combo_accepts_repeated_high_confidence_decrease():
         session.process_frame(_frame(), frame_index, frame_index * 33)
 
     assert session.tracker_for(region).accepted_value == 4
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [100, 4]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [100, 4]
 
 
 def test_split_frame_processing_keeps_arrow_and_numeric_regions_separate():
@@ -572,7 +617,7 @@ def test_combo_low_confidence_and_occlusion_break_confirmation(monkeypatch):
         assert all(event.event_type == "new_session" for event in result.new_events)
     result = session.process_numeric_frame(_frame(), 5, 165)
     assert result.region_results[0].accepted_value == 101
-    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [101]
+    assert [e.payload["value"] for e in _confirmed_events(bus)] == [101]
 
 
 def test_immediate_combo_acceptance_still_rejects_jumps_and_single_decreases():
@@ -582,7 +627,7 @@ def test_immediate_combo_acceptance_still_rejects_jumps_and_single_decreases():
     session.start()
     for i in range(4):
         session.process_numeric_frame(_frame(), i, i * 33)
-    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [65, 66]
+    assert [e.payload["value"] for e in _confirmed_events(bus)] == [65, 66]
 
 
 @pytest.mark.parametrize("confidence", [0.90, 0.995])
@@ -611,15 +656,15 @@ def test_combo_correction_reaches_ui_export_and_delivery_sink(confidence, tmp_pa
         rr, session.tracker_for(region).status()
     )
     event, = corrected.new_events
-    assert event.event_type == "combo_changed"
+    assert event.event_type == "combo"
     assert event.payload == {
-        "field": "combo", "region_label": "Combo", "previous_value": 186, "new_value": 161,
+        "field": "combo", "region_label": "Combo", "value": 161,
     }
     assert (event.frame_index, event.video_time_ms, event.confidence) == (2, 66, confidence)
-    assert EventsTab._format_detail(event) == "186 -> 161"
+    assert EventsTab._format_detail(event) == "161"
     assert session.process_background_numeric_frame(_frame(), 3, 99).new_events == []
     session.process_background_numeric_frame(_frame(), 4, 132)
-    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [186, 161, 162]
+    assert [e.payload["value"] for e in _confirmed_events(bus)] == [186, 161, 162]
     assert delivered == bus.events
     path = tmp_path / "events.jsonl"
     assert bus.export_jsonl(str(path)) == 4
@@ -649,7 +694,7 @@ def test_combo_correction_requires_uninterrupted_matching_evidence(monkeypatch, 
         assert result.region_results[0].accepted_value == 186
     assert len(_confirmed_events(bus)) == 1
     session.process_numeric_frame(_frame(), 4, 132)
-    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [186, 161]
+    assert [e.payload["value"] for e in _confirmed_events(bus)] == [186, 161]
 
 
 @pytest.mark.parametrize("frame_index,timestamp", [(1, 33), (1, 50), (2, 33), (0, 0)])
@@ -665,7 +710,8 @@ def test_correction_does_not_count_repeated_or_old_frames(frame_index, timestamp
     assert rejected.region_results[0].accepted_value == 186
     assert len(_confirmed_events(bus)) == 1
     session.process_numeric_frame(_frame(), 3, 66)
-    assert [e.payload["new_value"] for e in _confirmed_events(bus)] == [186, 161]
+    key = "value" if region_factory == _combo_region else "new_value"
+    assert [e.payload[key] for e in _confirmed_events(bus)] == [186, 161]
 
 
 @pytest.mark.parametrize("elapsed,accepted", [(2000, 161), (2001, 186)])
@@ -735,7 +781,7 @@ def test_fast_live_combo_retains_accepted_value_for_uncertain_candidates(monkeyp
     assert recognize.call_args.kwargs == {"yellow_filter": False, "fast_mode": True}
     result = session.process_background_numeric_frame(_frame(), 120, 2000).region_results[0]
     assert result.accepted_value == 106
-    assert [event.payload["new_value"] for event in _confirmed_events(bus)] == [77, 106]
+    assert [event.payload["value"] for event in _confirmed_events(bus)] == [77, 106]
     session.set_combo_fast_mode(region, False)
     assert not region.combo_fast_mode
     assert session.tracker_for(region).accepted_value == 106
@@ -769,7 +815,7 @@ def test_combo_filter_routes_only_enabled_region_and_keeps_confidence_floor(monk
         assert "low-confidence" in rr.validation_note
         assert result.region_results[2].accepted_value == 82
     assert seen_modes == [True, False, True, False]
-    assert not any(e.player == "P1" and e.event_type == "combo_changed" for e in bus.events)
+    assert not any(e.player == "P1" and e.event_type == "combo" for e in bus.events)
 
 
 def test_changing_combo_filter_clears_evidence_and_invalidates_queued_work(monkeypatch):

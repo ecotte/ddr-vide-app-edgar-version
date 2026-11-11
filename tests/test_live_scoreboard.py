@@ -20,10 +20,260 @@ class FakeSender:
         self.closed = True
 
 
-def event(bus, kind="combo_changed", value=10, player="P1", direction="Up-Right"):
+def event(bus, kind="combo", value=10, player="P1", direction="Up-Right"):
     return bus.make_event(kind, {
-        "new_value": value, "observed_value": value, "direction": direction,
+        "new_value": value, "observed_value": value, "value": value, "direction": direction,
     }, 1, 17, player, 0.99)
+
+
+def judgement_event(bus, tier="perfect", directions=None, player="P1"):
+    directions = ["Center"] if directions is None else directions
+    outcome = "miss" if tier == "miss" else "hit"
+    return bus.make_event("judgement", {
+        "field": "judgment", "outcome": outcome, "state": outcome,
+        "judgment": tier, "direction": directions[0] if len(directions) == 1 else None,
+        "step_directions": directions, "step_arrow_count": len(directions),
+    }, 1, 17, player, .99)
+
+
+def test_streak_counts_judgments_once_and_misses_break_only_the_current_run():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        for tier, directions in [
+            ("perfect", ["Center", "Up-Left"]), ("great", []), ("good", ["Down-Right"]),
+        ]:
+            row = judgement_event(bus, tier=tier, directions=directions)
+            board.record(row, bus.session_id)
+            board.record(row, bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert player["hits"] == 4
+        assert (player["currentStreak"], player["bestStreak"]) == (3, 3)
+        board.record(judgement_event(bus, tier="miss", directions=[]), bus.session_id)
+        board.record(judgement_event(bus), bus.session_id)
+        board.record(judgement_event(bus, player="P2"), bus.session_id)
+        players = board.snapshot()["players"]
+        assert (players["P1"]["currentStreak"], players["P1"]["bestStreak"]) == (1, 3)
+        assert (players["P2"]["currentStreak"], players["P2"]["bestStreak"]) == (1, 1)
+    finally:
+        board.stop()
+
+
+def test_streak_ignores_ocr_combos_legacy_lane_events_and_synthetic_events():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        for row in [event(bus, value=999), event(bus, kind="arrow_hit"), event(bus, kind="arrow_miss")]:
+            board.record(row, bus.session_id)
+        synthetic = judgement_event(bus)
+        synthetic.source_mode = "synthetic"
+        board.record(synthetic, bus.session_id)
+        test = judgement_event(bus)
+        test.payload["is_test"] = True
+        board.record(test, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["bestStreak"] == 0
+        assert board.snapshot()["players"]["P1"]["currentStreak"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("timestamps", [(100, 200, 300), (100, 100, 100)])
+def test_delayed_judgments_recompute_streak_in_video_time_and_sequence_order(timestamps):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        rows = [judgement_event(bus, tier=tier) for tier in ("perfect", "miss", "great")]
+        for sequence, (row, timestamp) in enumerate(zip(rows, timestamps), start=1):
+            row.video_time_ms = timestamp
+            row.sequence = sequence
+        for index in (2, 0):
+            board.record(rows[index], bus.session_id)
+        assert board.snapshot()["players"]["P1"]["bestStreak"] == 2
+        board.record(rows[1], bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert (player["currentStreak"], player["bestStreak"]) == (1, 1)
+    finally:
+        board.stop()
+
+
+def test_session_reset_clears_streaks_and_their_ordering_history():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        old = judgement_event(bus)
+        board.record(old, bus.session_id)
+        bus.new_session()
+        board.record(None, bus.session_id)
+        board.record(old, bus.session_id)
+        for player in board.snapshot()["players"].values():
+            assert player["bestStreak"] == player["currentStreak"] == 0
+        assert board._streak_outcomes == {"P1": [], "P2": []}
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("timestamp", [None, -1, True, 1.5, 9007199254740992])
+def test_invalid_judgment_time_cannot_fabricate_or_bridge_a_streak(timestamp):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = judgement_event(bus)
+        row.video_time_ms = timestamp
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid judgement" in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("player", ["P1", "P2"])
+@pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])
+@pytest.mark.parametrize("event_type", ["arrow", "arrow_hit"])
+def test_arrow_activity_never_changes_score_counts_accuracy_or_pace(player, direction, event_type):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event(event_type, {
+            "field": "arrow", "direction": direction, "state": "active",
+            "evidence": "arrow_activity", "activity_video_time_ms": 100,
+        }, 1, 100, player, .99)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        board.record(judgement_event(bus, tier="miss", directions=[direction], player=player), bus.session_id)
+        stats = board.snapshot()["players"][player]
+        assert stats["hits"] == 0 and stats["misses"] == 1
+        assert stats["missesByDirection"][direction] == 1
+        assert stats["runningScore"] == 0 and stats["hitPace"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("invalid", [
+    {"direction": "invalid"}, {"direction": []}, {"direction": None}, {"state": "hit"},
+    {"evidence": "unknown"},
+])
+def test_invalid_activity_is_reported_without_counting_a_hit(invalid):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event("arrow", {
+            "field": "arrow", "direction": "Center", "state": "active", "evidence": "arrow_activity",
+            **invalid,
+        }, 1, 100, "P1", .99)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid arrow activity payload" in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("invalid", [
+    {"outcome": "perfect"}, {"outcome": None}, {"outcome": "miss"},
+    {"state": "miss"}, {"judgment": "unknown"}, {"judgment": []},
+    {"judgment": "miss"}, {"step_directions": None}, {"step_directions": "Center"},
+    {"step_directions": ["invalid"]}, {"step_directions": [[]]},
+    {"step_directions": ["Center", "Center"], "step_arrow_count": 2, "direction": None},
+    {"step_arrow_count": True}, {"step_arrow_count": -1}, {"step_arrow_count": 2},
+    {"direction": "Up-Right"}, {"direction": None},
+])
+def test_invalid_judgement_payload_does_not_change_metrics(invalid):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = judgement_event(bus)
+        row.payload.update(invalid)
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid judgement outcome payload" in board.status()
+    finally:
+        board.stop()
+
+
+def test_new_judgements_preserve_player_isolation_synthetic_exclusion_and_session_reset():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    bus.set_live_sink(board.record)
+    board.start(bus.session_id)
+    try:
+        old = judgement_event(bus, directions=["Up-Left", "Center"], player="P2")
+        bus.record(old)
+        synthetic = judgement_event(bus, tier="miss")
+        synthetic.source_mode = "synthetic"
+        bus.record(synthetic)
+        assert board.snapshot()["players"]["P1"]["misses"] == 0
+        assert board.snapshot()["players"]["P2"]["runningScore"] == 80
+        bus.new_session()
+        bus.record(old)
+        assert all(player["runningScore"] == 0 for player in board.snapshot()["players"].values())
+        bus.record(judgement_event(bus, tier="good", directions=[], player="P1"))
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 10
+        assert board.snapshot()["players"]["P2"]["runningScore"] == 0
+    finally:
+        board.stop()
+
+
+def test_multi_arrow_judgement_checks_total_points_before_mutating_metrics():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        board._state["players"]["P1"]["runningScore"] = 9007199254740991 - 40
+        before = board.snapshot()
+        board.record(judgement_event(bus, directions=["Center", "Up-Left"]), bus.session_id)
+        assert board.snapshot() == before
+        assert "supported range" in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("value", [None, -1, 1.5, "12", True, [], 9007199254740992])
+def test_invalid_current_combo_is_reported_without_using_old_new_value(value):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = bus.make_event("combo", {"value": value, "new_value": 20}, 1, 33, "P1")
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid numeric event" in board.status()
+    finally:
+        board.stop()
+
+
+def test_current_and_legacy_combos_share_sequence_ordering_and_preserve_zero():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        old = bus.make_event("combo", {"value": 40}, 1, 33, "P1")
+        legacy = bus.make_event("combo_changed", {"previous_value": 40, "new_value": 45}, 2, 66, "P1")
+        board.record(legacy, bus.session_id)
+        board.record(old, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["combo"] == 45
+        current = bus.make_event("combo", {"value": 0}, 3, 99, "P1")
+        board.record(current, bus.session_id)
+        board.record(current, bus.session_id)
+        p2 = bus.make_event("combo", {"value": 8}, 3, 99, "P2")
+        board.record(p2, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["combo"] == 0
+        assert board.snapshot()["players"]["P2"]["combo"] == 8
+        assert board.snapshot()["players"]["P1"]["runningScore"] == 0
+    finally:
+        board.stop()
 
 
 def test_running_score_uses_judgment_points_per_arrow_and_once_for_unassigned():
@@ -184,7 +434,7 @@ def test_sharing_is_opt_in_and_does_not_replace_fabric_sink(tmp_path):
     try:
         bus.record(event(bus, value=20))
         assert board.snapshot()["players"]["P1"]["combo"] == 20
-        assert [event.event_type for event in fabric] == ["new_session", "combo_changed", "combo_changed"]
+        assert [event.event_type for event in fabric] == ["new_session", "combo", "combo"]
         bus.set_delivery_sink(None)
         bus.record(event(bus, value=21))
         assert board.snapshot()["players"]["P1"]["combo"] == 21
@@ -427,6 +677,170 @@ def test_direct_publisher_reads_latest_state_after_slow_request_not_a_backlog():
         assert sender.published[1]["players"]["P1"]["combo"] == 99
     finally:
         release.set()
+        board.stop(5)
+
+
+class ObservedPublisherWakeup:
+    def __init__(self):
+        self.event = threading.Event()
+        self.waiting = threading.Event()
+
+    def set(self):
+        self.event.set()
+
+    def clear(self):
+        self.event.clear()
+
+    def wait(self, timeout=None):
+        self.waiting.set()
+        return self.event.wait(timeout)
+
+
+@pytest.mark.parametrize("change", ["combo", "judgement", "miss", "new-session", "pace"])
+def test_changed_state_interrupts_idle_heartbeat_wait_immediately(change):
+    sender = FakeSender()
+    published_change = threading.Event()
+    original = sender.publish
+
+    def publish(snapshot):
+        original(snapshot)
+        if len(sender.published) >= 2:
+            published_change.set()
+
+    sender.publish = publish
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert wakeup.waiting.wait(5)
+        if change == "combo":
+            board.record(event(bus, value=42), bus.session_id)
+        elif change in ("judgement", "miss"):
+            board.record(judgement_event(bus, tier="miss" if change == "miss" else "perfect"), bus.session_id)
+        elif change == "new-session":
+            board.record(None, "next-game")
+        else:
+            with board._lock:
+                board._recent_hits["P1"] = [17]
+                board._state["players"]["P1"]["hitPace"] = .2
+            board.advance_video(5017)
+        # A fixed one-second post-send sleep cannot satisfy this deadline.
+        assert published_change.wait(.75)
+        assert sender.published[1]["revision"] > sender.published[0]["revision"]
+        if change == "combo":
+            assert sender.published[1]["players"]["P1"]["combo"] == 42
+        if change == "new-session":
+            assert sender.published[1]["sessionId"] == "next-game"
+    finally:
+        board.stop(5)
+
+
+def test_update_during_send_is_published_without_sleep_or_overlapping_requests():
+    sender = FakeSender()
+    entered, release, next_send = threading.Event(), threading.Event(), threading.Event()
+    active_requests = [0]
+    original = sender.publish
+
+    def delayed(snapshot):
+        active_requests[0] += 1
+        try:
+            assert active_requests[0] == 1
+            original(snapshot)
+            if len(sender.published) == 1:
+                entered.set()
+                assert release.wait(5)
+            else:
+                next_send.set()
+        finally:
+            active_requests[0] -= 1
+
+    sender.publish = delayed
+    board = LiveScoreboard(lambda: sender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert entered.wait(5)
+        for value in range(100):
+            board.record(event(bus, value=value), bus.session_id)
+        release.set()
+        assert next_send.wait(.75)
+        assert sender.published[1]["players"]["P1"]["combo"] == 99
+        assert len(sender.published) == 2
+    finally:
+        release.set()
+        board.stop(5)
+
+
+def test_failed_publishes_keep_retry_backoff_even_when_new_data_arrives():
+    sender = FakeSender()
+    failed, retry = threading.Event(), threading.Event()
+    attempts = []
+
+    def fail(snapshot):
+        attempts.append(snapshot)
+        if len(attempts) > 1:
+            retry.set()
+        failed.set()
+        raise ScoreboardPublishError("offline")
+
+    sender.publish = fail
+    board = LiveScoreboard(lambda: sender)
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert failed.wait(5)
+        board.record(event(bus, value=42), bus.session_id)
+        assert not retry.wait(.15)
+        assert retry.wait(2)
+        assert attempts[1]["players"]["P1"]["combo"] == 42
+    finally:
+        board.stop(5)
+
+
+def test_stop_wakes_idle_publisher_and_clears_remote_scores_promptly():
+    sender = FakeSender()
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    board.start("game")
+    assert wakeup.waiting.wait(5)
+    board.stop(.75)
+    try:
+        assert board._thread is None
+        assert sender.closed
+        assert not sender.published[-1]["active"]
+    finally:
+        board.stop(5)
+
+
+def test_activity_and_unchanged_pace_do_not_trigger_extra_publishes():
+    sender = FakeSender()
+    extra_publish = threading.Event()
+    original = sender.publish
+
+    def publish(snapshot):
+        original(snapshot)
+        if len(sender.published) > 1:
+            extra_publish.set()
+
+    sender.publish = publish
+    board = LiveScoreboard(lambda: sender)
+    wakeup = ObservedPublisherWakeup()
+    board._publish_wakeup = wakeup
+    bus = EventBus()
+    board.start(bus.session_id)
+    try:
+        assert wakeup.waiting.wait(5)
+        for timestamp in range(10):
+            board.record(bus.make_event("arrow", {
+                "direction": "Center", "state": "active", "evidence": "arrow_activity",
+            }, timestamp, timestamp, "P1"), bus.session_id)
+            board.advance_video(timestamp)
+        assert not extra_publish.wait(.15)
+        assert len(sender.published) == 1
+    finally:
         board.stop(5)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,7 +13,10 @@ import numpy as np
 import pytest
 import cv2
 
-from app.ocr_engine import OcrEngine, _extract_score_glyphs, _preprocess_for_ocr, _select_numeric_group, score_templates_from_label
+from app.ocr_engine import (
+    OcrEngine, _extract_combo_glyphs, _extract_score_glyphs, _preprocess_for_ocr,
+    _select_numeric_group, combo_frame_quality, score_templates_from_label,
+)
 
 
 def _detection(left, right, text, confidence=0.9, top=0, bottom=20):
@@ -119,6 +123,152 @@ def test_unfiltered_combo_keeps_detector_path():
     assert result.raw_text == "65"
     engine._reader.recognize.assert_not_called()
     assert "allowlist" not in engine._reader.readtext.call_args.kwargs
+
+
+@pytest.mark.parametrize("first_confidence,expected_calls", [(0.99, 1), (0.65, 2)])
+def test_wide_combo_digits_use_aspect_corrected_ocr_before_detection(monkeypatch, first_confidence, expected_calls):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    original = crop.copy()
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48], [120, 165, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = [
+        [_detection(0, 540, "013", first_confidence)], [_detection(0, 540, "013", .98)],
+    ]
+    result = engine.recognize_digits(crop)
+    assert result.raw_text == "013"
+    assert result.confidence == (first_confidence if expected_calls == 1 else .98)
+    assert result.error is None
+    calls = engine._reader.recognize.call_args_list
+    assert len(calls) == expected_calls
+    assert calls[0].args[0].shape == (300, 540)
+    if expected_calls == 2:
+        assert calls[1].args[0].shape == (225, 540)
+    assert all("allowlist" not in call.kwargs for call in calls)
+    engine._reader.readtext.assert_not_called()
+    np.testing.assert_array_equal(crop, original)
+
+
+@pytest.mark.parametrize("scale", [1, 1.5])
+@pytest.mark.parametrize("fast_mode", [False, True])
+def test_real_011_uses_corrected_ocr_and_is_retained_despite_two_narrow_ones(scale, fast_mode):
+    crop = cv2.imread(str(Path(__file__).parent / "fixtures" / "combo_011.png"))
+    assert crop is not None
+    crop = cv2.resize(crop, None, fx=scale, fy=scale)
+    _, boxes, _ = _extract_combo_glyphs(crop)
+    assert len(boxes) == 3
+    ratios = [(right - left) / (bottom - top) for left, right, top, bottom in boxes]
+    assert np.median(ratios) < .75 < max(ratios)
+    assert combo_frame_quality(crop) >= .25
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, crop.shape[1], "011", .936)]
+    result = engine.recognize_digits(crop, fast_mode=fast_mode)
+    assert result.raw_text == "011"
+    assert result.confidence == .936
+    assert result.error is None
+    processed = _preprocess_for_ocr(crop)
+    assert engine._reader.recognize.call_args.args[0].shape == (processed.shape[0] * 2, processed.shape[1])
+    engine._reader.readtext.assert_not_called()
+
+
+@pytest.mark.parametrize("wide_index", [0, 1, 2])
+def test_wide_font_detection_does_not_depend_on_which_digit_is_wide(monkeypatch, wide_index):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    boxes = [[5, 25, 2, 48], [60, 80, 2, 48], [120, 140, 2, 48]]
+    boxes[wide_index][1] = boxes[wide_index][0] + 45
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (crop[:, :, 0], boxes, []))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.return_value = [_detection(0, 540, "011", .95)]
+    assert engine.recognize_digits(crop).raw_text == "011"
+    engine._reader.readtext.assert_not_called()
+
+
+@pytest.mark.parametrize("text,confidence", [("013", .89), ("COMBO", .99), ("0I3", .99), ("013", None)])
+@pytest.mark.parametrize("fast_mode", [False, True])
+def test_weak_or_nonnumeric_corrected_combos_preserve_existing_fallback(monkeypatch, text, confidence, fast_mode):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = [
+        [_detection(0, 540, text, confidence)], [_detection(0, 540, text, confidence)],
+        [_detection(0, 540, "008", .85)],
+    ]
+    engine._reader.readtext.return_value = [_detection(0, 540, "008", .85)]
+    result = engine.recognize_digits(crop, fast_mode=fast_mode)
+    assert result.raw_text == "008"
+    assert result.confidence == .85
+    if fast_mode:
+        engine._reader.readtext.assert_not_called()
+    else:
+        engine._reader.readtext.assert_called_once()
+
+
+@pytest.mark.parametrize("boxes", [
+    [], [[5, 50, 2, 48]],
+    [[5, 25, 2, 48], [60, 80, 2, 48]],
+    [[5, 30, 2, 20], [60, 85, 2, 20]],
+])
+def test_combo_aspect_correction_requires_multiple_large_glyphs_and_a_wide_one(monkeypatch, boxes):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (crop[:, :, 0], boxes, []))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.readtext.return_value = []
+    assert engine.recognize_digits(crop).raw_text == ""
+    engine._reader.recognize.assert_not_called()
+
+
+def test_combo_aspect_correction_surfaces_recognizer_errors(monkeypatch):
+    crop = np.zeros((50, 180, 3), dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[5, 50, 2, 48], [60, 105, 2, 48]], [],
+    ))
+    engine = OcrEngine()
+    engine._reader = Mock()
+    engine._reader.recognize.side_effect = RuntimeError("recognizer failed")
+    result = engine.recognize_digits(crop)
+    assert "recognizer failed" in result.error
+    engine._reader.readtext.assert_not_called()
+
+
+def test_combo_contours_cannot_produce_partially_overlapping_digit_boxes(monkeypatch):
+    contours = [
+        np.array([[[x, 10]], [[x + 49, 10]], [[x + 49, 89]], [[x, 89]]], dtype=np.int32)
+        for x in (10, 50, 120)
+    ]
+    monkeypatch.setattr("app.ocr_engine.cv2.findContours", lambda *args: (contours, None))
+    monkeypatch.setattr("app.ocr_engine.cv2.adaptiveThreshold", lambda gray, *args: np.full_like(gray, 255))
+    monkeypatch.setattr("app.ocr_engine._combo_glyphs_from_boxes", lambda mask, boxes: [])
+    _, boxes, _ = _extract_combo_glyphs(np.zeros((128, 200, 3), dtype=np.uint8))
+    assert len(boxes) == 2
+    assert all(left[1] <= right[0] for left, right in zip(boxes, boxes[1:]))
+
+
+def test_automatic_combo_segmentation_discards_contours_without_original_resolution_ink(monkeypatch):
+    contour = np.array([[[10, 10]], [[59, 10]], [[59, 89]], [[10, 89]]], dtype=np.int32)
+    monkeypatch.setattr("app.ocr_engine.cv2.findContours", lambda *args: ([contour], None))
+    _, boxes, glyphs = _extract_combo_glyphs(np.zeros((128, 200, 3), dtype=np.uint8))
+    assert boxes == glyphs == []
+
+
+def test_combo_frame_quality_rejects_empty_flat_and_low_contrast_frames(monkeypatch):
+    assert combo_frame_quality(np.zeros((0, 0, 3), dtype=np.uint8)) == 0
+    crop = np.full((50, 100, 3), 100, dtype=np.uint8)
+    monkeypatch.setattr("app.ocr_engine._extract_combo_glyphs", lambda _: (
+        crop[:, :, 0], [[0, 45, 0, 50], [50, 95, 0, 50]], [],
+    ))
+    assert combo_frame_quality(crop) == 0
+    crop[::2] = 110
+    assert combo_frame_quality(crop) < .25
+    crop[::2] = 255
+    assert combo_frame_quality(crop) > .25
 
 
 @pytest.mark.parametrize("yellow_filter", [False, True])

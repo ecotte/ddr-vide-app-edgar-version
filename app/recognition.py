@@ -176,6 +176,11 @@ class ArrowStateTracker:
         self._pending_count = 0
         self._last_was_unreadable = False
 
+    def clear_pending(self) -> None:
+        """Break confirmation evidence without rearming a latched outcome."""
+        self._pending_state = None
+        self._pending_count = 0
+
     def observe(self, state: Optional[str]) -> Optional[str]:
         """Feed one frame's classified arrow or judgment state (or None if unreadable).
 
@@ -256,9 +261,21 @@ def classify_arrow_state(
     return "idle", best_score
 
 
-def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
-    """Return idle for no outcome match, but None for ambiguous strong matches."""
-    from app import image_utils
+@dataclass(frozen=True)
+class JudgmentMatch:
+    state: Optional[str]
+    similarity: float
+    best_state: Optional[str] = None
+    runner_up_state: Optional[str] = None
+    runner_up_similarity: Optional[float] = None
+    empty_similarity: Optional[float] = None
+    suppressed_by_empty: bool = False
+    match_bounds: Optional[Tuple[int, int, int, int]] = None
+
+
+def match_judgment(crop_bgr, reference_images: dict, threshold: float) -> JudgmentMatch:
+    """Classify once and retain the best two category scores for diagnostics."""
+    from app import config, image_utils
 
     ranked = sorted(
         (
@@ -273,10 +290,30 @@ def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
         reverse=True,
     )
     if not ranked:
-        return None, 0.0
+        return JudgmentMatch(None, 0.0)
     score, state = ranked[0]
+    runner_score, runner_state = ranked[1] if len(ranked) > 1 else (None, None)
+    empty_references = reference_images.get("empty", [])
+    empty_score = (
+        max(image_utils.similarity(crop_bgr, image) for image in empty_references)
+        if empty_references else None
+    )
+    suppressed = (
+        score >= threshold and empty_score is not None
+        and score <= empty_score + config.JUDGMENT_EMPTY_REFERENCE_MARGIN
+    )
     if score < threshold:
-        return "idle", score
-    if len(ranked) > 1 and score - ranked[1][0] < 0.02:
-        return None, score
-    return state, score
+        observed = "idle"
+    elif suppressed:
+        observed = "idle"
+    elif runner_score is not None and score - runner_score < config.JUDGMENT_AMBIGUITY_MARGIN:
+        observed = None
+    else:
+        observed = state
+    return JudgmentMatch(observed, score, state, runner_state, runner_score, empty_score, suppressed)
+
+
+def classify_judgment_state(crop_bgr, reference_images: dict, threshold: float):
+    """Return idle for no outcome match, but None for ambiguous strong matches."""
+    result = match_judgment(crop_bgr, reference_images, threshold)
+    return result.state, result.similarity

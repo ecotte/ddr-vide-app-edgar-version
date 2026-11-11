@@ -155,6 +155,265 @@ def test_game_end_card_is_shared_and_capture_controls_are_wired(root):
     controller.set_game_end_settings.assert_called_once_with(0.96, 3)
 
 
+def test_separate_threshold_controls_route_to_independent_analysis_settings(root):
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.ui.app_window import App
+
+    controller = Mock()
+    controller.analysis = AnalysisSession(EventBus())
+    controller.set_arrow_similarity_threshold.side_effect = lambda value: App.set_arrow_similarity_threshold(controller, value)
+    controller.set_judgment_similarity_threshold.side_effect = lambda value: App.set_judgment_similarity_threshold(controller, value)
+    tab = VideoTab(root, controller)
+    try:
+        assert tab.arrow_threshold_var.get() == .55
+        assert tab.judgment_threshold_var.get() == .65
+        assert controller.analysis.judgment_similarity_threshold == .65
+        tab.arrow_threshold_var.set(.95)
+        tab._on_arrow_threshold_changed()
+        tab.judgment_threshold_var.set(.65)
+        tab._on_judgment_threshold_changed()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .65
+        controller.set_arrow_similarity_threshold.assert_called_once_with(.95)
+        controller.set_judgment_similarity_threshold.assert_called_once_with(.65)
+        for variable, handler, label in (
+            (tab.arrow_threshold_var, tab._on_arrow_threshold_changed, "arrow"),
+            (tab.judgment_threshold_var, tab._on_judgment_threshold_changed, "judgment"),
+        ):
+            for value in ("invalid", float("nan"), .49, 1.01):
+                variable.set(value)
+                handler()
+                assert f"Invalid {label} similarity:" in tab.error_status_var.get()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .65
+        tab.judgment_threshold_var.set(.7)
+        tab._on_judgment_threshold_changed()
+        assert not tab.error_status_var.get()
+        assert controller.analysis.arrow_similarity_threshold == .95
+        assert controller.analysis.judgment_similarity_threshold == .7
+    finally:
+        tab.destroy()
+
+
+def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_player(root, monkeypatch):
+    from app.models import Region
+
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    regions = [
+        Region(player, player, "judgment", 0, 0, 100, 30) for player in ("P1", "P2")
+    ]
+    try:
+        clock = [1.0]
+        monkeypatch.setattr("app.ui.video_tab.time.perf_counter", lambda: clock[0])
+        tab.refresh_region_list(regions)
+        tab.set_judgment_diagnostics("P1:judgment", "Latch blocked PERFECT; no-match 33/50 ms.")
+        tab._region_rows["P1:judgment"]["diagnostics_toggle"].invoke()
+        assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: Latch blocked PERFECT; no-match 33/50 ms."
+        )
+        assert tab._region_rows["P2:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: Advance/play to inspect judgment matching."
+        )
+        clock[0] += .3
+        tab.set_judgment_diagnostics("P1:judgment", None)
+        assert tab._region_rows["P1:judgment"]["diagnostics_var"].get() == (
+            "diagnostics: No frame diagnostics available."
+        )
+    finally:
+        tab.destroy()
+
+
+@pytest.mark.parametrize("kind", ["arrow", "judgment"])
+def test_diagnostics_stay_cached_when_collapsed_and_refresh_at_four_hz_when_open(root, monkeypatch, kind):
+    from app.models import Region
+
+    tab = VideoTab(root, Mock())
+    region = Region("Center", "P1", kind, 0, 0, 80, 80, direction="Center")
+    clock = [1.0]
+    monkeypatch.setattr("app.ui.video_tab.time.perf_counter", lambda: clock[0])
+    try:
+        tab.refresh_region_list([region])
+        row = tab._region_rows[region.key()]
+        setter = tab.set_arrow_diagnostics if kind == "arrow" else tab.set_judgment_diagnostics
+        writes = []
+        token = row["diagnostics_var"].trace_add("write", lambda *_: writes.append(True))
+        assert not row["diagnostics_label"].winfo_manager()
+        for i in range(100):
+            setter(region.key(), f"Frame {i}")
+        assert writes == []
+        row["diagnostics_toggle"].invoke()
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 99"
+        assert row["diagnostics_label"].winfo_manager() == "pack"
+        assert len(writes) == 1
+        clock[0] = 1.1
+        setter(region.key(), "Frame 100")
+        assert len(writes) == 1
+        clock[0] = 1.25
+        setter(region.key(), "Frame 101")
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 101"
+        assert len(writes) == 2
+        row["diagnostics_toggle"].invoke()
+        assert not row["diagnostics_label"].winfo_manager()
+        clock[0] = 2
+        setter(region.key(), "Frame 102")
+        assert len(writes) == 2
+        row["diagnostics_toggle"].invoke()
+        assert row["diagnostics_var"].get() == "diagnostics: Frame 102"
+        assert len(writes) == 3
+        row["diagnostics_var"].trace_remove("write", token)
+    finally:
+        tab.destroy()
+
+
+def test_card_height_changes_do_not_reconfigure_label_wrapping():
+    label = Mock(spec=ttk.Label)
+    row = Mock()
+    row.winfo_children.return_value = [label]
+    VideoTab._wrap_card_labels(row)
+    callback = row.bind.call_args.args[1]
+    label.configure.reset_mock()
+    callback(SimpleNamespace(width=300, height=100))
+    label.configure.assert_called_once_with(wraplength=288)
+    callback(SimpleNamespace(width=300, height=500))
+    callback(SimpleNamespace(width=300, height=50))
+    assert label.configure.call_count == 1
+    callback(SimpleNamespace(width=400, height=50))
+    assert label.configure.call_count == 2
+    label.configure.assert_called_with(wraplength=388)
+
+
+def test_unchanged_arrow_text_and_photo_do_not_trigger_tk_reconfiguration(root):
+    from app.models import Region
+    from PIL import Image, ImageTk
+    from unittest.mock import patch
+
+    tab = VideoTab(root, Mock())
+    region = Region("Center", "P1", "arrow", 0, 0, 80, 80, direction="Center")
+    try:
+        tab.refresh_region_list([region])
+        row = tab._region_rows[region.key()]
+        photo = ImageTk.PhotoImage(Image.new("RGB", (20, 20)))
+        tab.update_arrow_recognition_row(region.key(), photo, "active", .8, "activity")
+        with patch.object(row["thumb_label"], "configure") as configure, \
+                patch.object(row["state_var"], "set") as state, \
+                patch.object(row["confidence_var"], "set") as confidence, \
+                patch.object(row["status_var"], "set") as status:
+            for _ in range(20):
+                tab.update_arrow_recognition_row(region.key(), photo, "active", .8, "activity")
+            configure.assert_not_called()
+            state.assert_not_called()
+            confidence.assert_not_called()
+            status.assert_not_called()
+            tab.update_arrow_recognition_row(region.key(), None, "idle", .1, "empty")
+            state.assert_called_once_with("state: idle")
+            status.assert_called_once_with("status: empty")
+    finally:
+        tab.destroy()
+
+
+def test_arrow_and_judgment_confirmation_controls_are_independent(root):
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.ui.app_window import App
+
+    controller = Mock()
+    controller.analysis = AnalysisSession(EventBus())
+    controller.set_arrow_min_confirm_frames.side_effect = lambda value: App.set_arrow_min_confirm_frames(controller, value)
+    controller.set_judgment_min_confirm_frames.side_effect = lambda value: App.set_judgment_min_confirm_frames(controller, value)
+    tab = VideoTab(root, controller)
+    try:
+        assert tab.arrow_confirm_var.get() == 1
+        assert tab.judgment_confirm_var.get() == 2
+        tab.judgment_confirm_var.set(3)
+        tab._on_judgment_confirm_changed()
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        assert controller.analysis.arrow_min_confirm_frames == 1
+        tab.arrow_confirm_var.set(2)
+        tab._on_arrow_confirm_changed()
+        assert controller.analysis.arrow_min_confirm_frames == 2
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        for value in ("invalid", 0, 11):
+            tab.judgment_confirm_var.set(value)
+            tab._on_judgment_confirm_changed()
+            assert "Invalid judgment confirmation" in tab.error_status_var.get()
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        tab.judgment_confirm_var.set(2)
+        tab._on_judgment_confirm_changed()
+        assert not tab.error_status_var.get()
+    finally:
+        tab.destroy()
+
+
+def test_no_judgment_capture_gallery_and_deletion_refresh_real_player_cards(root):
+    import numpy as np
+    from app import image_utils
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.models import Region
+    from app.ui.app_window import App
+    from app.ui.video_tab import ReferenceGalleryDialog
+
+    word = image_utils.encode_crop_to_base64_png(np.full((20, 20, 3), 255, dtype=np.uint8))
+    regions = [
+        Region(player, player, "judgment", index * 20, 0, 20, 20,
+               reference_images={"perfect": [word]})
+        for index, player in enumerate(("P1", "P2"))
+    ]
+    controller = Mock()
+    controller.regions = regions
+    controller.analysis = AnalysisSession(EventBus())
+    controller.analysis.set_regions(regions)
+    controller._analysis_generation = 0
+    controller._last_frame_bgr = np.full((20, 40, 3), 128, dtype=np.uint8)
+    controller._make_thumbnail_photo = App._make_thumbnail_photo
+    controller._refresh_arrow_reference_thumbnails = lambda: App._refresh_arrow_reference_thumbnails(controller)
+    controller.capture_arrow_reference = lambda region, state: App.capture_arrow_reference(controller, region, state)
+    controller.clear_arrow_reference = lambda region, state: App.clear_arrow_reference(controller, region, state)
+    controller.delete_arrow_reference = lambda region, state, index: App.delete_arrow_reference(controller, region, state, index)
+    tab = VideoTab(root, controller)
+    controller.video_tab = tab
+    tab.refresh_region_list(regions)
+    gallery = None
+    try:
+        for region in regions:
+            card = tab._region_rows[region.key()]["thumb_label"].master
+            buttons = {
+                widget["text"]: widget for group in card.winfo_children() if isinstance(group, ttk.Frame)
+                for widget in group.winfo_children() if isinstance(widget, ttk.Button)
+            }
+            buttons["Add No judgment ref"].invoke()
+            buttons["Add No judgment ref"].invoke()
+            assert len(region.reference_images["empty"]) == 2
+            assert tab._region_rows[region.key()]["empty_ref_label"]["image"]
+            assert tab._region_rows[region.key()]["empty_ref_label"]["text"] == "2 refs"
+            for title, state in (
+                ("Perfect", "perfect"), ("Great", "great"), ("Good", "good"),
+                ("Miss", "miss"), ("No judgment", "empty"),
+            ):
+                controller.show_arrow_reference_gallery.reset_mock()
+                buttons[f"View / delete {title} refs..."].invoke()
+                controller.show_arrow_reference_gallery.assert_called_once_with(region, state)
+        gallery = ReferenceGalleryDialog(root, controller, regions[1], "empty")
+        assert "No judgment" in gallery.title()
+        gallery._delete_reference(0)
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "1 ref"
+        assert len(regions[0].reference_images["empty"]) == 2
+        gallery._delete_reference(0)
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "(none)"
+        assert regions[1].reference_images["perfect"] == [word]
+        # A layout refresh restores the remaining negative preview for P1 only.
+        tab.refresh_region_list(regions)
+        controller._refresh_arrow_reference_thumbnails()
+        assert tab._region_rows[regions[0].key()]["empty_ref_label"]["text"] == "2 refs"
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "(none)"
+    finally:
+        if gallery is not None:
+            gallery.destroy()
+        tab.destroy()
+
+
 def test_game_end_region_is_game_wide_and_cannot_be_added_twice(root):
     from app.ui.region_dialog import RegionDialog
 

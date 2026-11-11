@@ -96,9 +96,10 @@ def test_detector_rearms_only_after_confirmed_disappearance():
     session.process_frame(_frame(), 5, 165)
     resumed = session.process_frame(_frame(), 6, 198)
     combo, = resumed.new_events
-    assert combo.event_type == "combo_changed"
+    assert combo.event_type == "combo"
     assert combo.session_id == second_id
-    assert combo.payload["previous_value"] is None
+    assert combo.payload["value"] == 10
+    assert "previous_value" not in combo.payload and "new_value" not in combo.payload
     session.process_frame(_frame(True), 7, 231)
     session.process_frame(_frame(True), 8, 264)
     assert bus.session_id != second_id

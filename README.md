@@ -20,8 +20,13 @@ scores, combos, and per-arrow hit counts without waiting for Eventhouse ingestio
 It requires Microsoft sign-in (anonymous data access is blocked by this tenant).
 Enable **Events > Share live scoreboard**. The desktop manages its Rayfin SDK
 connection automatically; there is no local server, snapshot file, or broadcaster
-tab to run. The publisher and viewer each wait one second after the previous
-request completes; latency is not guaranteed to be sub-second.
+tab to run. Changed scoreboard state wakes the publisher immediately; changes
+arriving during a request are sent as soon as it finishes, without a one-second
+post-send delay. Idle publishing keeps a one-second heartbeat, and failed
+requests retain a one-second retry delay. The viewer starts its next query as
+soon as the prior successful query finishes, without overlapping requests.
+Query failures retain a one-second retry delay. This increases read traffic;
+recognition, correlation, network time and browser throttling still add latency.
 Sharing is off at startup, excludes synthetic samples, and does not change
 the existing durable Fabric publishing path. - Milestone 1 (recorded video)
 
@@ -93,7 +98,7 @@ activity. General judgment-text OCR remains future work.
 - Show, per region, the cropped image, the raw OCR text or arrow-classification state, and the currently accepted value/state.
 - Apply a configurable temporal-consistency filter for score/combo and a separate edge-triggered activity detector for arrows; matched judgment pulses determine the outcomes - see section 6.
 - Reject isolated combo decreases and implausible upward jumps caused by arrow occlusion. Repeated high-confidence lower readings can correct a falsely high accepted combo.
-- Record `new_session` / `score_observed` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` / `judgment_hit` / `judgment_miss` events in a table, with gameplay recording on/off and clear-table controls.
+- Record `new_session` / `score_observed` / `score_changed` / `combo` / `judgement` / `arrow` events in a table, with gameplay recording on/off and clear-table controls. Each confirmed arrow activation immediately emits activity-only `arrow`; each recognized judgment later emits one `judgement` carrying the outcome and matched directions. New analysis never emits `arrow_hit`, `arrow_miss`, `judgment_hit`, or `judgment_miss`.
 - Export recorded events to a local `.jsonl` file (one JSON object per line).
 - Optionally publish recorded event JSON to a Fabric Eventstream custom endpoint, using SAS authentication, a durable local queue, background retries, and visible delivery status.
 
@@ -245,7 +250,17 @@ a second connection; wait and retry.
 
 For yellow combo digits with a white glow, try **Yellow-digit filter** in that combo's recognition row, then **Save Layout**. This optional per-region filter subtracts blue from the weaker of red and green, emphasizing yellow fill while suppressing white outlines and red/pink arrows. It is off by default, is restored when the layout is loaded (including rescaled layouts), and never affects score OCR. Turning it on or off clears pending evidence but preserves accepted values and existing events. It can improve `3`/`8` confusion on this skin, but can worsen other crops and cannot restore pixels hidden by an arrow. OCR confidence and acceptance thresholds are unchanged; a correctly read but low-confidence candidate remains unaccepted. Disable it for non-yellow digits or if recognition worsens.
 
-With this filter enabled, combo OCR first tries recognition directly on the crop, avoiding the expensive text-detection stage. It uses that result only for a single digits-only reading within the combo length limit and with at least 0.90 confidence. Otherwise it falls back to the existing detector on the same filtered crop. Confidence is never increased artificially, and normal confirmation and jump checks still apply. Clear crops can be much faster; obstructed or uncertain crops still incur detector latency, and either OCR path can make mistakes. Unfiltered combos and scores keep their existing OCR paths.
+Combo OCR automatically checks for a row of multiple large outlined digits with
+at least one wide glyph, so narrow `1` digits in values such as `011` do not
+disable the check. It first tries vertically stretched copies (2x, then 1.5x if needed) to
+restore proportions for the text model. The saved calibration and displayed crop
+are unchanged. Only a digits-only reading with at least 0.90 confidence can use
+this shortcut; weak or mixed readings continue through the existing OCR path.
+This applies without enabling any option, including to existing layouts.
+It can recover wide digits that normal OCR misses or misreads, but confidence
+is not an accuracy guarantee and obscured digits can still be missed.
+
+With the yellow filter enabled, combo OCR also tries recognition directly on the original-proportion filtered crop, avoiding the expensive text-detection stage. It uses that result only for a single digits-only reading within the combo length limit and with at least 0.90 confidence. Otherwise it falls back to the existing detector on the same filtered crop. Confidence is never increased artificially, and normal confirmation and jump checks still apply. Clear crops can be much faster; obstructed or uncertain crops still incur detector latency, and either OCR path can make mistakes. Score OCR is unchanged.
 
 Combo OCR allows the engine to recognize surrounding words such as "combo", then ignores text and mixed letter/number detections instead of forcing letters into digits. Spaces between digits are removed (`6 5` becomes `65`), but letters are never substituted or stripped out of mixed detections to manufacture a number. This applies with and without the yellow filter, including the fast path. A mixed detection is left unreadable until a clearer frame separates the number from the text; OCR can still mistake a letter for a digit. Score glyph OCR retains its digit allowlist.
 
@@ -254,24 +269,33 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
 ### 5b. Arrow lanes (activity identification)
 
 1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up-Right/Up-Left/Down-Right/Down-Left/Center). Repeat for each of the 5 directions, and again for the other player if needed (up to 10 arrow boxes total for 2 players).
-2. On each player, select **Add Active Arrow ref** on frames that show activity in that direction, not the always-visible idle receptor. Capture multiple appearances separately for P1 and P2; examples are not shared. **Clear Active Arrow refs** removes only that card's examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
+2. On each player, select **Add Active Arrow ref** on frames that show a clear colored note overlapping the receptor, not the empty receptor or white flash. Capture multiple appearances separately for P1 and P2; examples are not shared. **Clear Active Arrow refs** removes only that card's examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
    For every direction on either player, **Add Empty ref** captures the unused
    receptor with no note overlapping it. These optional negative examples prevent
    look-alike empty tiles from being treated as active. Active must meet the
-   similarity threshold and beat the best Empty match by more than **0.02**.
+   shape threshold and beat the best Empty mask match in its learned color by
+   more than **0.02**. Empty samples without contrast in the learned colors
+   cannot provide a negative veto; the diagnostics report this explicitly.
    Ties and near-ties stay idle. Capture multiple empty appearances if the receptor
    animates. Each card has independent Empty preview, clear, and **View / delete
    Empty refs...** controls; deleting Empty samples never removes Active samples.
-3. Adjust **Arrow similarity threshold** (default 0.90; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6.
+3. Adjust **Arrow shape similarity** (default 0.55; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6. **Judgment shape similarity** is a separate control (default 0.65); lowering it does not lower arrow matching. **Judgment confirm frames** independently defaults to 2; increasing it does not delay arrow activity.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
    **View / delete refs...** opens a scrollable gallery of every Active Arrow sample
    for that box. Delete individual examples without clearing the rest or changing
    the other player. Recognition and the card preview refresh immediately; close
    the gallery and **Save Layout** to persist deletions.
    Active and Empty examples are both saved, loaded, and rescaled with the layout.
-   Existing active-only layouts retain their original matching behavior until you
-   capture Empty samples. The displayed **active similarity** still measures the
-   best Active match; status explains when an Empty example overrides it.
+   Existing colored Active samples are reused, but the default matcher now uses
+   shapes rather than grayscale. Unusable or colorless samples are flagged,
+   never silently treated as valid or replaced by grayscale matching.
+   The displayed **active shape similarity** measures the best Active shape
+   match; status explains when an Empty example overrides it.
+   Cyan dashed bounds extend the search downward by half the calibrated box
+   height, within frame bounds and without expanding across lanes. Green bounds
+   remain the capture box; saved coordinates are not changed.
+   Arrow diagnostics show source frame/time, positive/negative scores, threshold,
+   expanded search bounds, best-match bounds, and calibration warnings.
 5. Add a judgment box for each player and teach Perfect/Great/Good/Miss separately on each player's card. Only a matching judgment produces an outcome; activity alone never counts a hit or miss. Existing layout coordinates and judgment/digit samples are retained during recalibration.
 
 There is no Appearance calibration. Old `appeared` references remain in saved
@@ -282,38 +306,55 @@ older snapshots remain compatible. Active Arrow and judgment calibration are
 all that is needed for outcomes and running points.
 
 **Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
-outcomes in the current game. Undetected notes are not counted. Missing data
-hides its card rather than showing an empty placeholder; the same applies to
-timing, animal comparisons, hit pace, and per-lane arrow accuracy.
-Step Title stays visible during active games, using Warming up until a title is available.
+outcomes in the current game. Undetected notes are not counted. The four main
+tiles (Best streak, Total detected steps, Cumulative hit percentage, Step Title)
+remain visible even before the first snapshot or while sharing is inactive.
+Unavailable values show **Waiting for data**, never invented zeroes. A known zero
+total remains zero; accuracy waits until there is at least one detected outcome.
+Step Title uses Warming up during active games until a title is available.
+Score, arrow counts, hit pace, and per-lane accuracy sections also stay visible;
+only optional legacy response-timing and animal comparisons still require data.
 **Arrow accuracy** uses each lane's `hits / (hits + misses)`, not its share of total
 hits. Unplayed lanes show **No attempts**; detected misses without hits show **0.0%**.
 Unknown-direction outcomes do not alter lane accuracy. Older snapshots without
-per-lane miss counts omit this section.
+per-lane miss counts show a waiting state in this section.
 Without Miss references in the judgment box, misses cannot be detected, so this percentage may
 overstate actual performance.
 
-The lane with the highest detected hit percentage (`lane hits / (lane hits + lane misses)`)
+The lane with the most detected hits
 earns one title: **Up-Left Legend**, **Up-Right Royalty**, **Down-Left Dynamo**,
 **Down-Right Champion**, or **Center-Step Superstar**, with its matching direction symbol.
-The card shows the percentage and detected outcome counts. Unplayed lanes and
+The card shows the winning per-lane hit count. Unplayed lanes and
 unknown-direction judgments are excluded. **All-Step Ace** requires equal positive
-hit percentages in all five lanes. A two-, three-, or four-way accuracy tie shows
+hit counts in all five lanes. A two-, three-, or four-way hit-count tie shows
 **Joint leaders** with the tied directions. The Step Title tile remains visible
 during active games, showing **Warming up** when no directional hit can earn a title
 or per-lane data is unavailable. No minimum sample count is required.
-Restart the desktop publisher and deploy the
-updated scoreboard to use the new lane-accuracy titles; previous games are not replayed.
+Deploy the updated scoreboard to use hit-count titles. Existing snapshots with
+per-lane hit counts are supported; per-lane miss data is not required for titles.
 
-Two playful tiles add **Most-hit lane** and **Total detected steps**, each with
+**Best streak** replaces the duplicate Most-hit lane tile. It shows the longest
+run of successful recognized judgments in the current session, plus the current
+run. Each `judgement` hit adds one, including an unknown-direction or multi-arrow
+judgment; a Miss resets the current run but preserves the best. This is not the
+game's OCR combo and is not inferred from arrow activity. Duplicate, synthetic,
+and stale-session events do not count. Delayed judgments are ordered by video
+time, then sequence, so a late Miss cannot incorrectly join two runs.
+New sessions reset both values. Older publishers without streak fields show
+Waiting for data; restart the desktop publisher and deploy the frontend to use
+this metric. Missed recognition can still overstate or understate a streak.
+
+The **Best streak** and **Total detected steps** tiles each have
 50 captions that rotate every 15 seconds of live feed time without repeating
 until the deck is exhausted. Players get different simultaneous captions.
 Inactive, stale, and failed feeds pause rotation; new games reset it. These
-captions never change the underlying numbers. Most-hit lane uses hit
-counts, not accuracy, and lists ties. Total detected steps adds player hits and
+captions never change the underlying numbers. Total detected steps adds player hits and
 misses, including unknown-direction outcomes once; simultaneous arrows count
 separately, so it is a detected-outcome count, not a physical step count. Missing
-data hides a tile; a known total of zero remains visible.
+data shows a waiting state; a known total of zero remains visible, with waiting
+text until the first detected outcome. Captions appear only when their tile has
+the data needed to display them. Inactive feeds keep the complete waiting layout
+without showing the previous game's names or values.
 
 **Existing four-direction layouts:** loading a layout with Up/Down/Left/Right
 arrow regions shows a warning and removes those unsupported arrow regions from
@@ -377,9 +418,16 @@ app restarts; exported events and queued Fabric messages retain their original I
    Recognition is arranged in two compact columns: **Player 1** on the left and **Player 2** on the right. Each card stacks its aspect-ratio-preserving crop preview above its readings and wraps long status messages. Teaching, yellow-digit filters, and arrow-reference controls remain in the matching player's card. Regions assigned to **Unknown** appear in a separate section below both columns. Scroll the recognition panel to reach additional cards.
 
    To reduce playback overhead, unchanged arrow cards refresh their crop, similarity, and pending-count display at most ten times per second. Arrow-state changes, errors, unreadable crops, and tracking resets update immediately. This only paces the recognition panel: arrow analysis and event recording still run on every displayed video frame, and completed score/combo OCR results are displayed immediately.
+   Detailed arrow/judgment diagnostics are collapsed by default. Select **Show
+   diagnostics** on a card to inspect its latest details. Closed panels cache
+   the latest text without updating Tk labels; open panels refresh at most four
+   times per second. Opening a panel immediately displays its latest cached
+   reading. Label wrapping is recalculated only when the card width changes,
+   not whenever status text changes its height. Recognition, correlation and
+   event delivery are unchanged.
 
    Each numeric card shows **OCR frame** and its video timestamp. Its crop and readings belong to that completed OCR job, not necessarily the frame currently playing on the left. OCR latency still applies, but unnecessary confirmation passes no longer hold the panel on older footage; pausing lets the worker catch up to the final displayed frame. Confirmation jobs process only pending fields, so confirming a score does not rerun unrelated combo OCR on the older frame.
-3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo_changed` / `arrow_hit` / `arrow_miss` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
+3. Switch to the **Events** tab to see `new_session` / `score_changed` / `combo` / `judgement` / `arrow` rows appear as they're confirmed. Use **Record events** to pause gameplay recording without losing calibration, **Clear Table** to wipe the recorded/exportable list, and **Export to JSONL...** to save everything currently in the table to a file.
 4. **New Session** resets the session ID, sequence counter, and all recognition state - use it if you want a clean slate on the same video without reloading it. Loading a different video or seeking (slider, or the frame-back button) also resets recognition state automatically, so a jump in the video never gets misread as a huge score change or a phantom arrow hit.
 
 ---
@@ -393,15 +441,26 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **Score templates are supporting evidence, not ground truth.** Use **Teach score...** on clear frames and type all displayed digits, including leading zeros (commas are allowed). Check the preview's labels before Learn. Extraction retains dim zeros, supports wide/flat digits up to twice their height, and uses brighter-threshold passes to recover digits joined to HUD borders by shadows without duplicating boxes. It selects a consistent digit row and normalizes contrast. Mismatched counts are rejected. Partial reference sets can support OCR immediately. Older-format samples are ignored with a status message; repeated OCR remains available without teaching. The first new teaching replaces those outdated samples; subsequent teaching keeps all distinct examples. Save Layout persists changes. Animated/blended digits can still be misidentified.
 - **Candidate is separate from accepted.** A readable number awaiting confirmation or rejected by acceptance rules remains visible as the candidate, with a pending/rejection explanation. It is not mislabeled as an OCR failure or an unreadable crop.
 - **Ambiguous score readings are rejected, not corrected by guessing.** OCR must return exactly one digit per segmented box; multi-character results retain their original confidence and are rejected. Template matching compares foreground strokes (intersection over union), not shared black background, against the closest user-labeled example for each digit. The best digit must exceed the runner-up by at least 0.02 similarity and meet the 0.72 minimum match threshold. Template similarity is not an accuracy probability. Teaching does not rewrite accepted values or old events; use **New Session** to reset an incorrect baseline and event history (export first if you need to preserve them).
-- **Accepted combos can recover downward.** A lower value needs at least two matching readings, each with OCR confidence of at least 0.90, on distinct advancing frames within two seconds. "Consistency frames" above two raises this requirement. A different candidate, low-confidence reading, or unreadable frame restarts confirmation; duplicate/old frames cannot add evidence. A single lower reading keeps the accepted combo unchanged. Confirmed decreases update the displayed accepted value and emit a normal `combo_changed` event with the old and new values for the table, JSONL export, and Fabric delivery. Existing events are not rewritten. This also allows genuine combo resets; repeated confidently wrong readings can still be accepted.
+- **Accepted combos can recover downward.** A lower value needs at least two matching readings, each with OCR confidence of at least 0.90, on distinct advancing frames within two seconds. "Consistency frames" above two raises this requirement. A different candidate, low-confidence reading, or unreadable frame restarts confirmation; duplicate/old frames cannot add evidence. A single lower reading keeps the accepted combo unchanged. Confirmed decreases update the displayed accepted value and emit a `combo` event with only the current value in `payload.value`; no previous/new pair is sent. The Events table displays just that value. Existing events are not rewritten. This also allows genuine combo resets; repeated confidently wrong readings can still be accepted.
 - **High-confidence combos can advance immediately.** With the default consistency setting, OCR confidence of at least 0.90 allows a single plausible combo reading to establish or advance the accepted value. Lower-confidence, unreadable, or implausible upward-jump readings are rejected. A confidently wrong initial reading can still establish a bad baseline; confidence is not a guarantee of correctness.
-- **Confirmation depends on the field and confidence.** "Consistency frames" remains a configurable minimum: qualifying score/combo initial readings and increases may use 1; lower-confidence scores and all downward corrections require at least 2. Raising the setting above 1 also delays high-confidence score and combo readings. While OCR runs, the first neighboring frame and newest displayed frame are retained. The neighbor is processed only for pending confirmation; accepted, rejected, and unreadable results go directly to the newest frame. After one confirmation pass the worker returns to the newest frame rather than chaining old neighbors. This bounds the waiting buffer to two frames; EOF also retains its final-frame safeguard. Reprocessing a paused frame never adds evidence. Evidence expires after two seconds of video time and is restarted by a different candidate or invalid reading. Background OCR does not run on every source frame, so events can be delayed and brief changes missed. Preview playback remains independent.
+- **Confirmation depends on the field and confidence.** "Consistency frames" remains a configurable minimum: qualifying score/combo initial readings and increases may use 1; lower-confidence scores and all downward corrections require at least 2. Raising the setting above 1 also delays high-confidence score and combo readings. While OCR runs, the first neighboring frame and newest displayed frame are retained. The neighbor is processed only for pending confirmation rather than chaining old neighbors. Reprocessing a paused frame never adds evidence. Evidence expires after two seconds of video time and is restarted by a different candidate or invalid reading. Background OCR does not run on every source frame, so events can be delayed and brief changes missed. Preview playback remains independent.
+- **Brief combo displays are retained for OCR.** A lightweight outline/contrast
+  check keeps at most two advancing frames per combo region while the worker is
+  busy, in addition to the neighbor/latest-frame slots and EOF safeguard.
+  Blank frames do not overwrite these candidates. They are processed in frame
+  order, only for the corresponding combo regions, with up to four priority
+  passes before returning to current numeric sampling so scores cannot starve.
+  Both players have independent buffers; seeks, calibration changes, and session
+  generations invalidate older candidates. The check never reads a digit or
+  emits an event: normal OCR confidence, plausibility, and distinct-frame
+  confirmation still apply. The buffer favors recent candidates, not an
+  exhaustive history, so sufficiently fast changes can still be skipped.
 - **Important limitation the temporal filter cannot fix:** if OCR is *consistently* wrong for the same digits (a stable misread, not a one-frame glitch), the consistency filter will still "accept" that wrong value, because it only rejects readings that fail to repeat - it cannot know the true value. See section 7 for a real example of this happening. This is why the app always shows you the raw OCR text next to the accepted value, so you can visually sanity-check it.
 
 **Arrow lanes:**
-- **Classification only compares against fresh Active Arrow snapshots you captured.** The direction comes from the box configuration; the reference detects activity, not success. Missing Active Arrow calibration shows an error. Old Hit/Miss images are ignored.
-- **A frame is classified "idle"** whenever its similarity to your best-matching reference falls below the **Arrow similarity threshold** - "idle" is the honest default, not a third guess.
-- **Activity is edge-triggered:** a persistent active arrow produces one correlation candidate, not an outcome every frame. Only a matching player judgment emits `arrow_hit`/`arrow_miss`; without one, activity does not affect totals.
+- **Classification uses cached colored-arrow shapes learned from your Active samples.** A half-resolution search uses near-native widths and native height, including the approaching note just below the receptor. The direction comes from the box configuration; the reference detects activity, not success. Missing or unusable Active calibration shows an error. Old Hit/Miss images are ignored. Empty examples are evaluated in the same learned-color space, not mixed with grayscale scores.
+- **A frame is classified "idle"** whenever its best Active shape score falls below **Arrow shape similarity**, or an Empty mask wins or is within the required margin. Scores from the former grayscale matcher are not interchangeable with shape scores.
+- **Activity is edge-triggered:** a confirmed active arrow immediately emits one `arrow` with `state: "active"` and `evidence: "arrow_activity"`, then rearms after confirmed idle. It never waits for a judgment or emits repeatedly while held active. These activity-only events have no hit/miss outcome or tier and never affect score or accuracy. A later recognized player judgment emits `judgement` and determines outcomes.
 - **"Arrow confirm frames"** (default 1) can require a state to be seen for more than one frame before it's confirmed, if single-frame noise is producing false events - but raising it risks missing genuinely brief flashes, the same trade-off as consistency frames above.
 
 **Correlating arrow activity with Perfect / Great / Good / Miss:**
@@ -418,57 +477,162 @@ and reteach its digits as needed. Nothing is deleted automatically.
 **Save Layout** persists both sets; existing files are unchanged until saved.
 
 1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
-2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. No built-in text OCR or color interpretation is used.
-3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 250 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
+2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. Capture the full word during a clear, saturated phase of its animation. Lettering shape and hue are learned from your examples; colors are not hardcoded to tiers and no word OCR is used.
+3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count after its confirmation requirement (two matching frames by default); untaught categories show a warning but do not block taught outcomes. The box rearms after 50 ms of source-video time without a taught outcome matching. Multiple examples per category are retained; capture several clean animation phases separately for each player.
+   Use **Add No judgment ref** on each player's judgment card while no word is
+   visible. Capture several background appearances that previously caused false
+   matches. These optional negative examples are stored as `reference_images.empty`;
+   a positive outcome must pass its shape threshold and beat the best
+   No judgment mask match in the winning word's learned color by more than 0.02.
+   Background samples without contrast in those colors provide no negative veto;
+   the card reports this explicitly. A tie or near-tie is treated as no match
+   and contributes to the normal 50 ms rearm interval. **Clear No judgment refs**
+   affects only those samples; each category has a **View / delete ... refs...**
+   gallery for individual removal. **Save Layout** preserves both positive and
+   negative samples, and rescaling resizes both. Old `idle`/Blank samples remain
+   ignored rather than silently becoming negative examples.
 4. Keep each player's arrow reference calibration too. Each player uses its own references
    with its own screen boxes. **Save Layout** includes judgment regions and all their examples.
 
+**Independent similarity thresholds and diagnostics**
+
+- Select **Show diagnostics** on an arrow or judgment card to expand its details.
+  Keep panels collapsed during normal play for lower UI overhead. State, score,
+  status and error displays remain available while details are collapsed.
+- **Letter-shape matching is the default judgment engine**, not an opt-in mode.
+  It learns saturated lettering masks from each player's references, removes tiny
+  components, and searches several sizes and positions at half resolution.
+  Templates are cached when regions/references change, not rebuilt each frame.
+  The original green rectangle remains the capture box; yellow dashed bounds
+  show the expanded search area (40 pixels horizontally and 12 vertically per
+  side for a 286x53 box, scaled proportionally and clipped to the source).
+  Crops in the cards still show the capture box; diagnostics give the expanded
+  search coordinates and best lettering bounds in source pixels.
+- Existing layouts and references remain readable and are not rewritten.
+  Clear colored-word samples can be reused. Unsaturated, invalid, or unusable
+  examples generate calibration warnings; if no usable words remain, recognition
+  reports a calibration error. There is no silent fallback to matching the
+  full moving background. Capture a clear example or remove the unsuitable
+  sample with the gallery. Partial usable calibration can still recognize its
+  taught categories.
+- **Arrow shape similarity** controls activity matching, including comparison with Empty
+  samples, and defaults to 0.55. **Judgment shape similarity** controls
+  Perfect/Great/Good/Miss shape matching only and defaults to 0.65; game-end
+  similarity remains separate. These are runtime controls, not layout settings.
+  The new shape score is not equivalent to the old grayscale score and is not
+  an accuracy probability. Do not copy previous tuned grayscale thresholds blindly.
+- **Arrow confirm frames** defaults to 1; **Judgment confirm frames** defaults to 2.
+  Only distinct advancing frames with the same recognized word confirm a judgment.
+  No-match, negative-reference suppression, unreadable frames, or ambiguity break
+  pending confirmation without prematurely clearing a latched outcome. Changing
+  the judgment frame setting clears pending confirmation but does not recount a
+  word already held active. These controls are runtime-only; restart uses defaults.
+  Older layouts still load without No judgment examples, but receive the new
+  two-frame default. Set Judgment confirm frames to 1 to restore single-frame
+  behavior if a genuinely brief word cannot be confirmed.
+- Each judgment card shows the source frame/time, best category and similarity,
+  threshold, runner-up category/score, and the gap between them. The best
+  candidate must reach the judgment threshold and beat other categories by at
+  least 0.02. A high score can still be ambiguous if the top two are too close.
+  When No judgment examples exist, diagnostics also show their best similarity
+  and explicitly report when they suppress a look-alike word.
+- The diagnostic decision distinguishes **below threshold**, **ambiguous match**,
+  **confirming frames**, **accepted/queued**, **latch blocked**, **recording off**,
+  and **repeated frame**. It also shows the current latch and no-match elapsed
+  time against the 50 ms rearm requirement. Missing calibration and out-of-bounds
+  crops are reported explicitly.
+- Status still reports pending correlation and counted outcomes. Diagnostics
+  describe the current frame; they do not create events or infer judgments from
+  arrow activity. Advance/play after changing settings to see fresh results.
+  Lowering judgment similarity can also match backgrounds falsely, so compare
+  the crop and runner-up scores instead of lowering it blindly.
+  Negative references do not guarantee accurate recognition on unseen backgrounds;
+  validate missed, duplicated, and misclassified words against footage before
+  relying on the totals. Do not capture a visible judgment as a negative example.
+- Judgment diagnostics also retain the **last direction decision**, including the
+  word timestamp and each candidate arrow's offset relative to it. They distinguish
+  no activation in the timing window, repeated activations of one lane, widely
+  spaced candidate arrows, competing judgments, and a successful assignment.
+  Pending judgments show the remaining settling time. The last decision remains
+  visible on subsequent frames until tracking resets; it is not the current
+  frame's recognition state and is not included in exported event payloads.
+
 For players with a judgment region, receptor flashes alone no longer count outcomes.
 A new confirmed judgment determines hit versus miss. Matching arrow
-activity within **500 ms before** or **150 ms after** that judgment assigns its direction,
+activity within **500 ms before** that judgment (including the same timestamp)
+assigns its direction. There is **no lookahead**: activity starting after the
+word's onset cannot be assigned to that word,
 without inferring success from the receptor's appearance. Correlation waits
-**650 ms of source-video time** after the judgment onset to check for competing judgments; confirmation
+**500 ms of source-video time** after the judgment onset to check for competing judgments; confirmation
 frames and frame delivery can add delay. Processing order and wall-clock speed
 do not change the source-time window.
 The same bounds apply to Perfect, Great, Good, Miss, and legacy ungraded success.
-Arrow evidence is retained for up to 1,150 ms so early activity survives both a
+Arrow evidence is retained for up to 1,000 ms so early activity survives both a
 delayed word and the settling interval. Event payloads expose
-`correlation_lookback_ms` and `correlation_lookahead_ms`; the legacy
+`correlation_lookback_ms: 500` and `correlation_lookahead_ms: 0`; the legacy
 `correlation_window_ms` reports the larger allowance (500 ms).
 
 For simultaneous steps, the same judgment applies to every matched arrow.
-Each distinct direction emits one `arrow_hit` or `arrow_miss`, with its full
-judgment word. Arrow onsets must be within 150 ms of each other and each must
-match only this judgment. The events have separate `event_id` values and a shared
-`payload.judgment_id`, `step_directions`, and `step_arrow_count`. Two arrows with
-PERFECT therefore count as two hits but one judgment. Deduplicate deliveries by
-`event_id`; count distinct `payload.judgment_id` for judgment totals.
+Each recognized Perfect/Great/Good/Miss emits exactly one **`judgement`** event
+(note the event type spelling), including when directions are known.
+`payload.outcome` is `"hit"` or `"miss"`, `payload.state` retains the same value,
+and `payload.judgment` retains the tier (`"hit"` for legacy ungraded success).
+`step_directions` lists all matched directions and `step_arrow_count` is its length.
+`direction` is the matched direction for a single-arrow step and `null` for
+multi-arrow or unknown-direction judgments. Arrow onsets must be within 150 ms
+of each other and each must match only this judgment.
+
+Each confirmed arrow activation already emitted an immediate `arrow`,
+independently of whether a subsequent judgment says hit or miss. Its payload
+contains the arrow's `direction`, `state: "active"`, `evidence: "arrow_activity"`,
+and `activity_video_time_ms` (activation onset); the event timestamp is the frame
+that confirms activity. There is no `outcome`, tier, or judgment-event link.
+Activity is recorded even without a judgment box, subject to the normal
+analysis/recording controls. Repeated paused frames and held-active arrows cannot
+emit another activity event until the tracker rearms.
+Correlation emits only the later `judgement`, never an additional arrow event.
+Misses emit **no `arrow_miss` events**; their directions remain in the judgment
+payload. Two simultaneous arrows produce two immediate activity events, then
+one `judgement` if a word is recognized, whether it says Perfect or Miss.
+Deduplicate deliveries by `event_id`; use `judgement` as the authoritative
+source for player totals, lane counts, and points, never counting activity as
+a successful hit. Multiply by `max(step_arrow_count, 1)` for detected outcome
+totals and points. Unknown directions count once, not as zero steps.
 No appearance-based response timing is generated.
 
 If no arrow, repeated activity in one direction, widely spaced arrows, or competing judgments make the direction uncertain,
-one `judgment_hit` / `judgment_miss` event is recorded for that player with
+the `judgement` event is recorded for that player with
 `direction: null`, rather than guessing or counting every arrow. These outcomes
 contribute to player totals, hit percentage and hit pace, but not directional
-counts, lane-based titles or response-time samples. Unambiguous outcomes keep
-the existing `arrow_hit` / `arrow_miss` types, with judgment evidence in their payload.
+counts, lane-based titles or response-time samples.
 Unassigned outcomes have `step_arrow_count: 0` and empty `step_directions`;
 this means the arrow count is unknown, not that no step occurred.
 Each player's word only validates that player's arrow activity.
-The payload's `judgment` field preserves `perfect`, `great`, `good`, or `miss`, while
-`state` and event types remain hit/miss-compatible for existing dashboards.
+The payload's `judgment` field preserves `perfect`, `great`, `good`, or `miss`;
+the common event type no longer encodes hit/miss in its name.
 The Events table's Detail column and the judgment card's counted status show the
 full judgment word (PERFECT, GREAT, GOOD, or MISS), with its direction when known.
 Legacy ungraded events still show HIT/MISS; no judgment tier is invented.
+This changes the emitted event contract: update downstream filters from
+`arrow_miss` / `judgment_hit` / `judgment_miss` to `judgement` plus
+`payload.outcome`. Restart the desktop to use it. JSONL export and Fabric
+delivery use the same event shape. Previously recorded/queued events are not
+rewritten or deleted; the scoreboard still accepts the legacy event types.
+New `arrow` activity events must not be interpreted as successful hits:
+the scoreboard explicitly excludes `evidence: "arrow_activity"` from metrics.
+The activity event type was renamed from `arrow_hit` to `arrow`; update
+downstream activity filters. Existing queued events are unchanged, and the
+scoreboard still accepts older activity-only `arrow_hit` messages without scoring them.
 Old layouts with Success (`hit`) references still count ungraded hits, without
 inventing a tier. Once Perfect, Great, or Good references are added, the old
 Success references are ignored; only the explicitly taught categories are matched.
 
 A lingering word counts once, not once per frame or receptor flash. At least
-250 ms of source-video time with no taught outcome matching is required before
+50 ms of source-video time with no taught outcome matching is required before
 any next judgment, even if the word changes category. Short matching gaps do not
 rearm; ambiguous strong matches hold the latch and restart the no-match interval.
 Pausing or repeatedly processing one frame cannot advance that interval.
-A matching failure lasting 250 ms can look like disappearance and cause a recount;
+A matching failure lasting 50 ms can look like disappearance and cause a recount;
 keep crops tight and teach representative examples for the changing background.
 Consecutive judgments without a detectable no-match/rearm interval between them
 cannot be separated reliably and may be undercounted. Simultaneous arrows count
@@ -483,7 +647,7 @@ error blocks outcomes for that player. Partial calibration recognizes taught
 categories and warns about missing ones. Receptor flashes never substitute for
 an unrecognized judgment. Players without a
 judgment region produce no hit/miss outcomes, even with calibrated arrow activity.
-- **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
+- **Similarity scores are not calibrated accuracy probabilities.** Game-end matching uses grayscale normalized cross-correlation with a mean-brightness fallback for near-flat crops. Arrow and judgment matching use spatial correlation of learned-color masks, with separately tuned thresholds. Their scales differ from grayscale, and colors are learned from labeled examples rather than mapped to outcomes by the app.
 
 **Both:**
 - **Session changes wait for in-flight numeric analysis before resetting tracking.** The old frame finishes under its original GUID. Manual **New Session** clears old history; automatic game-end transitions retain it. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
@@ -574,7 +738,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
   this as evidence the underlying approach is sound, not as a validated
   hit/miss detector for your footage. In the current app, capture fresh
   Active Arrow references and separately teach judgment words; validate both
-  against the footage before trusting any `arrow_hit`/`arrow_miss` events.
+  against the footage before trusting any `judgement`/`arrow` events.
 
 ---
 
@@ -591,7 +755,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **Values seem clearly wrong even though the app "accepted" them** - check the raw OCR text shown in the recognition panel next to the accepted value; a consistent misread will still pass the consistency filter (see section 6/7). Try a tighter crop around just the digits, excluding glow/outline effects.
 - **Nothing appears in the Events tab** - confirm **Record events** is checked (Events tab) and that you clicked **Start Analysis** (Video & Regions tab, in the scrollable "Analysis" box - see the scrolling note above if you can't find it) - the app never runs OCR or emits events unless analysis is explicitly started. Also note that a continuously-animating on-screen score display can genuinely take a couple dozen frames before two consecutive OCR readings match and the first event is accepted - this is expected, not a bug (see section 6/7).
 - **Arrow row requests fresh calibration** - use **Add Active Arrow ref** on either player's matching direction. Old Hit/Miss references are ignored. Also calibrate the player's judgment box before expecting outcomes.
-- **Arrow events never fire even after capturing references** - check the live "similarity" number in the panel against your **Arrow similarity threshold**; if real frames never get close to your captured reference, try a tighter/cleaner crop, a lower threshold, or re-capturing the reference from a clearer example frame.
+- **Arrow events never fire even after capturing references** - check Active shape similarity and calibration diagnostics against **Arrow shape similarity**. Capture a clear colored incoming note, not a white receptor flash. Ensure the cyan search bounds include its approach. Inspect Empty examples if they suppress real activity.
 - **Arrow events fire constantly / seem spurious** - your threshold may be too low, or the idle appearance is naturally close to your reference. Raise the threshold, tighten the crop, or raise "Arrow confirm frames" slightly.
 
 ---
@@ -650,9 +814,27 @@ score/combo change looks like:
 }
 ```
 
-An arrow hit/miss event uses the same envelope, with `direction` and
-`state` in the payload instead of previous/new values, and `confidence`
-holding the similarity score to the matched reference:
+A combo event also uses the same envelope, with `event_type: "combo"` and this
+payload:
+
+```json
+{
+  "field": "combo",
+  "region_label": "P1 Combo",
+  "value": 15
+}
+```
+
+Only newly accepted values emit an event; repeated readings do not. Zero is a
+valid current combo. Score change events retain their previous/new-value pair.
+Update combo consumers from `combo_changed`/`payload.new_value` to
+`combo`/`payload.value`, then restart the desktop. Existing queued events are
+unchanged; the scoreboard still accepts the legacy combo format and sequences
+new and old formats together per player.
+
+A `judgement` event uses the same envelope, with the hit/miss outcome, tier,
+and matched directions in the payload instead of previous/new values.
+`confidence` holds the judgment reference similarity:
 
 ```json
 {
@@ -664,17 +846,49 @@ holding the similarity score to the matched reference:
   "frame_index": 2515,
   "video_time_ms": 41959,
   "observed_at_utc": "2026-09-15T18:22:31.520000+00:00",
-  "event_type": "arrow_hit",
+  "event_type": "judgement",
   "player": "P1",
   "payload": {
-    "field": "arrow",
-    "region_label": "P1 Up-Right",
+    "field": "judgment",
+    "region_label": "P1 Judgment",
     "direction": "Up-Right",
-    "state": "hit"
+    "outcome": "hit",
+    "state": "hit",
+    "judgment": "perfect",
+    "judgment_id": "shared-judgment-uuid",
+    "step_directions": ["Up-Right"],
+    "step_arrow_count": 1,
+    "evidence": "judgment_and_arrow",
+    "judgment_video_time_ms": 41309,
+    "correlation_window_ms": 500,
+    "correlation_lookback_ms": 500,
+    "correlation_lookahead_ms": 0
   },
   "confidence": 0.97
 }
 ```
+
+The arrow was recorded earlier as activity, without waiting for this judgment:
+
+```json
+{
+  "event_type": "arrow",
+  "payload": {
+    "field": "arrow",
+    "region_label": "P1 Up-Right",
+    "direction": "Up-Right",
+    "state": "active",
+    "evidence": "arrow_activity",
+    "activity_video_time_ms": 41309
+  }
+}
+```
+
+This abbreviated example omits the standard envelope fields. Activity never
+implies a hit or miss and correlation emits no additional arrow event.
+A Miss instead sets
+`outcome`/`state`/`judgment` to `"miss"` on the single `judgement` event;
+it has no accompanying arrow event.
 
 `video_time_ms` is the position inside the video's own timeline;
 `observed_at_utc` is the wall-clock UTC time the event was produced while

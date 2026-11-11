@@ -347,7 +347,7 @@ def test_combo_references_verify_ocr_but_still_require_repeated_low_confidence_e
     assert first.needs_confirmation
     second = session.process_numeric_frame(frame, 1, 100).region_results[0]
     assert second.accepted_value == 65
-    assert [event.event_type for event in session.event_bus.events] == ["new_session", "combo_changed"]
+    assert [event.event_type for event in session.event_bus.events] == ["new_session", "combo"]
     assert calls[0].get("yellow_filter", False) == yellow_filter
     assert calls[0].get("fast_mode", False) == fast_mode
 

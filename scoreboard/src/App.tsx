@@ -3,7 +3,7 @@ import { initializeOperator, signIn, type Client } from './client';
 import { BOARD_ID, DIRECTIONS, arrowAccuracy, parseSnapshot, poll, type BoardSnapshot, type PlayerState } from './state';
 import RegistrationKiosk from './RegistrationKiosk';
 import BoothShell from './BoothShell';
-import { animalComparison, cumulativeHitPercentage, mostHitLanes, stepTitle, totalDetectedSteps } from './dashboardMetrics';
+import { animalComparison, cumulativeHitPercentage, stepTitle, totalDetectedSteps } from './dashboardMetrics';
 import { CAPTION_COUNT, CAPTION_INTERVAL_MS, sessionCaptionDecks } from './dashboardCaptions';
 
 function message(error: unknown) {
@@ -27,7 +27,7 @@ function Player({ name, state, waiting, sessionId, live }: {
   const player = waiting ? undefined : state;
   const percentage = player ? cumulativeHitPercentage(player) : null;
   const title = player ? stepTitle(player) : null;
-  const favorite = player ? mostHitLanes(player) : null;
+  const bestStreak = player?.bestStreak;
   const steps = player ? totalDetectedSteps(player) : null;
   const response = player?.averageResponseTimeMs;
   const comparison = response == null ? null : animalComparison(response);
@@ -47,13 +47,15 @@ function Player({ name, state, waiting, sessionId, live }: {
     </span></h2>
     {!player && <p className="observation">Waiting for players</p>}
     </div>
-    {score != null && <div className="player-score">
-      <div className="score-label">{hasRunningScore ? 'RUNNING SCORE' : 'ACCEPTED SCORE'}</div>
-      <div className="score" aria-label={`${name} score`}>{score.toLocaleString()}</div>
-    </div>}
+    <div className="player-score">
+      <div className="score-label">{score == null || hasRunningScore ? 'RUNNING SCORE' : 'ACCEPTED SCORE'}</div>
+      <div className="score" aria-label={`${name} score`}>{score == null
+        ? <span className="waiting-data">Waiting for data</span> : score.toLocaleString()}</div>
+    </div>
     {player?.combo != null && <div className="combo"><span>COMBO</span><strong>{player.combo}</strong></div>}
-    {player && <div className="total-hits"><span>TOTAL HITS</span><strong>{player.hits.toLocaleString()}</strong></div>}
-    {directions && player && player.hits > 0 && <div className="counts" aria-label={`${name} hits by arrow`}>
+    <div className="total-hits"><span>TOTAL HITS</span><strong>{player
+      ? player.hits.toLocaleString() : <span className="waiting-data">Waiting for data</span>}</strong></div>
+    <div className="counts" aria-label={`${name} hits by arrow`}>
       {DIRECTIONS.map(direction => <div key={direction}>
         <span className="arrow-icon" aria-hidden="true">{{
           'Up-Right': '\u2197', 'Up-Left': '\u2196', 'Down-Right': '\u2198', 'Down-Left': '\u2199',
@@ -61,28 +63,38 @@ function Player({ name, state, waiting, sessionId, live }: {
         }[direction]}</span>
         <span>{direction.toUpperCase()}</span>
         <strong aria-label={`${direction} hits`}>
-          {directions[direction].toLocaleString()}
+          {directions ? directions[direction].toLocaleString() : <span className="waiting-data">Waiting for data</span>}
         </strong>
       </div>)}
-    </div>}
+    </div>
     <div className="player-metrics">
-      {favorite && <section className="metric-card metric-most-hit" aria-label={`${name} most-hit lane`}>
-        <h3>MOST-HIT LANE</h3>
-        <strong className="metric-title">{favorite.directions.join(' + ')}</strong>
-        <p>{favorite.hits.toLocaleString()} {favorite.hits === 1 ? 'hit' : 'hits'}
-          {favorite.directions.length > 1 ? ' each. ' : '. '}
-          <span className="metric-caption">{captions.mostHitLane[captionIndex]}</span></p>
-      </section>}
-      {steps != null && <section className="metric-card metric-steps" aria-label={`${name} total detected steps`}>
+      <section className="metric-card metric-streak" aria-label={`${name} best streak`}>
+        <h3>BEST STREAK</h3>
+        <strong className={bestStreak == null ? 'metric-title' : 'metric-value'}>
+          {bestStreak?.toLocaleString() ?? 'Waiting for data'}
+        </strong>
+        {bestStreak != null && <>
+          <p>Successful judgments in a row. Current: {player?.currentStreak?.toLocaleString()}.</p>
+          <p>{bestStreak > 0
+            ? <span className="metric-caption">{captions.bestStreak[captionIndex]}</span>
+            : 'Waiting for a successful judgment.'}</p>
+        </>}
+      </section>
+      <section className="metric-card metric-steps" aria-label={`${name} total detected steps`}>
         <h3>TOTAL DETECTED STEPS</h3>
-        <strong className="metric-value">{steps.toLocaleString()}</strong>
-        <p className="metric-caption">{captions.detectedSteps[captionIndex]}</p>
-      </section>}
-      {player && player.misses != null && percentage != null && <section className="metric-card metric-percentage" aria-label={`${name} cumulative hit percentage`}>
+        <strong className={steps == null ? 'metric-title' : 'metric-value'}>{steps?.toLocaleString() ?? 'Waiting for data'}</strong>
+        {steps != null && <p className={steps > 0 ? 'metric-caption' : undefined}>
+          {steps > 0 ? captions.detectedSteps[captionIndex] : 'Waiting for data'}
+        </p>}
+      </section>
+      <section className="metric-card metric-percentage" aria-label={`${name} cumulative hit percentage`}>
         <h3>CUMULATIVE HIT PERCENTAGE</h3>
-        <strong className="metric-value">{percentage.toFixed(1)}%</strong>
-        <p>{player.hits.toLocaleString()} hits / {(player.hits + player.misses).toLocaleString()} detected outcomes.</p>
-      </section>}
+        <strong className={percentage == null ? 'metric-title' : 'metric-value'}>
+          {percentage == null ? 'Waiting for data' : `${percentage.toFixed(1)}%`}
+        </strong>
+        {player && steps != null && percentage != null
+          && <p>{player.hits.toLocaleString()} hits / {steps.toLocaleString()} detected outcomes.</p>}
+      </section>
       {response != null && <section className="metric-card metric-response" aria-label={`${name} time to answer`}>
         <h3>TIME TO ANSWER</h3>
         <strong className="metric-value">{response.toFixed(0)} <span>ms</span></strong>
@@ -99,33 +111,36 @@ function Player({ name, state, waiting, sessionId, live }: {
         <p><a href={comparison.benchmark.url} target="_blank" rel="noreferrer">{comparison.benchmark.citation}</a></p>
         <p>Different tasks and senses, not a like-for-like test or an animal speed ranking.</p>
       </section>}
-      {title && <section className="metric-card metric-step-title" aria-label={`${name} step title`}>
+      <section className="metric-card metric-step-title" aria-label={`${name} step title`}>
         <h3>STEP TITLE</h3>
-        <span className="step-title-symbol" aria-hidden="true">{title.symbol}</span>
-        <strong className="metric-title">{title.title}</strong>
-        <p>{title.detail}</p>
-      </section>}
+        {title && <span className="step-title-symbol" aria-hidden="true">{title.symbol}</span>}
+        <strong className="metric-title">{title?.title ?? 'Waiting for data'}</strong>
+        {title && <p>{title.detail}</p>}
+      </section>
     </div>
-    {player?.hitPace != null && player.hits > 0 && <section className="hit-pace" aria-label={`${name} hit pace`}>
+    <section className="hit-pace" aria-label={`${name} hit pace`}>
       <h3>HIT PACE</h3>
-      <div><strong>{player.hitPace.toFixed(1)}</strong>
-        <span> detected hits / sec</span></div>
-      <p>Last 5 seconds of video; holds while paused.</p>
-    </section>}
-    {accuracy && <section className="arrow-accuracy" aria-label={`${name} arrow accuracy`}>
+      {player?.hitPace == null ? <p>Waiting for data</p> : <>
+        <div><strong>{player.hitPace.toFixed(1)}</strong>
+          <span> detected hits / sec</span></div>
+        <p>Last 5 seconds of video; holds while paused.</p>
+      </>}
+    </section>
+    <section className="arrow-accuracy" aria-label={`${name} arrow accuracy`}>
       <h3>ARROW ACCURACY</h3>
       {DIRECTIONS.map(direction => <div className="accuracy-row" key={direction}>
         <span>{direction}</span>
-        <div className="accuracy-track" {...(accuracy[direction] != null ? {
+        <div className="accuracy-track" {...(accuracy?.[direction] != null ? {
           role: 'meter', 'aria-label': `${name} ${direction} accuracy`,
           'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': accuracy[direction],
           'aria-valuetext': `${accuracy[direction].toFixed(1)}% accuracy`,
         } : { 'aria-hidden': true })}>
-          <div style={{ width: `${accuracy[direction] ?? 0}%` }} />
+          <div style={{ width: `${accuracy?.[direction] ?? 0}%` }} />
         </div>
-        <strong>{accuracy[direction] == null ? 'No attempts' : `${accuracy[direction].toFixed(1)}%`}</strong>
+        <strong>{accuracy?.[direction] != null ? `${accuracy[direction].toFixed(1)}%`
+          : player?.hitsByDirection && player.missesByDirection ? 'No attempts' : 'Waiting'}</strong>
       </div>)}
-    </section>}
+    </section>
     <div className="player-notes">
     {!waiting && !hasRunningScore && state?.observedScore != null && state.observedScore !== state.score
       && <p className="observation">Unconfirmed OCR: {state.observedScore.toLocaleString()}</p>}
@@ -191,6 +206,7 @@ function Scoreboard({ client }: { client: Client }) {
   useEffect(() => {
     let disposed = false;
     let previousStamp = '';
+    let refreshDelay = 0;
     const stop = poll(async () => {
       try {
         const rows = await client.data.LiveBoard.select(['id', 'snapshot', 'publishedAt'])
@@ -203,10 +219,12 @@ function Scoreboard({ client }: { client: Client }) {
         setPublished(stamp);
         if (stamp !== previousStamp) { setLastChange(Date.now()); previousStamp = stamp; }
         setError('');
+        refreshDelay = 0;
       } catch (e) {
+        refreshDelay = 1000;
         if (!disposed) setError(`Unable to refresh: ${message(e)}`);
       }
-    });
+    }, () => refreshDelay);
     const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => { disposed = true; stop(); clearInterval(clock); };
   }, [client]);
@@ -229,7 +247,7 @@ function Scoreboard({ client }: { client: Client }) {
       <Player key={`${snapshot?.sessionId}:P2`} name="Player 2" state={snapshot?.players.P2}
         waiting={!snapshot?.active} sessionId={snapshot?.sessionId ?? ''} live={live} />
     </div>
-    <div className="booth-feed-notes"><span>Refresh: 1 second after each completed request. OCR and network latency still apply.</span>
+    <div className="booth-feed-notes"><span>Refresh: next query after each response; one-second retry on errors. Recognition and network latency still apply.</span>
       <span>{published ? 'Connected to DDR Scoreboard on Fabric' : 'No scoreboard state published yet'}</span></div>
   </BoothShell>;
 }

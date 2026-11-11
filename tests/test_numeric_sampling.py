@@ -27,7 +27,7 @@ def _controller():
             is_running=True, generation=0, process_background_numeric_frame=Mock(),
         ),
         event_bus=EventBus(),
-        regions=[SimpleNamespace(kind="combo")],
+        regions=[Region("Combo", "P1", "combo", 0, 0, 2, 2)],
         _analysis_executor=SimpleNamespace(submit=submit),
         _analysis_future=None,
         _analysis_future_generation=0,
@@ -37,6 +37,8 @@ def _controller():
         _confirmation_frame=None,
         _latest_numeric_frame=None,
         _final_numeric_frame=None,
+        _combo_frames={},
+        _combo_priority_passes=0,
         _last_frame_bgr=None,
         _last_frame_position=None,
         _dropped_analysis_frames=0,
@@ -49,6 +51,8 @@ def _controller():
         events_tab=SimpleNamespace(clear=Mock(), append_event=Mock()),
     )
     controller._submit_numeric_analysis = MethodType(App._submit_numeric_analysis, controller)
+    controller._buffer_combo_frames = MethodType(App._buffer_combo_frames, controller)
+    controller._take_combo_frame = MethodType(App._take_combo_frame, controller)
     controller._poll_analysis_result = MethodType(App._poll_analysis_result, controller)
     controller._flush_final_numeric_frame = MethodType(App._flush_final_numeric_frame, controller)
     controller._submit_final_numeric_analysis = MethodType(App._submit_final_numeric_analysis, controller)
@@ -88,6 +92,45 @@ def test_unchanged_arrow_previews_are_limited_to_ten_updates_per_second(monkeypa
         controller._update_recognition_row(rr)
     assert controller.video_tab.update_arrow_recognition_row.call_count == 2
     assert controller._make_thumbnail_photo.call_count == 2
+
+
+def test_judgment_diagnostics_refresh_without_bypassing_preview_pacing(monkeypatch):
+    controller = _display_controller()
+    rr = RegionFrameResult(
+        Region("Judgment", "P1", "judgment", 0, 0, 20, 20),
+        arrow_state="perfect", judgment_diagnostics="Accepted PERFECT",
+    )
+    clock = [0.0]
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: clock[0])
+    controller._update_recognition_row(rr)
+    controller.video_tab.set_judgment_diagnostics.assert_called_once_with("P1:judgment", "Accepted PERFECT")
+    rr.judgment_diagnostics = "Latch blocked PERFECT"
+    clock[0] = .01
+    controller._update_recognition_row(rr)
+    assert controller.video_tab.set_judgment_diagnostics.call_count == 1
+    clock[0] = .1
+    controller._update_recognition_row(rr)
+    controller.video_tab.set_judgment_diagnostics.assert_called_with("P1:judgment", "Latch blocked PERFECT")
+    assert controller.video_tab.set_judgment_diagnostics.call_count == 2
+
+
+def test_arrow_shape_diagnostics_refresh_with_existing_preview_pacing(monkeypatch):
+    controller = _display_controller()
+    result = RegionFrameResult(
+        Region("Center", "P1", "arrow", 0, 0, 80, 80, direction="Center"),
+        arrow_state="active", arrow_diagnostics="Arrow shape: 0.8",
+    )
+    clock = [0.0]
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: clock[0])
+    controller._update_recognition_row(result)
+    controller.video_tab.set_arrow_diagnostics.assert_called_once_with("P1:arrow:Center", "Arrow shape: 0.8")
+    result.arrow_diagnostics = "Arrow shape: 0.9"
+    clock[0] = .01
+    controller._update_recognition_row(result)
+    assert controller.video_tab.set_arrow_diagnostics.call_count == 1
+    clock[0] = .1
+    controller._update_recognition_row(result)
+    controller.video_tab.set_arrow_diagnostics.assert_called_with("P1:arrow:Center", "Arrow shape: 0.9")
 
 
 @pytest.mark.parametrize("change", ["state", "error", "unreadable", "generation", "player"])
@@ -174,6 +217,96 @@ def test_confirmation_preserves_latest_paused_frame_and_cannot_chain_old_neighbo
     jobs[2][0].set_result(_numeric_result(needs_confirmation=True))
     app._poll_analysis_result()
     assert len(jobs) == 3
+
+
+def test_combo_frames_survive_blank_latest_frames_and_supply_distinct_confirmation(monkeypatch):
+    app, jobs = _controller()
+    app._analysis_executor.submit = Mock(wraps=app._analysis_executor.submit)
+    monkeypatch.setattr("app.ui.app_window.combo_frame_quality", lambda crop: float(crop[0, 0, 0] > 0))
+    frames = [np.full((2, 2, 3), value, dtype=np.uint8) for value in (0, 5, 5, 5, 0, 0)]
+    for index, frame in enumerate(frames):
+        app._submit_numeric_analysis(frame, index, index * 33)
+    assert [entry[1] for entry in app._combo_frames["P1:combo"]] == [2, 3]
+    jobs[0][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[1][1][1] == 2
+    assert app._analysis_executor.submit.call_args.kwargs["region_keys"] == frozenset({"P1:combo"})
+    assert app._latest_numeric_frame[1] == 5
+    jobs[1][0].set_result(_numeric_result(needs_confirmation=True))
+    app._poll_analysis_result()
+    assert jobs[2][1][1] == 3
+    jobs[2][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[3][1][1] == 5
+    assert app._analysis_executor.submit.call_args.kwargs["region_keys"] is None
+
+
+def test_combo_buffers_are_per_player_bounded_and_do_not_reorder_frames(monkeypatch):
+    app, jobs = _controller()
+    app.regions.append(Region("Combo", "P2", "combo", 2, 0, 2, 2))
+    app._analysis_executor.submit = Mock(wraps=app._analysis_executor.submit)
+    monkeypatch.setattr("app.ui.app_window.combo_frame_quality", lambda crop: float(crop[0, 0, 0] > 0))
+    blank = np.zeros((2, 4, 3), dtype=np.uint8)
+    app._submit_numeric_analysis(blank, 0, 0)
+    for index in range(1, 21):
+        frame = blank.copy()
+        frame[:, :2 if index < 10 else 4] = 5
+        app._submit_numeric_analysis(frame, index, index * 33)
+    assert all(len(entries) == 2 for entries in app._combo_frames.values())
+    app._submit_numeric_analysis(blank, 21, 693)
+    jobs[0][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[1][1][1] == 19
+    assert app._analysis_executor.submit.call_args.kwargs["region_keys"] == frozenset({"P1:combo", "P2:combo"})
+    jobs[1][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[2][1][1] == 20
+    jobs[2][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[3][1][1] == 21
+
+
+def test_combo_buffer_discards_stale_generation_and_repeated_frames(monkeypatch):
+    app, _ = _controller()
+    monkeypatch.setattr("app.ui.app_window.combo_frame_quality", lambda crop: 1.0)
+    frame = np.ones((2, 2, 3), dtype=np.uint8)
+    app._buffer_combo_frames(frame, 10, 330)
+    app._buffer_combo_frames(frame, 10, 330)
+    app._buffer_combo_frames(frame, 9, 297)
+    assert len(app._combo_frames["P1:combo"]) == 1
+    app._analysis_generation += 1
+    app._buffer_combo_frames(frame, 10, 330)
+    assert app._combo_frames["P1:combo"][0][3] == 1
+    app._analysis_generation += 1
+    assert app._take_combo_frame() is None
+
+
+def test_combo_priority_is_bounded_so_current_score_sampling_cannot_starve(monkeypatch):
+    app, jobs = _controller()
+    monkeypatch.setattr("app.ui.app_window.combo_frame_quality", lambda crop: 1.0)
+    frame = np.ones((2, 2, 3), dtype=np.uint8)
+    app._submit_numeric_analysis(frame, 0, 0)
+    app._submit_numeric_analysis(frame, 1, 33)
+    app._submit_numeric_analysis(frame, 2, 66)
+    app._combo_priority_passes = 4
+    jobs[0][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[1][1][1] == 2
+    assert app._combo_priority_passes == 0
+    assert not app._analysis_is_confirmation
+
+
+def test_frame_selection_failure_is_visible_and_does_not_stop_normal_ocr(monkeypatch):
+    app, jobs = _controller()
+    monkeypatch.setattr("app.ui.app_window.combo_frame_quality", Mock(side_effect=ValueError("invalid outlines")))
+    frame = np.ones((2, 2, 3), dtype=np.uint8)
+    app._submit_numeric_analysis(frame, 0, 0)
+    app._submit_numeric_analysis(frame, 1, 33)
+    app.video_tab.set_error_status.assert_called_once()
+    assert "invalid outlines" in app.video_tab.set_error_status.call_args.args[0]
+    jobs[0][0].set_result(_numeric_result())
+    app._poll_analysis_result()
+    assert jobs[1][1][1] == 1
 
 
 @pytest.mark.parametrize("kind,text,confidence,needs_confirmation", [

@@ -15,6 +15,8 @@ h1 { font-size: clamp(28px, 4vw, 48px); margin: 6px 0; }
 h2 { margin: 0 0 30px; font-size: 28px; }
 .score-label, .combo span, .counts span { color: #aebbd4; font-size: 13px; letter-spacing: 2px; }
 .score { font-size: clamp(26px, 4.5vw, 62px); font-weight: 750; font-variant-numeric: tabular-nums; margin: 12px 0 28px; overflow-wrap: anywhere; }
+.waiting-data { font-size: 14px; font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
+.counts strong .waiting-data { font-size: 11px; }
 .combo { grid-row: 3; display: flex; justify-content: space-between; align-items: center; border-block: 1px solid #33465e; padding: 22px 0; }
 .combo strong { font-size: 56px; color: #7cebe1; font-variant-numeric: tabular-nums; }
 .pink .combo strong { color: #f3a1ed; }
@@ -41,7 +43,7 @@ h2 { margin: 0 0 30px; font-size: 28px; }
 .pink .accuracy-track > div { background: #f3a1ed; }
 .player-metrics { display: grid; grid-row: 6 / span 3; grid-template-rows: subgrid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
 .player-metrics:empty { display: none; }
-.metric-most-hit { grid-row: 1; grid-column: 1; }
+.metric-streak { grid-row: 1; grid-column: 1; }
 .metric-steps { grid-row: 1; grid-column: 2; }
 .metric-percentage { grid-row: 2; grid-column: 1; }
 .metric-step-title { grid-row: 2; grid-column: 2; }

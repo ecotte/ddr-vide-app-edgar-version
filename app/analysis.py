@@ -30,10 +30,12 @@ import numpy as np
 
 from app import config, image_utils
 from app.event_bus import EventBus
-from app.models import Event, Region, share_player_references, shared_reference_source
+from app.models import Event, Region, arrow_search_bounds, judgment_search_bounds, share_player_references, shared_reference_source
+from app.judgment_shapes import JudgmentShapeMatcher
+from app.arrow_shapes import ArrowShapeMatcher
 from app.ocr_engine import OcrEngine
 from app.recognition import (
-    ArrowStateTracker, TemporalValueTracker, classify_arrow_state, classify_judgment_state, parse_digits,
+    ArrowStateTracker, TemporalValueTracker, parse_digits,
 )
 
 Tracker = Union[TemporalValueTracker, ArrowStateTracker]
@@ -69,6 +71,8 @@ class RegionFrameResult:
     needs_confirmation: bool = False
     frame_index: Optional[int] = None
     video_time_ms: Optional[int] = None
+    judgment_diagnostics: Optional[str] = None
+    arrow_diagnostics: Optional[str] = None
 
 
 @dataclass
@@ -93,11 +97,14 @@ class AnalysisSession:
         self.shared_player_references = shared_player_references
         self._trackers: Dict[str, Tracker] = {}
         self._arrow_references: Dict[str, Dict[str, List[np.ndarray]]] = {}
+        self._judgment_shapes: Dict[str, JudgmentShapeMatcher] = {}
+        self._arrow_shapes: Dict[str, ArrowShapeMatcher] = {}
         self._arrow_state_started: Dict[str, int] = {}
         self._last_arrow_frame: Dict[str, tuple[int, int]] = {}
         self._pending_judgments: List[JudgmentEvidence] = []
         self._judgment_absent_since: Dict[str, int] = {}
         self._pending_lanes: List[LaneEvidence] = []
+        self._last_correlation_diagnostics: Dict[str, str] = {}
         self._last_correlation_frame: Optional[tuple[int, int]] = None
         self._score_templates: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self._last_numeric_accept_time_ms: Dict[str, int] = {}
@@ -110,7 +117,9 @@ class AnalysisSession:
         self._arrow_lock = threading.RLock()
         self.required_consecutive_frames = config.DEFAULT_REQUIRED_CONSECUTIVE_FRAMES
         self.arrow_similarity_threshold = config.DEFAULT_ARROW_SIMILARITY_THRESHOLD
+        self.judgment_similarity_threshold = config.DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD
         self.arrow_min_confirm_frames = config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES
+        self.judgment_min_confirm_frames = config.DEFAULT_JUDGMENT_MIN_CONFIRM_FRAMES
         self.game_end_similarity_threshold = config.DEFAULT_GAME_END_SIMILARITY_THRESHOLD
         self.game_end_confirm_frames = config.DEFAULT_GAME_END_CONFIRM_FRAMES
         self._last_game_end_frame = -1
@@ -137,6 +146,8 @@ class AnalysisSession:
                 share_player_references(self.regions)
             self._trackers = {}
             self._arrow_references = {}
+            self._judgment_shapes = {}
+            self._arrow_shapes = {}
             self._arrow_state_started.clear()
             self._last_arrow_frame.clear()
             self._clear_correlation()
@@ -149,6 +160,7 @@ class AnalysisSession:
                 if r.kind in ("arrow", "judgment", "game_end"):
                     confirm_frames = (
                         self.game_end_confirm_frames if r.kind == "game_end"
+                        else self.judgment_min_confirm_frames if r.kind == "judgment"
                         else self.arrow_min_confirm_frames
                     )
                     self._trackers[r.key()] = ArrowStateTracker(
@@ -164,6 +176,18 @@ class AnalysisSession:
                         if images:
                             decoded[state] = images
                     self._arrow_references[r.key()] = decoded
+                    if r.kind == "arrow":
+                        arrow_matcher = ArrowShapeMatcher(decoded)
+                        for category in config.ARROW_STATES:
+                            if len(decoded.get(category, [])) != len(r.reference_images.get(category, [])):
+                                arrow_matcher.warnings.append(f"{category.title()}: an image could not be decoded; delete or recapture it.")
+                        self._arrow_shapes[r.key()] = arrow_matcher
+                    if r.kind == "judgment":
+                        matcher = JudgmentShapeMatcher(decoded)
+                        for category, images in r.reference_images.items():
+                            if category in (*config.JUDGMENT_POINTS, "hit", "empty") and len(decoded.get(category, [])) != len(images):
+                                matcher.warnings.append(f"{category.title()}: an image could not be decoded; delete or recapture it.")
+                        self._judgment_shapes[r.key()] = matcher
                 else:
                     self._trackers[r.key()] = TemporalValueTracker(1)
                     if r.kind in ("score", "combo"):
@@ -175,16 +199,38 @@ class AnalysisSession:
             self._numeric_evidence.clear()
 
     def set_arrow_similarity_threshold(self, value: float) -> None:
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("Arrow similarity must be a finite number between 0 and 1.")
         with self._arrow_lock:
             self.arrow_similarity_threshold = value
 
+    def set_judgment_similarity_threshold(self, value: float) -> None:
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("Judgment similarity must be a finite number between 0 and 1.")
+        with self._arrow_lock:
+            self.judgment_similarity_threshold = value
+
     def set_arrow_min_confirm_frames(self, n: int) -> None:
+        if type(n) is not int or not 1 <= n <= 10:
+            raise ValueError("Arrow confirmation frames must be an integer from 1 to 10.")
         with self._arrow_lock:
             self.arrow_min_confirm_frames = n
             for region in self.regions:
                 tracker = self._trackers[region.key()]
-                if region.kind in ("arrow", "judgment") and isinstance(tracker, ArrowStateTracker):
+                if region.kind == "arrow" and isinstance(tracker, ArrowStateTracker):
                     tracker.min_confirm_frames = n
+
+    def set_judgment_min_confirm_frames(self, n: int) -> None:
+        if type(n) is not int or not 1 <= n <= 10:
+            raise ValueError("Judgment confirmation frames must be an integer from 1 to 10.")
+        with self._arrow_lock:
+            self.judgment_min_confirm_frames = n
+            for region in self.regions:
+                if region.kind == "judgment":
+                    tracker = self._trackers[region.key()]
+                    tracker.min_confirm_frames = n
+                    tracker.clear_pending()
+                    self._arrow_state_started.pop(region.key(), None)
 
     def set_game_end_settings(self, threshold: float, confirm_frames: int) -> None:
         if not 0.5 <= threshold <= 1 or confirm_frames < 1:
@@ -487,10 +533,20 @@ class AnalysisSession:
         for region in regions:
             crop = _safe_crop(frame, region, frame_w, frame_h)
             if region.kind == "arrow":
-                result, event = self._process_arrow_region(region, crop, frame_index, video_time_ms)
+                bounds = arrow_search_bounds(region, frame_w, frame_h)
+                x0, y0, x1, y1 = bounds
+                search = frame[y0:y1, x0:x1] if crop.size else crop
+                result, event = self._process_arrow_region(
+                    region, crop, frame_index, video_time_ms, search_crop=search, search_bounds=bounds,
+                )
                 events = [event] if event is not None else []
             elif region.kind == "judgment":
-                result = self._process_judgment_region(region, crop, frame_index, video_time_ms)
+                bounds = judgment_search_bounds(region, frame_w, frame_h)
+                x0, y0, x1, y1 = bounds
+                search = frame[y0:y1, x0:x1] if crop.size else crop
+                result = self._process_judgment_region(
+                    region, crop, frame_index, video_time_ms, search_crop=search, search_bounds=bounds,
+                )
                 events = []
             else:
                 result, events = self._process_numeric_region(region, crop, frame_index, video_time_ms)
@@ -503,6 +559,22 @@ class AnalysisSession:
             new_events.extend(outcomes)
             for result in region_results:
                 if result.region.kind == "judgment":
+                    pending = [
+                        word for word in self._pending_judgments
+                        if word.region.key() == result.region.key()
+                    ]
+                    detail = self._last_correlation_diagnostics.get(result.region.key())
+                    correlation_notes = []
+                    if pending:
+                        settle = config.JUDGMENT_CORRELATION_LOOKBACK_MS + config.JUDGMENT_CORRELATION_LOOKAHEAD_MS
+                        remaining = max(0, pending[0].onset + settle - video_time_ms)
+                        correlation_notes.append(f"Pending judgment: {remaining} ms until direction decision.")
+                    if detail:
+                        correlation_notes.append(f"Last direction decision: {detail}")
+                    if correlation_notes:
+                        result.judgment_diagnostics = "\n".join(
+                            [*([result.judgment_diagnostics] if result.judgment_diagnostics else []), *correlation_notes]
+                        )
                     player_outcomes = [event for event in outcomes if event.player == result.region.player]
                     if player_outcomes:
                         event = player_outcomes[-1]
@@ -690,8 +762,9 @@ class AnalysisSession:
                 payload={
                     "field": region.kind,
                     "region_label": region.label,
-                    "previous_value": previous_value,
-                    "new_value": new_value,
+                    **({"value": new_value} if region.kind == "combo" else {
+                        "previous_value": previous_value, "new_value": new_value,
+                    }),
                 },
                 frame_index=frame_index,
                 video_time_ms=video_time_ms,
@@ -719,9 +792,10 @@ class AnalysisSession:
         self._pending_judgments.clear()
         self._judgment_absent_since.clear()
         self._pending_lanes.clear()
+        self._last_correlation_diagnostics.clear()
         self._last_correlation_frame = None
 
-    def _process_judgment_region(self, region, crop, frame_index, video_time_ms):
+    def _process_judgment_region(self, region, crop, frame_index, video_time_ms, *, search_crop=None, search_bounds=None):
         tracker = self._trackers[region.key()]
         references = self._arrow_references.get(region.key(), {})
         previous = self._last_arrow_frame.get(region.key())
@@ -732,10 +806,15 @@ class AnalysisSession:
             error = "No judgment outcome references. Capture a Perfect, Great, Good, or Miss example for this player."
         elif crop.size == 0:
             error = "Empty judgment crop (region out of frame bounds?)"
-        state, score = (
-            classify_judgment_state(crop, references, self.arrow_similarity_threshold)
-            if error is None else (None, 0.0)
-        )
+        matcher = self._judgment_shapes[region.key()]
+        if error is None and matcher.error is not None:
+            error = matcher.error
+        search_crop = crop if search_crop is None else search_crop
+        match = matcher.match(search_crop, self.judgment_similarity_threshold) if error is None else None
+        state, score = (match.state, match.similarity) if match is not None else (None, 0.0)
+        latched_before = tracker.status().active_state
+        repeated_frame = previous == (frame_index, video_time_ms)
+        confirmed = None
         if previous != (frame_index, video_time_ms):
             self._last_arrow_frame[region.key()] = (frame_index, video_time_ms)
             observation = state
@@ -746,6 +825,8 @@ class AnalysisSession:
                     tracker.reset()
             else:
                 self._judgment_absent_since.pop(region.key(), None)
+            if observation is None:
+                tracker.clear_pending()
             if tracker.status().pending_state != observation:
                 self._arrow_state_started[region.key()] = video_time_ms
             confirmed = tracker.observe(observation)
@@ -758,21 +839,76 @@ class AnalysisSession:
                 if any(item.region.key() == region.key() for item in self._pending_judgments)
                 else "Ambiguous judgment; holding previous state."
                 if state is None and error is None
-                else "No judgment match; waiting for 250 ms of video time to rearm."
+                else f"No judgment match; waiting for {config.JUDGMENT_REARM_MS} ms of video time to rearm."
                 if state == "idle" and tracker.status().active_state is not None
                 else "Ready for the next judgment." if state == "idle"
-                else "Holding judgment; waiting for 250 ms without a match before counting again."
+                else f"Holding judgment; waiting for {config.JUDGMENT_REARM_MS} ms without a match before counting again."
                 if state in ("perfect", "great", "good", "hit", "miss") else None
         )
         if error is None:
-            missing = [name.capitalize() for name in categories if not references.get(name)]
+            missing = [name.capitalize() for name in categories if not matcher.references.get(name)]
             warnings = []
             if missing:
                 warnings.append(f"Untaught judgments: {', '.join(missing)}; taught outcomes still count.")
             note = " ".join([*warnings, *([note] if note else [])]) or None
+        if matcher.warnings:
+            note = " ".join([*([note] if note else []), *matcher.warnings])
+        status = tracker.status()
+        absent_since = self._judgment_absent_since.get(region.key())
+        absent_ms = 0 if absent_since is None else max(0, video_time_ms - absent_since)
+        if error is not None:
+            decision = error
+        elif repeated_frame:
+            decision = "Repeated frame; confirmation and rearm do not advance."
+        elif match is not None and match.suppressed_by_empty:
+            decision = "No judgment reference wins or is too close; outcome suppressed."
+        elif state == "idle":
+            decision = "Below judgment threshold; no outcome match."
+        elif state is None:
+            decision = "Ambiguous match; top categories are too close. Rearm interval restarted."
+        elif not self.recording_enabled:
+            decision = "Recording off; match tracked but no judgment event queued."
+        elif latched_before is not None:
+            decision = f"Latch blocked {state.upper()}; previous {latched_before.upper()} has not rearmed."
+        elif confirmed is None:
+            decision = f"Confirming {state.upper()}: {status.pending_count}/{status.required_count} frames."
+        else:
+            decision = f"Accepted {state.upper()}; queued for judgment correlation."
+        match_detail = (
+            f"Best: {match.best_state.upper()} {score:.3f}; threshold {self.judgment_similarity_threshold:.3f}."
+            if match is not None and match.best_state is not None else "Best: unavailable."
+        )
+        if match is not None and match.runner_up_similarity is not None and match.runner_up_state is not None:
+            match_detail += (
+                f" Next: {match.runner_up_state.upper()} {match.runner_up_similarity:.3f};"
+                f" gap {score - match.runner_up_similarity:.3f}"
+                f" (minimum {config.JUDGMENT_AMBIGUITY_MARGIN:.3f})."
+            )
+        if match is not None and match.empty_similarity is not None:
+            match_detail += (
+                f" No judgment: {match.empty_similarity:.3f};"
+                f" outcome must lead by more than {config.JUDGMENT_EMPTY_REFERENCE_MARGIN:.3f}."
+            )
+        diagnostics = (
+            f"Letter shape | Frame {frame_index} | {video_time_ms} ms. {match_detail}\n"
+            f"{decision}\n"
+            f"Latch: {status.active_state or 'ready'}; no-match {absent_ms}/{config.JUDGMENT_REARM_MS} ms;"
+            f" confirmation {status.pending_count}/{status.required_count};"
+            f" recording {'on' if self.recording_enabled else 'off'}."
+        )
+        if search_bounds is not None:
+            x0, y0, x1, y1 = search_bounds
+            diagnostics += f"\nSearch: ({x0}, {y0}) {x1 - x0}x{y1 - y0} pixels."
+            if match is not None and match.match_bounds is not None:
+                x, y, w, h = match.match_bounds
+                diagnostics += f" Best lettering: ({x0 + x}, {y0 + y}) {w}x{h}."
+        diagnostics += " Shape score, not grayscale similarity or an accuracy probability."
+        if matcher.warnings:
+            diagnostics += "\nCalibration: " + " ".join(matcher.warnings)
         return RegionFrameResult(
             region=region, crop=crop, arrow_state=state, confidence=score,
             error=error, is_unreadable=error is not None, validation_note=note,
+            judgment_diagnostics=diagnostics,
         )
 
     def _correlate_judgments(self, frame_index, video_time_ms):
@@ -806,32 +942,53 @@ class AnalysisSession:
                 <= config.SIMULTANEOUS_STEP_WINDOW_MS
             )
             lanes = [lane for _, lane in nearby] if unique and simultaneous else []
+            if not nearby:
+                reason = (
+                    f"No arrow activation in this player's window "
+                    f"({lookback} ms before / {lookahead} ms after the word)."
+                )
+            elif not unique:
+                reason = "Ambiguous: arrow activity is shared with another judgment or already consumed."
+            elif len(set(directions)) != len(directions):
+                reason = "Ambiguous: repeated activations of the same direction."
+            elif not simultaneous:
+                reason = f"Ambiguous: arrow onsets span more than {config.SIMULTANEOUS_STEP_WINDOW_MS} ms."
+            else:
+                reason = f"Assigned: {', '.join(directions)}."
+            candidates = ", ".join(
+                f"{lane.region.direction} {lane.onset - judgment.onset:+d} ms"
+                for _, lane in nearby
+            ) or "none"
+            self._last_correlation_diagnostics[judgment.region.key()] = (
+                f"{judgment.state.upper()} at {judgment.onset} ms. {reason} "
+                f"Candidates (relative to word): {candidates}"
+            )
             consumed.update(index for index, _ in nearby)
             outcome = "miss" if judgment.state == "miss" else "hit"
             judgment_id = str(uuid.uuid4())
             step_directions = [lane.region.direction for lane in lanes]
-            for lane in lanes or [None]:
-                event = self.event_bus.make_event(
-                    event_type=f"{'arrow' if lane else 'judgment'}_{outcome}",
-                    payload={
-                        "field": "arrow" if lane else "judgment", "region_label": judgment.region.label,
-                        "direction": lane.region.direction if lane else None, "state": outcome,
-                        **({"judgment": judgment.state} if judgment.state != "hit" else {}),
-                        "judgment_id": judgment_id,
-                        "step_directions": step_directions,
-                        "step_arrow_count": len(lanes),
-                        "evidence": "judgment_and_arrow" if lane else "judgment_only",
-                        "judgment_video_time_ms": judgment.onset,
-                        "correlation_window_ms": max(lookback, lookahead),
-                        "correlation_lookback_ms": lookback,
-                        "correlation_lookahead_ms": lookahead,
-                    },
-                    frame_index=frame_index, video_time_ms=video_time_ms,
-                    player=judgment.region.player,
-                    confidence=min(judgment.confidence, lane.confidence) if lane else judgment.confidence,
-                )
-                self.event_bus.record(event)
-                events.append(event)
+            payload = {
+                "field": "judgment", "region_label": judgment.region.label,
+                "direction": step_directions[0] if len(step_directions) == 1 else None,
+                "outcome": outcome, "state": outcome,
+                "judgment": judgment.state,
+                "judgment_id": judgment_id,
+                "step_directions": step_directions,
+                "step_arrow_count": len(lanes),
+                "evidence": "judgment_and_arrow" if lanes else "judgment_only",
+                "judgment_video_time_ms": judgment.onset,
+                "correlation_window_ms": max(lookback, lookahead),
+                "correlation_lookback_ms": lookback,
+                "correlation_lookahead_ms": lookahead,
+            }
+            judgement_event = self.event_bus.make_event(
+                event_type=config.JUDGEMENT_EVENT_TYPE,
+                payload=payload,
+                frame_index=frame_index, video_time_ms=video_time_ms,
+                player=judgment.region.player, confidence=judgment.confidence,
+            )
+            self.event_bus.record(judgement_event)
+            events.append(judgement_event)
             self._pending_judgments.remove(judgment)
         self._pending_lanes = [
             lane for index, lane in enumerate(self._pending_lanes)
@@ -839,7 +996,7 @@ class AnalysisSession:
         ]
         return events
 
-    def _process_arrow_region(self, region, crop, frame_index, video_time_ms):
+    def _process_arrow_region(self, region, crop, frame_index, video_time_ms, *, search_crop=None, search_bounds=None):
         key = region.key()
         tracker: ArrowStateTracker = self._trackers[key]
         references = self._arrow_references.get(key, {})
@@ -868,22 +1025,47 @@ class AnalysisSession:
                 error="Capture a fresh Active Arrow reference for this player and direction. "
                 "Old Hit/Miss references are ignored.",
             ), None
+        matcher = self._arrow_shapes[key]
+        if matcher.error is not None:
+            tracker.observe(None)
+            return RegionFrameResult(
+                region=region, crop=crop, arrow_state=None, is_unreadable=True,
+                error=matcher.error, arrow_diagnostics=" ".join(matcher.warnings),
+            ), None
 
         has_judgment = any(r.kind == "judgment" and r.player == region.player for r in self.regions)
         note = None if has_judgment else (
-            f"Add and calibrate a judgment box for {region.player}. Arrow activity alone cannot count hits or misses."
+            f"Activity only. Add and calibrate a judgment box for {region.player} to determine outcomes and score."
         )
 
-        state, score = classify_arrow_state(crop, references, self.arrow_similarity_threshold)
+        search_crop = crop if search_crop is None else search_crop
+        match = matcher.match(search_crop, self.arrow_similarity_threshold)
+        state, score = match.state, match.similarity
         empty_note = (
             "Empty reference wins or is too close to Active; treating this arrow as idle."
-            if state == "idle" and references.get("empty") and score >= self.arrow_similarity_threshold
+            if match.suppressed_by_empty
             else None
         )
+        diagnostics = (
+            f"Arrow shape | Frame {frame_index} | {video_time_ms} ms. "
+            f"Active: {score:.3f}; threshold {self.arrow_similarity_threshold:.3f}."
+        )
+        if match.empty_similarity is not None:
+            diagnostics += f" Empty: {match.empty_similarity:.3f}; required lead > {config.ARROW_EMPTY_REFERENCE_MARGIN:.3f}."
+        if search_bounds is not None:
+            x0, y0, x1, y1 = search_bounds
+            diagnostics += f"\nSearch: ({x0}, {y0}) {x1 - x0}x{y1 - y0} pixels."
+            if match.match_bounds is not None:
+                x, y, w, h = match.match_bounds
+                diagnostics += f" Best arrow: ({x0 + x}, {y0 + y}) {w}x{h}."
+        diagnostics += " Shape score, not grayscale similarity or an accuracy probability."
+        if matcher.warnings:
+            diagnostics += "\nCalibration: " + " ".join(matcher.warnings)
         if previous_frame == (frame_index, video_time_ms):
             return RegionFrameResult(
-                region=region, confidence=score, error=note, arrow_state=state, crop=crop,
-                validation_note=empty_note,
+                region=region, confidence=score, arrow_state=state, crop=crop,
+                validation_note=empty_note or note,
+                arrow_diagnostics=diagnostics,
             ), None
         if tracker.status().pending_state != state:
             self._arrow_state_started[key] = video_time_ms
@@ -893,19 +1075,29 @@ class AnalysisSession:
             onset = self._arrow_state_started[key]
             if has_judgment:
                 self._pending_lanes.append(LaneEvidence(region, onset, score))
+            event = self.event_bus.make_event(
+                event_type=config.ARROW_EVENT_TYPE,
+                payload={
+                    "field": "arrow", "region_label": region.label,
+                    "direction": region.direction, "state": "active",
+                    "evidence": "arrow_activity", "activity_video_time_ms": onset,
+                },
+                frame_index=frame_index, video_time_ms=video_time_ms,
+                player=region.player, confidence=score,
+            )
+            self.event_bus.record(event)
             return RegionFrameResult(
                 region=region, confidence=score, arrow_state=state, crop=crop,
-                error=note,
-                validation_note="Arrow activity observed; waiting for a matching player judgment."
-                if has_judgment else None,
-            ), None
+                validation_note=note or "Arrow activity recorded; outcome requires a matching player judgment.",
+                arrow_diagnostics=diagnostics,
+            ), event
 
         result = RegionFrameResult(
             region=region,
             confidence=score,
-            error=note,
             arrow_state=state,
-            validation_note=empty_note,
+            validation_note=empty_note or note,
+            arrow_diagnostics=diagnostics,
             is_unreadable=False,
             crop=crop,
         )

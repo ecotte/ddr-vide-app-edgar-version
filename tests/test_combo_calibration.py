@@ -88,7 +88,7 @@ def test_taught_008_matches_in_live_verification_but_still_requires_ocr_evidence
     assert first.needs_confirmation
     second = session.process_numeric_frame(combo, 1, 100).region_results[0]
     assert second.accepted_value == 8
-    assert session.event_bus.events[-1].event_type == "combo_changed"
+    assert session.event_bus.events[-1].event_type == "combo"
 
 
 def test_old_combo_templates_need_reteaching_without_invalidating_score_templates(combo):
