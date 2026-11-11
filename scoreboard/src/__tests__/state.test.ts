@@ -7,6 +7,35 @@ const player = { username: null, score: null, combo: 3, hits: 0, misses: 0, unas
 const snapshot = { active: true, sessionId: 'session', revision: 1, players: { P1: player, P2: player } };
 
 describe('scoreboard state', () => {
+  it('preserves independent current and best streaks without fabricating legacy values', () => {
+    const parsed = parseSnapshot({
+      ...snapshot, players: {
+        P1: { ...player, hits: 8, bestStreak: 5, currentStreak: 2 },
+        P2: { ...player, bestStreak: 0, currentStreak: 0 },
+      },
+    });
+    expect(parsed.players.P1.bestStreak).toBe(5);
+    expect(parsed.players.P1.currentStreak).toBe(2);
+    expect(parsed.players.P2.bestStreak).toBe(0);
+    expect(parseSnapshot(snapshot).players.P1.bestStreak).toBeUndefined();
+    expect(parseSnapshot(snapshot).players.P1.currentStreak).toBeUndefined();
+  });
+  it.each([
+    { bestStreak: -1, currentStreak: 0 },
+    { bestStreak: 2, currentStreak: 3 },
+    { bestStreak: 9, currentStreak: 0 },
+    { bestStreak: 1.5, currentStreak: 1 },
+    { bestStreak: '2', currentStreak: 1 },
+    { bestStreak: 2, currentStreak: true },
+    { bestStreak: 2 },
+    { currentStreak: 1 },
+    { bestStreak: Infinity, currentStreak: 0 },
+    { bestStreak: NaN, currentStreak: 0 },
+  ])('rejects invalid streak data %j', streak => {
+    expect(() => parseSnapshot({
+      ...snapshot, players: { P1: { ...player, hits: 8, ...streak }, P2: player },
+    })).toThrow('Invalid scoreboard data');
+  });
   it('preserves independent lane misses without inventing them for older snapshots', () => {
     const misses = { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 5 };
     const parsed = parseSnapshot({

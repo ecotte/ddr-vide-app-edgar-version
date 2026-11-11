@@ -299,7 +299,7 @@ Connection/publish errors appear in the desktop Events tab.
 - The unique lane with the highest `hitsByDirection` count receives Up-Left
   Legend, Up-Right Royalty, Down-Left Dynamo, Down-Right Champion, or
   Center-Step Superstar, with the corresponding direction symbol. The card shows
-  its hit count, matching the Most-hit lane tile. Unplayed lanes are excluded; no
+  its per-lane hit count. Unplayed lanes are excluded; no
   minimum sample count is required. Equal positive hit counts across all five lanes
   awards All-Step Ace; partial ties show Joint leaders with the tied directions.
   During active games the Step Title tile always stays visible, showing Warming up
@@ -307,9 +307,15 @@ Connection/publish errors appear in the desktop Events tab.
   Older snapshots without lane-miss counts can still earn titles.
   Deploy the updated frontend to use hit-count titles; accuracy calculations are unchanged.
 - Two extra player tiles add playful captions without changing the numbers:
-  **Most-hit lane** lists every lane tied for the highest positive hit count
-  This uses the same hit-volume ranking as the step title. Unknown-direction hits
-  are excluded; zero or unavailable lane counts show Waiting for data.
+  **Best streak** replaces Most-hit lane. It shows the longest run of successful
+  recognized `judgement` events in this session and the current run, independent
+  of combo OCR. A hit adds one, even when direction is unknown or multiple arrows
+  are matched. A Miss resets only the current run. Arrow activity and legacy lane
+  events do not contribute. The desktop publishes `bestStreak` and `currentStreak`;
+  delayed events are ordered by video time and sequence, duplicates are ignored,
+  and new sessions clear both counters. Real zeroes are displayed; missing fields
+  in older snapshots show Waiting for data. Restart the desktop publisher and
+  deploy the frontend for streak support. Undetected outcomes can affect accuracy.
   **Total detected steps** is player hits + misses, including unknown-direction
   outcomes once. It counts detected outcomes, not unique physical steps:
   simultaneous matched arrows count separately. A real zero is shown; missing
@@ -320,14 +326,14 @@ Connection/publish errors appear in the desktop Events tab.
   different positions in the deck so their simultaneous captions differ.
   Polling and metric changes do not restart the rotation. Inactive, stale, and
   failed feeds pause it, and a new game resets the cycle. Captions are playful,
-  not additional measurements; tile numbers and lane names do not change with them.
+  not additional measurements; tile numbers do not change with them.
 - The four main metric tiles, score, arrow counts, hit pace and arrow accuracy
   remain visible while waiting for the first snapshot, in zero-outcome games,
   for legacy snapshots, and while sharing is inactive. Missing values show Waiting
   for data; known zeros remain zeros. Hit percentage waits for a detected outcome.
   Step Title uses Warming up during active games, otherwise Waiting for data.
   Inactive feeds do not expose retained game values or check-in names. Captions
-  stay hidden until the corresponding lane/step data exists.
+  stay hidden until the corresponding streak/step value is positive.
   Combo and optional legacy response timing/animal comparisons remain data-dependent.
 - Optional desktop `judgment` regions correlate each player's captured success/MISS
   images with arrow activity. Each recognized outcome emits one `judgement`

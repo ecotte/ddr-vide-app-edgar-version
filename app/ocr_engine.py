@@ -91,11 +91,7 @@ class OcrEngine:
                     error="No yellow digit signal. Use a clearer frame or disable the yellow-digit filter.",
                 )
             _, boxes, _ = _extract_combo_glyphs(crop_bgr)
-            wide_digits = (
-                2 <= len(boxes) <= config.FIELD_MAX_DIGITS["combo"]
-                and np.median([(right - left) / (bottom - top) for left, right, top, bottom in boxes]) >= .75
-                and np.median([bottom - top for _, _, top, bottom in boxes]) >= crop_bgr.shape[0] * .6
-            )
+            wide_digits = _has_wide_combo_digits(boxes, crop_bgr.shape[0])
             with self._recognition_lock:
                 # Outlined HUD digits can be too wide for the text model. Correct
                 # their proportions for OCR only, without forcing letters into digits.
@@ -255,6 +251,29 @@ class OcrEngine:
         )
 
 
+def _has_wide_combo_digits(boxes: list[list[int]], height: int) -> bool:
+    return (
+        2 <= len(boxes) <= config.FIELD_MAX_DIGITS["combo"]
+        # Narrow ones must not hide a wide-font row such as 011.
+        and any((right - left) / (bottom - top) >= .75 for left, right, top, bottom in boxes)
+        and np.median([bottom - top for _, _, top, bottom in boxes]) >= height * .6
+    )
+
+
+def combo_frame_quality(crop_bgr: np.ndarray) -> float:
+    """Cheap frame-selection evidence only; never recognizes or accepts a number."""
+    if crop_bgr.size == 0:
+        return 0.0
+    _, boxes, _ = _extract_combo_glyphs(crop_bgr)
+    if not _has_wide_combo_digits(boxes, crop_bgr.shape[0]):
+        return 0.0
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    return min(
+        float(gray[top:bottom, left:right].std()) / 127.5
+        for left, right, top, bottom in boxes
+    )
+
+
 def _preprocess_for_ocr(crop_bgr: np.ndarray, *, yellow_filter: bool = False) -> np.ndarray:
     if yellow_filter:
         blue, green, red = cv2.split(crop_bgr)
@@ -354,11 +373,12 @@ def _extract_combo_glyphs(
             and abs(box[1] + box[3] - anchor[1] - anchor[3]) <= anchor[3] * 0.2
         ]
         selected = []
-        # Outer and inner digit contours overlap; keep one box, never a zero's hole.
+        # Reject overlapping contours, including partial background overlaps,
+        # before creating the non-overlapping boxes required by glyph extraction.
         for box in sorted(aligned, key=lambda box: box[2] * box[3], reverse=True):
             if not any(
                 min(box[0] + box[2], other[0] + other[2]) - max(box[0], other[0])
-                > min(box[2], other[2]) * 0.5 for other in selected
+                > 0 for other in selected
             ):
                 selected.append(box)
         rows.append(selected)
@@ -369,6 +389,10 @@ def _extract_combo_glyphs(
         for x, y, w, h in sorted(row)
     ]
     mask = cv2.resize(mask, (original_width, original_height), interpolation=cv2.INTER_NEAREST)
+    boxes = [
+        box for box in boxes
+        if np.any(mask[box[2]:box[3], box[0]:box[1]])
+    ]
     return mask, boxes, _combo_glyphs_from_boxes(mask, boxes)
 
 

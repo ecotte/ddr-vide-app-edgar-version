@@ -7,6 +7,8 @@ export interface PlayerState {
   score: number | null;
   runningScore?: number | null;
   combo: number | null;
+  currentStreak?: number | null;
+  bestStreak?: number | null;
   hits: number;
   unassignedHits?: number;
   unassignedMisses?: number;
@@ -60,6 +62,11 @@ function isPlayer(value: unknown): value is PlayerState {
     ))
     && numberOrNull(value.observedScore) && numberOrNull(value.lastVideoTimeMs)
     && typeof value.hits === 'number' && numberOrNull(value.hits)
+    && ((value.currentStreak == null && value.bestStreak == null) || (
+      typeof value.currentStreak === 'number' && numberOrNull(value.currentStreak)
+      && typeof value.bestStreak === 'number' && numberOrNull(value.bestStreak)
+      && value.currentStreak <= value.bestStreak && value.bestStreak <= value.hits
+    ))
     && (value.unassignedHits === undefined || (
       typeof value.unassignedHits === 'number' && numberOrNull(value.unassignedHits)
       && value.unassignedHits <= value.hits
@@ -103,6 +110,8 @@ function cleanPlayer(player: PlayerState): PlayerState {
   return {
     username: player.username ?? null,
     score: player.score, combo: player.combo, hits: player.hits,
+    ...(player.bestStreak != null
+      ? { currentStreak: player.currentStreak, bestStreak: player.bestStreak } : {}),
     ...(player.runningScore != null ? { runningScore: player.runningScore } : {}),
     unassignedHits: player.unassignedHits ?? 0,
     unassignedMisses: player.unassignedMisses ?? 0,

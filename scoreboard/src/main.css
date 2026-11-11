@@ -43,7 +43,7 @@ h2 { margin: 0 0 30px; font-size: 28px; }
 .pink .accuracy-track > div { background: #f3a1ed; }
 .player-metrics { display: grid; grid-row: 6 / span 3; grid-template-rows: subgrid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
 .player-metrics:empty { display: none; }
-.metric-most-hit { grid-row: 1; grid-column: 1; }
+.metric-streak { grid-row: 1; grid-column: 1; }
 .metric-steps { grid-row: 1; grid-column: 2; }
 .metric-percentage { grid-row: 2; grid-column: 1; }
 .metric-step-title { grid-row: 2; grid-column: 2; }

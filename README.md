@@ -250,8 +250,9 @@ a second connection; wait and retry.
 
 For yellow combo digits with a white glow, try **Yellow-digit filter** in that combo's recognition row, then **Save Layout**. This optional per-region filter subtracts blue from the weaker of red and green, emphasizing yellow fill while suppressing white outlines and red/pink arrows. It is off by default, is restored when the layout is loaded (including rescaled layouts), and never affects score OCR. Turning it on or off clears pending evidence but preserves accepted values and existing events. It can improve `3`/`8` confusion on this skin, but can worsen other crops and cannot restore pixels hidden by an arrow. OCR confidence and acceptance thresholds are unchanged; a correctly read but low-confidence candidate remains unaccepted. Disable it for non-yellow digits or if recognition worsens.
 
-Combo OCR automatically checks for multiple large, wide outlined digits. When
-present, it first tries vertically stretched copies (2x, then 1.5x if needed) to
+Combo OCR automatically checks for a row of multiple large outlined digits with
+at least one wide glyph, so narrow `1` digits in values such as `011` do not
+disable the check. It first tries vertically stretched copies (2x, then 1.5x if needed) to
 restore proportions for the text model. The saved calibration and displayed crop
 are unchanged. Only a digits-only reading with at least 0.90 confidence can use
 this shortcut; weak or mixed readings continue through the existing OCR path.
@@ -306,7 +307,7 @@ all that is needed for outcomes and running points.
 
 **Cumulative hit percentage** is `hits / (hits + misses) * 100` over detected
 outcomes in the current game. Undetected notes are not counted. The four main
-tiles (Most-hit lane, Total detected steps, Cumulative hit percentage, Step Title)
+tiles (Best streak, Total detected steps, Cumulative hit percentage, Step Title)
 remain visible even before the first snapshot or while sharing is inactive.
 Unavailable values show **Waiting for data**, never invented zeroes. A known zero
 total remains zero; accuracy waits until there is at least one detected outcome.
@@ -323,7 +324,7 @@ overstate actual performance.
 The lane with the most detected hits
 earns one title: **Up-Left Legend**, **Up-Right Royalty**, **Down-Left Dynamo**,
 **Down-Right Champion**, or **Center-Step Superstar**, with its matching direction symbol.
-The card shows the winning hit count, matching the Most-hit lane tile. Unplayed lanes and
+The card shows the winning per-lane hit count. Unplayed lanes and
 unknown-direction judgments are excluded. **All-Step Ace** requires equal positive
 hit counts in all five lanes. A two-, three-, or four-way hit-count tie shows
 **Joint leaders** with the tied directions. The Step Title tile remains visible
@@ -332,12 +333,22 @@ or per-lane data is unavailable. No minimum sample count is required.
 Deploy the updated scoreboard to use hit-count titles. Existing snapshots with
 per-lane hit counts are supported; per-lane miss data is not required for titles.
 
-Two playful tiles add **Most-hit lane** and **Total detected steps**, each with
+**Best streak** replaces the duplicate Most-hit lane tile. It shows the longest
+run of successful recognized judgments in the current session, plus the current
+run. Each `judgement` hit adds one, including an unknown-direction or multi-arrow
+judgment; a Miss resets the current run but preserves the best. This is not the
+game's OCR combo and is not inferred from arrow activity. Duplicate, synthetic,
+and stale-session events do not count. Delayed judgments are ordered by video
+time, then sequence, so a late Miss cannot incorrectly join two runs.
+New sessions reset both values. Older publishers without streak fields show
+Waiting for data; restart the desktop publisher and deploy the frontend to use
+this metric. Missed recognition can still overstate or understate a streak.
+
+The **Best streak** and **Total detected steps** tiles each have
 50 captions that rotate every 15 seconds of live feed time without repeating
 until the deck is exhausted. Players get different simultaneous captions.
 Inactive, stale, and failed feeds pause rotation; new games reset it. These
-captions never change the underlying numbers. Most-hit lane uses hit
-counts, not accuracy, and lists ties. Total detected steps adds player hits and
+captions never change the underlying numbers. Total detected steps adds player hits and
 misses, including unknown-direction outcomes once; simultaneous arrows count
 separately, so it is a detected-outcome count, not a physical step count. Missing
 data shows a waiting state; a known total of zero remains visible, with waiting
@@ -432,7 +443,18 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **Ambiguous score readings are rejected, not corrected by guessing.** OCR must return exactly one digit per segmented box; multi-character results retain their original confidence and are rejected. Template matching compares foreground strokes (intersection over union), not shared black background, against the closest user-labeled example for each digit. The best digit must exceed the runner-up by at least 0.02 similarity and meet the 0.72 minimum match threshold. Template similarity is not an accuracy probability. Teaching does not rewrite accepted values or old events; use **New Session** to reset an incorrect baseline and event history (export first if you need to preserve them).
 - **Accepted combos can recover downward.** A lower value needs at least two matching readings, each with OCR confidence of at least 0.90, on distinct advancing frames within two seconds. "Consistency frames" above two raises this requirement. A different candidate, low-confidence reading, or unreadable frame restarts confirmation; duplicate/old frames cannot add evidence. A single lower reading keeps the accepted combo unchanged. Confirmed decreases update the displayed accepted value and emit a `combo` event with only the current value in `payload.value`; no previous/new pair is sent. The Events table displays just that value. Existing events are not rewritten. This also allows genuine combo resets; repeated confidently wrong readings can still be accepted.
 - **High-confidence combos can advance immediately.** With the default consistency setting, OCR confidence of at least 0.90 allows a single plausible combo reading to establish or advance the accepted value. Lower-confidence, unreadable, or implausible upward-jump readings are rejected. A confidently wrong initial reading can still establish a bad baseline; confidence is not a guarantee of correctness.
-- **Confirmation depends on the field and confidence.** "Consistency frames" remains a configurable minimum: qualifying score/combo initial readings and increases may use 1; lower-confidence scores and all downward corrections require at least 2. Raising the setting above 1 also delays high-confidence score and combo readings. While OCR runs, the first neighboring frame and newest displayed frame are retained. The neighbor is processed only for pending confirmation; accepted, rejected, and unreadable results go directly to the newest frame. After one confirmation pass the worker returns to the newest frame rather than chaining old neighbors. This bounds the waiting buffer to two frames; EOF also retains its final-frame safeguard. Reprocessing a paused frame never adds evidence. Evidence expires after two seconds of video time and is restarted by a different candidate or invalid reading. Background OCR does not run on every source frame, so events can be delayed and brief changes missed. Preview playback remains independent.
+- **Confirmation depends on the field and confidence.** "Consistency frames" remains a configurable minimum: qualifying score/combo initial readings and increases may use 1; lower-confidence scores and all downward corrections require at least 2. Raising the setting above 1 also delays high-confidence score and combo readings. While OCR runs, the first neighboring frame and newest displayed frame are retained. The neighbor is processed only for pending confirmation rather than chaining old neighbors. Reprocessing a paused frame never adds evidence. Evidence expires after two seconds of video time and is restarted by a different candidate or invalid reading. Background OCR does not run on every source frame, so events can be delayed and brief changes missed. Preview playback remains independent.
+- **Brief combo displays are retained for OCR.** A lightweight outline/contrast
+  check keeps at most two advancing frames per combo region while the worker is
+  busy, in addition to the neighbor/latest-frame slots and EOF safeguard.
+  Blank frames do not overwrite these candidates. They are processed in frame
+  order, only for the corresponding combo regions, with up to four priority
+  passes before returning to current numeric sampling so scores cannot starve.
+  Both players have independent buffers; seeks, calibration changes, and session
+  generations invalidate older candidates. The check never reads a digit or
+  emits an event: normal OCR confidence, plausibility, and distinct-frame
+  confirmation still apply. The buffer favors recent candidates, not an
+  exhaustive history, so sufficiently fast changes can still be skipped.
 - **Important limitation the temporal filter cannot fix:** if OCR is *consistently* wrong for the same digits (a stable misread, not a one-frame glitch), the consistency filter will still "accept" that wrong value, because it only rejects readings that fail to repeat - it cannot know the true value. See section 7 for a real example of this happening. This is why the app always shows you the raw OCR text next to the accepted value, so you can visually sanity-check it.
 
 **Arrow lanes:**

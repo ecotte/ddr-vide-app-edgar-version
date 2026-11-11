@@ -36,6 +36,102 @@ def judgement_event(bus, tier="perfect", directions=None, player="P1"):
     }, 1, 17, player, .99)
 
 
+def test_streak_counts_judgments_once_and_misses_break_only_the_current_run():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        for tier, directions in [
+            ("perfect", ["Center", "Up-Left"]), ("great", []), ("good", ["Down-Right"]),
+        ]:
+            row = judgement_event(bus, tier=tier, directions=directions)
+            board.record(row, bus.session_id)
+            board.record(row, bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert player["hits"] == 4
+        assert (player["currentStreak"], player["bestStreak"]) == (3, 3)
+        board.record(judgement_event(bus, tier="miss", directions=[]), bus.session_id)
+        board.record(judgement_event(bus), bus.session_id)
+        board.record(judgement_event(bus, player="P2"), bus.session_id)
+        players = board.snapshot()["players"]
+        assert (players["P1"]["currentStreak"], players["P1"]["bestStreak"]) == (1, 3)
+        assert (players["P2"]["currentStreak"], players["P2"]["bestStreak"]) == (1, 1)
+    finally:
+        board.stop()
+
+
+def test_streak_ignores_ocr_combos_legacy_lane_events_and_synthetic_events():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        for row in [event(bus, value=999), event(bus, kind="arrow_hit"), event(bus, kind="arrow_miss")]:
+            board.record(row, bus.session_id)
+        synthetic = judgement_event(bus)
+        synthetic.source_mode = "synthetic"
+        board.record(synthetic, bus.session_id)
+        test = judgement_event(bus)
+        test.payload["is_test"] = True
+        board.record(test, bus.session_id)
+        assert board.snapshot()["players"]["P1"]["bestStreak"] == 0
+        assert board.snapshot()["players"]["P1"]["currentStreak"] == 0
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("timestamps", [(100, 200, 300), (100, 100, 100)])
+def test_delayed_judgments_recompute_streak_in_video_time_and_sequence_order(timestamps):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        rows = [judgement_event(bus, tier=tier) for tier in ("perfect", "miss", "great")]
+        for sequence, (row, timestamp) in enumerate(zip(rows, timestamps), start=1):
+            row.video_time_ms = timestamp
+            row.sequence = sequence
+        for index in (2, 0):
+            board.record(rows[index], bus.session_id)
+        assert board.snapshot()["players"]["P1"]["bestStreak"] == 2
+        board.record(rows[1], bus.session_id)
+        player = board.snapshot()["players"]["P1"]
+        assert (player["currentStreak"], player["bestStreak"]) == (1, 1)
+    finally:
+        board.stop()
+
+
+def test_session_reset_clears_streaks_and_their_ordering_history():
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        old = judgement_event(bus)
+        board.record(old, bus.session_id)
+        bus.new_session()
+        board.record(None, bus.session_id)
+        board.record(old, bus.session_id)
+        for player in board.snapshot()["players"].values():
+            assert player["bestStreak"] == player["currentStreak"] == 0
+        assert board._streak_outcomes == {"P1": [], "P2": []}
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("timestamp", [None, -1, True, 1.5, 9007199254740992])
+def test_invalid_judgment_time_cannot_fabricate_or_bridge_a_streak(timestamp):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        row = judgement_event(bus)
+        row.video_time_ms = timestamp
+        before = board.snapshot()
+        board.record(row, bus.session_id)
+        assert board.snapshot() == before
+        assert "invalid judgement" in board.status()
+    finally:
+        board.stop()
+
+
 @pytest.mark.parametrize("player", ["P1", "P2"])
 @pytest.mark.parametrize("direction", ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"])
 @pytest.mark.parametrize("event_type", ["arrow", "arrow_hit"])

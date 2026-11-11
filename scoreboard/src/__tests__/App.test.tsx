@@ -6,7 +6,7 @@ import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import App from '../App';
 import { initializeOperator, signIn } from '../client';
 import { poll } from '../state';
-import { DETECTED_STEPS_CAPTIONS, MOST_HIT_LANE_CAPTIONS, sessionCaptionDecks } from '../dashboardCaptions';
+import { DETECTED_STEPS_CAPTIONS, BEST_STREAK_CAPTIONS, sessionCaptionDecks } from '../dashboardCaptions';
 
 vi.mock('../client', () => ({
   initializeOperator: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock('../state', async importOriginal => {
 });
 
 const player = { score: 1200, combo: 65, hits: 20, misses: 5,
+  bestStreak: 2, currentStreak: 1,
   hitsByDirection: { 'Up-Right': 1, 'Up-Left': 2, 'Down-Right': 3, 'Down-Left': 4, Center: 10 },
   missesByDirection: { 'Up-Right': 1, 'Up-Left': 1, 'Down-Right': 1, 'Down-Left': 2, Center: 0 },
   hitPace: 2.4, averageResponseTimeMs: 300.5, responseSamples: 2, observedScore: 1300, lastVideoTimeMs: 1000 };
@@ -119,7 +120,7 @@ it('does not query data before sign-in', async () => {
 it.each(['missing', 'inactive', 'zero'])('shows all four main tiles in the %s state', async mode => {
   const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
   const empty = {
-    ...player, score: null, runningScore: 0, combo: null, hits: 0, misses: 0,
+    ...player, score: null, runningScore: 0, combo: null, hits: 0, misses: 0, bestStreak: 0, currentStreak: 0,
     hitsByDirection: zero, missesByDirection: zero,
     observedScore: null, averageResponseTimeMs: null, responseSamples: 0, hitPace: 0,
   };
@@ -131,17 +132,19 @@ it.each(['missing', 'inactive', 'zero'])('shows all four main tiles in the %s st
   for (const name of ['Player 1', 'Player 2']) {
     const title = screen.getByLabelText(`${name} step title`);
     expect(title.parentElement?.querySelectorAll('.metric-card')).toHaveLength(4);
-    for (const metric of ['most-hit lane', 'cumulative hit percentage']) {
+    for (const metric of ['cumulative hit percentage']) {
       expect(screen.getByLabelText(`${name} ${metric}`)).toHaveTextContent('Waiting for data');
     }
     const steps = screen.getByLabelText(`${name} total detected steps`);
     expect(steps).toHaveTextContent('Waiting for data');
     if (mode === 'zero') {
+      expect(screen.getByLabelText(`${name} best streak`).querySelector('.metric-value')).toHaveTextContent('0');
       expect(steps.querySelector('.metric-value')).toHaveTextContent('0');
       expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('0');
       expect(screen.getByLabelText(`${name} hit pace`)).toHaveTextContent('0.0 detected hits / sec');
       expect(title).toHaveTextContent('Warming up');
     } else {
+      expect(screen.getByLabelText(`${name} best streak`)).toHaveTextContent('Waiting for data');
       expect(steps.querySelector('.metric-value')).toBeNull();
       expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('Waiting for data');
       expect(title).toHaveTextContent('Waiting for data');
@@ -156,21 +159,21 @@ it.each(['missing', 'inactive', 'zero'])('shows all four main tiles in the %s st
 it('populates waiting tiles in place and clears them for an inactive feed', async () => {
   const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
   const empty = {
-    ...player, hits: 0, misses: 0, hitsByDirection: zero, missesByDirection: zero,
+    ...player, hits: 0, misses: 0, bestStreak: 0, currentStreak: 0, hitsByDirection: zero, missesByDirection: zero,
     averageResponseTimeMs: null, responseSamples: 0,
   };
   const { client, execute } = fakeClient({ ...snapshot, players: { P1: empty, P2: empty } });
   await act(async () => { render(<App client={client} />); });
-  const tiles = ['most-hit lane', 'total detected steps', 'cumulative hit percentage', 'step title'];
+  const tiles = ['best streak', 'total detected steps', 'cumulative hit percentage', 'step title'];
   const originalTiles = tiles.map(metric => screen.getByLabelText(`Player 1 ${metric}`));
   execute.mockResolvedValue([{
     id: 'board', publishedAt: new Date(),
     snapshot: JSON.stringify({ ...snapshot, revision: 2, players: { P1: { ...player, averageResponseTimeMs: null, responseSamples: 0 }, P2: empty } }),
   }]);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  expect(screen.getByLabelText('Player 1 most-hit lane')).toHaveTextContent('Center');
+  expect(screen.getByLabelText('Player 1 best streak').querySelector('.metric-value')).toHaveTextContent('2');
   expect(screen.getByLabelText('Player 1 cumulative hit percentage')).toHaveTextContent('80.0%');
-  expect(screen.getByLabelText('Player 2 most-hit lane')).toHaveTextContent('Waiting for data');
+  expect(screen.getByLabelText('Player 2 best streak')).toHaveTextContent('Waiting for a successful judgment.');
   tiles.forEach((metric, index) => {
     expect(screen.getByLabelText(`Player 1 ${metric}`)).toBe(originalTiles[index]);
   });
@@ -218,7 +221,7 @@ it('selects required fields and separates unconfirmed and accepted values', asyn
 it('distinguishes zero lane accuracy, unplayed lanes, and waiting for legacy lane data', async () => {
   const zero = { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 };
   const p1 = {
-    ...player, hits: 0, misses: 2, hitsByDirection: zero,
+    ...player, hits: 0, misses: 2, bestStreak: 0, currentStreak: 0, hitsByDirection: zero,
     missesByDirection: { ...zero, Center: 2 }, averageResponseTimeMs: null, responseSamples: 0,
   };
   const { client } = fakeClient({
@@ -282,29 +285,30 @@ it('shows per-player response averages, sourced comparisons, cumulative percenta
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
 });
 
-it('shows playful most-hit and detected-step tiles per player and clears them for a new game', async () => {
+it('shows independent best streaks rather than OCR combos or lane counts and resets for a new game', async () => {
   const p2 = {
-    ...player, hits: 3, misses: 1, averageResponseTimeMs: null, responseSamples: 0,
+    ...player, hits: 3, misses: 1, bestStreak: 3, currentStreak: 0, averageResponseTimeMs: null, responseSamples: 0,
     hitsByDirection: { 'Up-Right': 1, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 1 },
   };
   const { client, execute } = fakeClient({ ...snapshot, players: { P1: player, P2: p2 } });
   await act(async () => { render(<App client={client} />); });
-  const p1Lane = screen.getByLabelText('Player 1 most-hit lane');
-  expect(p1Lane).toHaveTextContent('Center');
-  expect(p1Lane).toHaveTextContent('10 hits.');
-  expect(MOST_HIT_LANE_CAPTIONS).toContain(p1Lane.querySelector('.metric-caption')?.textContent);
+  const p1Streak = screen.getByLabelText('Player 1 best streak');
+  expect(p1Streak.querySelector('.metric-value')).toHaveTextContent('2');
+  expect(p1Streak).toHaveTextContent('Current: 1.');
+  expect(BEST_STREAK_CAPTIONS).toContain(p1Streak.querySelector('.metric-caption')?.textContent);
+  expect(screen.queryByLabelText('Player 1 most-hit lane')).not.toBeInTheDocument();
   expect(screen.getByLabelText('Player 1 total detected steps')).toHaveTextContent('25');
   expect(DETECTED_STEPS_CAPTIONS).toContain(
     screen.getByLabelText('Player 1 total detected steps').querySelector('.metric-caption')?.textContent,
   );
-  const p2Lane = screen.getByLabelText('Player 2 most-hit lane');
-  expect(p2Lane).toHaveTextContent('Up-Right + Center');
-  expect(p2Lane).toHaveTextContent('1 hit each.');
-  expect(MOST_HIT_LANE_CAPTIONS).toContain(p2Lane.querySelector('.metric-caption')?.textContent);
+  const p2Streak = screen.getByLabelText('Player 2 best streak');
+  expect(p2Streak.querySelector('.metric-value')).toHaveTextContent('3');
+  expect(p2Streak).toHaveTextContent('Current: 0.');
+  expect(BEST_STREAK_CAPTIONS).toContain(p2Streak.querySelector('.metric-caption')?.textContent);
   expect(screen.getByLabelText('Player 2 total detected steps')).toHaveTextContent('4');
   expect(screen.queryByText('Hits + misses detected this game.')).not.toBeInTheDocument();
   const empty = {
-    ...player, hits: 0, misses: 0, averageResponseTimeMs: null, responseSamples: 0,
+    ...player, hits: 0, misses: 0, bestStreak: 0, currentStreak: 0, averageResponseTimeMs: null, responseSamples: 0,
     hitsByDirection: { 'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0 },
   };
   execute.mockResolvedValue([{
@@ -313,7 +317,7 @@ it('shows playful most-hit and detected-step tiles per player and clears them fo
   }]);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   for (const name of ['Player 1', 'Player 2']) {
-    expect(screen.getByLabelText(`${name} most-hit lane`)).toHaveTextContent('Waiting for data');
+    expect(screen.getByLabelText(`${name} best streak`).querySelector('.metric-value')).toHaveTextContent('0');
     const steps = screen.getByLabelText(`${name} total detected steps`);
     expect(steps.querySelector('.metric-value')).toHaveTextContent('0');
     expect(steps).toHaveTextContent('Waiting for data');
@@ -331,23 +335,23 @@ it('rotates both captions every 15 live seconds, not on polling or score changes
   const caption = (name: string, tile: string) =>
     screen.getByLabelText(`${name} ${tile}`).querySelector('.metric-caption')?.textContent;
   const decks = sessionCaptionDecks('session');
-  expect(caption('Player 1', 'most-hit lane')).toBe(decks.mostHitLane[0]);
-  expect(caption('Player 2', 'most-hit lane')).toBe(decks.mostHitLane[25]);
+  expect(caption('Player 1', 'best streak')).toBe(decks.bestStreak[0]);
+  expect(caption('Player 2', 'best streak')).toBe(decks.bestStreak[25]);
   expect(caption('Player 1', 'total detected steps')).toBe(decks.detectedSteps[0]);
   expect(caption('Player 2', 'total detected steps')).toBe(decks.detectedSteps[25]);
   await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
   current = { ...snapshot, revision: 2, players: { ...snapshot.players, P1: { ...player, hits: 21 } } };
   await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
-  expect(caption('Player 1', 'most-hit lane')).toBe(decks.mostHitLane[0]);
+  expect(caption('Player 1', 'best streak')).toBe(decks.bestStreak[0]);
   expect(caption('Player 1', 'total detected steps')).toBe(decks.detectedSteps[0]);
   await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-  expect(caption('Player 1', 'most-hit lane')).toBe(decks.mostHitLane[1]);
-  expect(caption('Player 2', 'most-hit lane')).toBe(decks.mostHitLane[26]);
+  expect(caption('Player 1', 'best streak')).toBe(decks.bestStreak[1]);
+  expect(caption('Player 2', 'best streak')).toBe(decks.bestStreak[26]);
   expect(caption('Player 1', 'total detected steps')).toBe(decks.detectedSteps[1]);
   current = { ...current, sessionId: 'next-game', revision: 3 };
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
   const next = sessionCaptionDecks('next-game');
-  expect(caption('Player 1', 'most-hit lane')).toBe(next.mostHitLane[0]);
+  expect(caption('Player 1', 'best streak')).toBe(next.bestStreak[0]);
   expect(caption('Player 2', 'total detected steps')).toBe(next.detectedSteps[25]);
   view.unmount();
   expect(vi.getTimerCount()).toBe(0);
@@ -369,8 +373,8 @@ it.each(['inactive', 'error'])('pauses caption rotation while the feed has an %s
   current = snapshot;
   execute.mockImplementation(healthy);
   await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-  const caption = () => screen.getByLabelText('Player 1 most-hit lane').querySelector('.metric-caption')?.textContent;
-  const deck = sessionCaptionDecks('session').mostHitLane;
+  const caption = () => screen.getByLabelText('Player 1 best streak').querySelector('.metric-caption')?.textContent;
+  const deck = sessionCaptionDecks('session').bestStreak;
   expect(caption()).toBe(deck[1]);
   await act(async () => { await vi.advanceTimersByTimeAsync(14999); });
   expect(caption()).toBe(deck[1]);
@@ -392,7 +396,7 @@ it('keeps stable alignment slots without inventing missing names, scores, combos
   expect(panels.querySelectorAll('.player-score')).toHaveLength(2);
   expect(panels.querySelectorAll('.combo')).toHaveLength(1);
   for (const [label, className] of [
-    ['most-hit lane', 'metric-most-hit'],
+    ['best streak', 'metric-streak'],
     ['total detected steps', 'metric-steps'],
     ['cumulative hit percentage', 'metric-percentage'],
     ['step title', 'metric-step-title'],
@@ -422,7 +426,7 @@ it('matches titles and symbols to each player most-hit lane and updates after hi
   await act(async () => { render(<App client={client} />); });
   const p1Title = screen.getByLabelText('Player 1 step title');
   expect(p1Title).toHaveTextContent('Down-Left Dynamo');
-  expect(screen.getByLabelText('Player 1 most-hit lane')).toHaveTextContent('Down-Left');
+  expect(screen.getByLabelText('Player 1 best streak')).toBeInTheDocument();
   expect(p1Title.querySelector('.step-title-symbol')).toHaveTextContent('\u2199');
   expect(p1Title).toHaveTextContent('Most hits: Down-Left (6 hits).');
   const p2Title = screen.getByLabelText('Player 2 step title');
@@ -455,7 +459,7 @@ it('keeps all four main tiles when P2 has tied hit-count leaders and updates the
   for (const name of ['Player 1', 'Player 2']) {
     const tile = screen.getByLabelText(`${name} step title`);
     expect(tile.parentElement?.querySelectorAll('.metric-card')).toHaveLength(4);
-    for (const metric of ['most-hit lane', 'total detected steps', 'cumulative hit percentage']) {
+    for (const metric of ['best streak', 'total detected steps', 'cumulative hit percentage']) {
       expect(screen.getByLabelText(`${name} ${metric}`)).toBeInTheDocument();
     }
   }
@@ -539,7 +543,7 @@ it('retains the dashboard with waiting states for missing legacy metrics without
   expect(screen.queryByText('ACCEPTED SCORE')).not.toBeInTheDocument();
   expect(screen.queryByText('COMBO')).not.toBeInTheDocument();
   for (const name of ['Player 1', 'Player 2']) {
-    for (const metric of ['cumulative hit percentage', 'hit pace', 'most-hit lane', 'total detected steps', 'score']) {
+    for (const metric of ['cumulative hit percentage', 'hit pace', 'best streak', 'total detected steps', 'score']) {
       expect(screen.getByLabelText(`${name} ${metric}`)).toHaveTextContent('Waiting for data');
     }
     expect(within(screen.getByLabelText(`${name} hits by arrow`)).getAllByText('Waiting for data')).toHaveLength(5);
@@ -550,7 +554,7 @@ it('retains the dashboard with waiting states for missing legacy metrics without
 });
 
 it('shows zero-percent accuracy for real misses and a warming-up title without hits', async () => {
-  const empty = { ...player, hits: 0, misses: 2, hitsByDirection: {
+  const empty = { ...player, hits: 0, misses: 2, bestStreak: 0, currentStreak: 0, hitsByDirection: {
     'Up-Right': 0, 'Up-Left': 0, 'Down-Right': 0, 'Down-Left': 0, Center: 0,
   }, averageResponseTimeMs: null, responseSamples: 0 };
   const { client } = fakeClient({ ...snapshot, players: { P1: empty, P2: empty } });
@@ -569,7 +573,7 @@ it('keeps waiting tiles when the publisher is inactive without displaying retain
   expect(screen.getByLabelText('Player 2 step title')).toHaveTextContent('Waiting for data');
   expect(screen.queryAllByRole('meter')).toHaveLength(0);
   for (const name of ['Player 1', 'Player 2']) {
-    expect(screen.getByLabelText(`${name} most-hit lane`)).toHaveTextContent('Waiting for data');
+    expect(screen.getByLabelText(`${name} best streak`)).toHaveTextContent('Waiting for data');
     expect(screen.getByLabelText(`${name} total detected steps`)).toHaveTextContent('Waiting for data');
     expect(screen.getByLabelText(`${name} score`)).toHaveTextContent('Waiting for data');
   }
@@ -592,7 +596,7 @@ it('shows disconnection for an unchanged publisher heartbeat', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(16000); });
   expect(screen.getByText('Desktop publisher disconnected')).toBeInTheDocument();
   expect(screen.getByRole('status')).toHaveTextContent('last received values');
-  const caption = screen.getByLabelText('Player 1 most-hit lane').querySelector('.metric-caption')?.textContent;
+  const caption = screen.getByLabelText('Player 1 best streak').querySelector('.metric-caption')?.textContent;
   await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
-  expect(screen.getByLabelText('Player 1 most-hit lane').querySelector('.metric-caption')?.textContent).toBe(caption);
+  expect(screen.getByLabelText('Player 1 best streak').querySelector('.metric-caption')?.textContent).toBe(caption);
 });

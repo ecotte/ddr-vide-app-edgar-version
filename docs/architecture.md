@@ -381,12 +381,20 @@ speaker](https://pmc.ncbi.nlm.nih.gov/articles/PMC8776867/). The UI identifies t
 different tasks/senses and does not present them as equivalent tests or a
 universal speed ranking.
 The highest per-lane hit count determines the step title and its matching
-direction symbol, using the same `mostHitLanes` helper as the Most-hit lane tile.
+direction symbol, using the `mostHitLanes` helper.
 Unknown-direction outcomes and unplayed lanes are excluded. A positive five-way hit-count tie is
 All-Step Ace; partial ties show Joint leaders with the matching directions.
 The Step Title tile remains visible during active games, using Warming up for zero
 hits or missing lane data rather than inventing a winner. No minimum sample
 count is required. Legacy snapshots without lane misses can still earn titles.
+Best streak replaces the redundant Most-hit lane card. The publisher maintains
+`currentStreak` and `bestStreak` per player from validated `judgement` events:
+one increment per successful judgment, regardless of matched-arrow count,
+and a current-run reset on Miss. OCR combos and arrow activity are independent.
+The session-local outcome timeline is ordered by video time and sequence;
+out-of-order arrivals recalculate the runs rather than bridging a delayed Miss.
+Session reset clears the timeline and counters. Missing streak fields in older
+snapshots stay unknown rather than being inferred from aggregate hit counts.
 The four main tiles and score, arrow-count, pace, and accuracy sections remain
 visible before data arrives and while inactive. Missing data shows waiting text,
 known zero values remain zero, and no percentage is invented before attempts.

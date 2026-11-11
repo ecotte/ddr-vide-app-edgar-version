@@ -3,7 +3,7 @@ import { initializeOperator, signIn, type Client } from './client';
 import { BOARD_ID, DIRECTIONS, arrowAccuracy, parseSnapshot, poll, type BoardSnapshot, type PlayerState } from './state';
 import RegistrationKiosk from './RegistrationKiosk';
 import BoothShell from './BoothShell';
-import { animalComparison, cumulativeHitPercentage, mostHitLanes, stepTitle, totalDetectedSteps } from './dashboardMetrics';
+import { animalComparison, cumulativeHitPercentage, stepTitle, totalDetectedSteps } from './dashboardMetrics';
 import { CAPTION_COUNT, CAPTION_INTERVAL_MS, sessionCaptionDecks } from './dashboardCaptions';
 
 function message(error: unknown) {
@@ -27,7 +27,7 @@ function Player({ name, state, waiting, sessionId, live }: {
   const player = waiting ? undefined : state;
   const percentage = player ? cumulativeHitPercentage(player) : null;
   const title = player ? stepTitle(player) : null;
-  const favorite = player ? mostHitLanes(player) : null;
+  const bestStreak = player?.bestStreak;
   const steps = player ? totalDetectedSteps(player) : null;
   const response = player?.averageResponseTimeMs;
   const comparison = response == null ? null : animalComparison(response);
@@ -68,12 +68,17 @@ function Player({ name, state, waiting, sessionId, live }: {
       </div>)}
     </div>
     <div className="player-metrics">
-      <section className="metric-card metric-most-hit" aria-label={`${name} most-hit lane`}>
-        <h3>MOST-HIT LANE</h3>
-        <strong className="metric-title">{favorite?.directions.join(' + ') ?? 'Waiting for data'}</strong>
-        {favorite && <p>{favorite.hits.toLocaleString()} {favorite.hits === 1 ? 'hit' : 'hits'}
-          {favorite.directions.length > 1 ? ' each. ' : '. '}
-          <span className="metric-caption">{captions.mostHitLane[captionIndex]}</span></p>}
+      <section className="metric-card metric-streak" aria-label={`${name} best streak`}>
+        <h3>BEST STREAK</h3>
+        <strong className={bestStreak == null ? 'metric-title' : 'metric-value'}>
+          {bestStreak?.toLocaleString() ?? 'Waiting for data'}
+        </strong>
+        {bestStreak != null && <>
+          <p>Successful judgments in a row. Current: {player?.currentStreak?.toLocaleString()}.</p>
+          <p>{bestStreak > 0
+            ? <span className="metric-caption">{captions.bestStreak[captionIndex]}</span>
+            : 'Waiting for a successful judgment.'}</p>
+        </>}
       </section>
       <section className="metric-card metric-steps" aria-label={`${name} total detected steps`}>
         <h3>TOTAL DETECTED STEPS</h3>

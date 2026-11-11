@@ -13,6 +13,7 @@ from app.rayfin_sender import (
 def _player():
     return {
         "score": None, "runningScore": 0, "combo": None, "hits": 0, "misses": 0,
+        "currentStreak": 0, "bestStreak": 0,
         "unassignedHits": 0, "unassignedMisses": 0,
         "hitsByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
         "missesByDirection": {direction: 0 for direction in config.ARROW_DIRECTIONS},
@@ -35,6 +36,7 @@ class LiveScoreboard:
         self._field_sequences = {}
         self._recent_hits = {"P1": [], "P2": []}
         self._response_totals = {"P1": 0, "P2": 0}
+        self._streak_outcomes = {"P1": [], "P2": []}
         self._video_time_ms = 0
         self._playback_clock = False
         self._state = {
@@ -66,6 +68,7 @@ class LiveScoreboard:
         self._field_sequences.clear()
         self._recent_hits = {"P1": [], "P2": []}
         self._response_totals = {"P1": 0, "P2": 0}
+        self._streak_outcomes = {"P1": [], "P2": []}
         self._video_time_ms = 0
         self._playback_clock = False
 
@@ -92,6 +95,23 @@ class LiveScoreboard:
                 self._state["players"][name]["hitPace"] = pace
                 self._state["revision"] += 1
                 self._publish_wakeup.set()
+
+    def _record_streak(self, event: Event, is_miss: bool):
+        player = self._state["players"][event.player]
+        outcomes = self._streak_outcomes[event.player]
+        entry = (event.video_time_ms, event.sequence, is_miss)
+        position = bisect_right(outcomes, entry)
+        outcomes.insert(position, entry)
+        if position == len(outcomes) - 1:
+            player["currentStreak"] = 0 if is_miss else player["currentStreak"] + 1
+            player["bestStreak"] = max(player["bestStreak"], player["currentStreak"])
+            return
+        # A delayed judgment must not join runs that a prior Miss separated.
+        current = best = 0
+        for _, _, missed in outcomes:
+            current = 0 if missed else current + 1
+            best = max(best, current)
+        player["currentStreak"], player["bestStreak"] = current, best
 
     def record(self, event: Event | None, session_id: str):
         with self._lock:
@@ -171,6 +191,8 @@ class LiveScoreboard:
                         or not isinstance(judgment, str)
                         or judgment not in (*config.JUDGMENT_POINTS, "hit")
                         or (judgment == "miss") != (outcome == "miss")
+                        or type(event.video_time_ms) is not int
+                        or not 0 <= event.video_time_ms <= 9007199254740991
                     ):
                         self._error = "Live scoreboard: invalid judgement outcome payload rejected."
                         return
@@ -203,6 +225,8 @@ class LiveScoreboard:
                     self._error = "Live scoreboard: running score exceeds the supported range."
                     return
                 player["runningScore"] += points
+                if is_judgement:
+                    self._record_streak(event, is_miss)
                 if is_miss:
                     player["misses"] += outcome_count
                     if unassigned:

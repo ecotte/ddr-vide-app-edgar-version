@@ -22,7 +22,7 @@ from app.live_video_source import CaptureDevice, LiveVideoSource, list_capture_d
 from app.eventstream import EventstreamPublisher
 from app.layout_store import ResolutionMismatchError
 from app.models import LayoutProfile, Region
-from app.ocr_engine import OcrEngine
+from app.ocr_engine import OcrEngine, combo_frame_quality
 from app.recognition import ArrowTrackerStatus, TrackerStatus
 from app.rayfin_sender import RayfinSender
 from app.ui.events_tab import EventsTab
@@ -72,6 +72,8 @@ class App(tk.Tk):
         self._confirmation_frame = None
         self._latest_numeric_frame = None
         self._final_numeric_frame = None
+        self._combo_frames = {}
+        self._combo_priority_passes = 0
         self._analysis_generation = 0
         self._analysis_poll_after_id: Optional[str] = None
         self._pending_seek_frame = None
@@ -520,9 +522,57 @@ class App(tk.Tk):
         self._pending_seek_frame = None
         self._process_and_update(frame, index, timestamp, is_seek=False)
 
+    def _buffer_combo_frames(self, frame, index, timestamp):
+        for region in self.regions:
+            if region.kind != "combo":
+                continue
+            crop = frame[
+                max(0, region.y):max(0, region.y + region.h),
+                max(0, region.x):max(0, region.x + region.w),
+            ]
+            try:
+                quality = combo_frame_quality(crop)
+            except (ValueError, cv2.error) as exc:
+                self.video_tab.set_error_status(f"Combo frame selection failed for {region.label}: {exc}")
+                continue
+            if quality < .25:
+                continue
+            key = region.key()
+            previous = self._combo_frames.get(key, [])
+            if previous and previous[-1][3] == self._analysis_generation and previous[-1][1] >= index:
+                continue
+            entries = [
+                entry for entry in previous
+                if entry[3] == self._analysis_generation and entry[1] < index
+            ]
+            entries.append((frame, index, timestamp, self._analysis_generation))
+            self._combo_frames[key] = entries[-2:]
+
+    def _take_combo_frame(self):
+        previous = self._analysis_frame_index if (
+            self._analysis_future_generation == self._analysis_generation
+        ) else -1
+        for key in list(self._combo_frames):
+            entries = [
+                entry for entry in self._combo_frames[key]
+                if entry[3] == self._analysis_generation and entry[1] > previous
+            ]
+            if entries:
+                self._combo_frames[key] = entries
+            else:
+                del self._combo_frames[key]
+        if not self._combo_frames:
+            return None
+        frame = min((entries[0] for entries in self._combo_frames.values()), key=lambda entry: entry[1])
+        keys = frozenset(key for key, entries in self._combo_frames.items() if entries[0][1] == frame[1])
+        for key in keys:
+            self._combo_frames[key].pop(0)
+        return (*frame, keys)
+
     def _submit_numeric_analysis(
         self, frame_bgr, frame_index: int, video_time_ms: int, *, confirmation: bool = False,
         region_keys: Optional[frozenset[str]] = None,
+        combo_priority: bool = False,
     ) -> None:
         if not self.analysis.is_running or self._pending_seek_frame is not None:
             return
@@ -533,6 +583,8 @@ class App(tk.Tk):
             return
         if self._analysis_future is not None:
             new_generation = self._analysis_future_generation != self._analysis_generation
+            if new_generation or frame_index > self._analysis_frame_index:
+                self._buffer_combo_frames(frame_bgr, frame_index, video_time_ms)
             if (new_generation or frame_index > self._analysis_frame_index) and (
                 self._latest_numeric_frame is None
                 or self._latest_numeric_frame[3] != self._analysis_generation
@@ -556,6 +608,7 @@ class App(tk.Tk):
             self._dropped_analysis_frames += 1
             return
         self._analysis_future_generation = self._analysis_generation
+        self._combo_priority_passes = self._combo_priority_passes + 1 if combo_priority else 0
         self._analysis_frame_index = frame_index
         self._analysis_is_confirmation = confirmation
         self._analysis_future = self._analysis_executor.submit(
@@ -620,17 +673,26 @@ class App(tk.Tk):
             and pending is not None
             and pending[3] == self._analysis_generation
         )
-        next_frame = pending if use_confirmation else latest
+        buffered = None
+        if self._combo_priority_passes < 4 and not (
+            use_confirmation and any(
+                rr.needs_confirmation and rr.region.kind == "score"
+                for rr in result.region_results
+            )
+        ):
+            buffered = self._take_combo_frame()
+        next_frame = buffered[:4] if buffered is not None else pending if use_confirmation else latest
         if next_frame is not None and next_frame[3] == self._analysis_generation:
             frame, index, timestamp, generation = next_frame
-            region_keys = (
+            region_keys = buffered[4] if buffered is not None else (
                 frozenset(rr.region.key() for rr in result.region_results if rr.needs_confirmation)
                 if use_confirmation else None
             )
             self._submit_numeric_analysis(
-                frame, index, timestamp, confirmation=use_confirmation, region_keys=region_keys,
+                frame, index, timestamp, confirmation=use_confirmation or buffered is not None,
+                region_keys=region_keys, combo_priority=buffered is not None,
             )
-            if use_confirmation and latest is not None and latest[1] > index:
+            if (use_confirmation or buffered is not None) and latest is not None and latest[1] > index:
                 self._latest_numeric_frame = latest
         self._submit_final_numeric_analysis()
 
