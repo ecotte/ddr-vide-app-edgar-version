@@ -10,6 +10,8 @@ from app.event_bus import EventBus
 from app.models import LayoutProfile, Region, share_player_references
 from app.ui.app_window import App
 
+pytestmark = pytest.mark.usefixtures("synthetic_judgment_matching")
+
 
 def encoded(value, width=20, height=20):
     return image_utils.encode_crop_to_base64_png(

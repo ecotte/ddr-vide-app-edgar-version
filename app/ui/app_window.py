@@ -695,6 +695,8 @@ class App(tk.Tk):
             )
             if rr.region.kind == "judgment":
                 self.video_tab.set_judgment_diagnostics(rr.region.key(), rr.judgment_diagnostics)
+            elif rr.region.kind == "arrow":
+                self.video_tab.set_arrow_diagnostics(rr.region.key(), rr.arrow_diagnostics)
             self._arrow_display_state[rr.region.key()] = (now, display_state)
         else:
             tracker_status: TrackerStatus = self.analysis.tracker_for(rr.region).status()
@@ -910,6 +912,9 @@ class App(tk.Tk):
     def set_arrow_min_confirm_frames(self, n: int) -> None:
         self.analysis.set_arrow_min_confirm_frames(n)
 
+    def set_judgment_min_confirm_frames(self, n: int) -> None:
+        self.analysis.set_judgment_min_confirm_frames(n)
+
     def set_game_end_settings(self, threshold: float, confirm_frames: int) -> None:
         self.analysis.set_game_end_settings(threshold, confirm_frames)
 
@@ -1119,7 +1124,7 @@ class App(tk.Tk):
             for state, encoded_images in region.reference_images.items():
                 if region.kind == "arrow" and state not in config.ARROW_STATES:
                     continue
-                if region.kind == "judgment" and state not in config.JUDGMENT_POINTS:
+                if region.kind == "judgment" and state not in (*config.JUDGMENT_POINTS, "empty"):
                     continue
                 if not encoded_images:
                     continue

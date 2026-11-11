@@ -15,6 +15,8 @@ from app.ui.app_window import App
 from app.ui.events_tab import EventsTab
 from app.ui.video_tab import VideoTab
 
+pytestmark = pytest.mark.usefixtures("synthetic_judgment_matching")
+
 
 COLORS = {"hit": 255, "perfect": 255, "great": 225, "good": 200, "miss": 0, "idle": 128, "appeared": 64}
 
@@ -23,7 +25,7 @@ def image(state):
     return np.full((20, 20, 3), COLORS[state], dtype=np.uint8)
 
 
-def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=False):
+def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=False, judgment_confirm=1):
     regions = []
     for player in players:
         for direction in directions:
@@ -47,6 +49,7 @@ def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=F
             ))
     bus = EventBus()
     session = AnalysisSession(bus)
+    session.set_judgment_min_confirm_frames(judgment_confirm)
     session.arrow_similarity_threshold = 0.99
     session.judgment_similarity_threshold = 0.99
     session.set_regions(regions)
@@ -433,6 +436,7 @@ def test_recording_toggle_does_not_recount_a_still_visible_judgment():
 def test_confirmation_samples_use_onset_time_not_confirmation_time():
     session, bus, _, frame = setup()
     session.set_arrow_min_confirm_frames(2)
+    session.set_judgment_min_confirm_frames(2)
     both = {"P1:judgment": "hit", "P1:arrow:Up-Right": "hit"}
     frame(100, **both)
     assert outcomes(bus) == []
@@ -666,6 +670,7 @@ def test_perfect_good_ties_are_unconfirmed_and_graded_references_round_trip(tmp_
 def test_lingering_tiers_ignore_brief_no_match_and_rearm_after_50ms(tier):
     session, bus, _, frame = setup(graded=True)
     session.set_arrow_min_confirm_frames(2)
+    session.set_judgment_min_confirm_frames(2)
     frame(0, **{"P1:judgment": tier})
     frame(20, **{"P1:judgment": tier})
     frame(300, **{"P1:judgment": tier})
@@ -771,7 +776,7 @@ def test_ambiguous_strong_match_restarts_absence_interval(monkeypatch):
     frame(400)
     with monkeypatch.context() as context:
         context.setattr(
-            "app.analysis.match_judgment",
+            "app.recognition.match_judgment",
             lambda *args: JudgmentMatch(None, .999, "perfect", "great", .99),
         )
         frame(425)
@@ -894,6 +899,7 @@ def test_judgment_diagnostics_distinguish_ambiguity_from_low_similarity():
 def test_judgment_diagnostics_explain_confirmation_recording_and_repeated_frames():
     session, bus, _, frame = setup(graded=True)
     session.set_arrow_min_confirm_frames(2)
+    session.set_judgment_min_confirm_frames(2)
     confirming = frame(0, **{"P1:judgment": "perfect"}).region_results[-1]
     assert "Confirming PERFECT: 1/2 frames" in confirming.judgment_diagnostics
     session.set_recording_enabled(False)
@@ -986,6 +992,62 @@ def test_simultaneous_steps_remain_separate_for_each_player():
     assert len([event for event in bus.events if event.event_type == "arrow"]) == 4
     assert len({e.payload["judgment_id"] for e in events}) == 2
     assert all(e.payload["judgment"] == ("perfect" if e.player == "P1" else "miss") for e in events)
+
+
+@pytest.mark.parametrize("candidate_specs,reason,assigned", [
+    ([], "No arrow activation", []),
+    ([("P2", "Center", 100)], "No arrow activation", []),
+    ([("P1", "Center", 100), ("P1", "Center", 133)], "repeated activations", []),
+    ([("P1", "Center", 0), ("P1", "Up-Right", 200)], "span more than 150 ms", []),
+    ([("P1", "Center", 100)], "Assigned: Center.", ["Center"]),
+])
+def test_correlation_diagnostics_explain_decisions_without_changing_event_payload(candidate_specs, reason, assigned):
+    session, _, regions, _ = setup(
+        players=("P1", "P2"), judgments=("P1", "P2"),
+        directions=("Center", "Up-Right"), graded=True,
+    )
+    by_key = {region.key(): region for region in regions}
+    session._pending_judgments = [JudgmentEvidence(by_key["P1:judgment"], "perfect", 200, .99)]
+    session._pending_lanes = [
+        LaneEvidence(by_key[f"{player}:arrow:{direction}"], onset, .95)
+        for player, direction, onset in candidate_specs
+    ]
+    event, = session._correlate_judgments(50, 850)
+    diagnostic = session._last_correlation_diagnostics["P1:judgment"]
+    assert reason in diagnostic
+    assert "PERFECT at 200 ms" in diagnostic
+    assert event.payload["step_directions"] == assigned
+    assert "diagnostics" not in event.payload
+    if assigned:
+        assert "Center -100 ms" in diagnostic
+    assert "P2:judgment" not in session._last_correlation_diagnostics
+
+
+def test_correlation_diagnostics_explain_competing_words():
+    session, _, regions, _ = setup(graded=True)
+    session._pending_judgments = [
+        JudgmentEvidence(regions[-1], "perfect", 200, .99),
+        JudgmentEvidence(regions[-1], "great", 300, .99),
+    ]
+    session._pending_lanes = [LaneEvidence(regions[0], 200, .95)]
+    session._correlate_judgments(50, 850)
+    assert "shared with another judgment" in session._last_correlation_diagnostics[regions[-1].key()]
+
+
+def test_correlation_diagnostics_show_wait_then_persist_last_decision_until_reset():
+    session, _, _, frame = setup(graded=True)
+    pending = frame(100, **{"P1:judgment": "perfect"}).region_results[-1]
+    assert "Pending judgment: 650 ms" in pending.judgment_diagnostics
+    assert "Last direction decision:" not in pending.judgment_diagnostics
+    settled = frame(750).region_results[-1]
+    assert "Last direction decision: PERFECT at 100 ms." in settled.judgment_diagnostics
+    assert "No arrow activation" in settled.judgment_diagnostics
+    assert "Candidates (relative to word): none" in settled.judgment_diagnostics
+    following = frame(800).region_results[-1]
+    assert "Last direction decision:" in following.judgment_diagnostics
+    session.reset_tracking()
+    assert not session._last_correlation_diagnostics
+    assert "Last direction decision:" not in frame(850).region_results[-1].judgment_diagnostics
 
 
 @pytest.mark.parametrize("field", ["arrow", "judgment"])

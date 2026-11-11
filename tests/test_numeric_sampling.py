@@ -110,6 +110,25 @@ def test_judgment_diagnostics_refresh_without_bypassing_preview_pacing(monkeypat
     assert controller.video_tab.set_judgment_diagnostics.call_count == 2
 
 
+def test_arrow_shape_diagnostics_refresh_with_existing_preview_pacing(monkeypatch):
+    controller = _display_controller()
+    result = RegionFrameResult(
+        Region("Center", "P1", "arrow", 0, 0, 80, 80, direction="Center"),
+        arrow_state="active", arrow_diagnostics="Arrow shape: 0.8",
+    )
+    clock = [0.0]
+    monkeypatch.setattr("app.ui.app_window.time.perf_counter", lambda: clock[0])
+    controller._update_recognition_row(result)
+    controller.video_tab.set_arrow_diagnostics.assert_called_once_with("P1:arrow:Center", "Arrow shape: 0.8")
+    result.arrow_diagnostics = "Arrow shape: 0.9"
+    clock[0] = .01
+    controller._update_recognition_row(result)
+    assert controller.video_tab.set_arrow_diagnostics.call_count == 1
+    clock[0] = .1
+    controller._update_recognition_row(result)
+    controller.video_tab.set_arrow_diagnostics.assert_called_with("P1:arrow:Center", "Arrow shape: 0.9")
+
+
 @pytest.mark.parametrize("change", ["state", "error", "unreadable", "generation", "player"])
 def test_arrow_state_errors_and_tracking_resets_update_without_waiting(monkeypatch, change):
     controller = _display_controller()

@@ -78,12 +78,12 @@
   <text x="465" y="630" class="small">HTTPS current-state upsert</text>
   <text x="1090" y="632" class="small">AMQP over WebSockets :443</text>
   <rect x="55" y="710" width="780" height="110" class="live"/>
-  <text x="73" y="741" class="label">DDR Scoreboard - Rayfin / Fabric AppBackend</text>
-  <text x="73" y="769" class="body">GraphQL / Data API Builder writes and reads</text>
-  <text x="73" y="795" class="body">Also hosts the React scoreboard frontend</text>
+  <text x="73" y="741" class="label">Cloud backend + website hosting - Fabric / Rayfin</text>
+  <text x="73" y="769" class="body">DDR Scoreboard API: desktop writes scores; browser reads them</text>
+  <text x="73" y="795" class="body">Hosts the web page; this is a cloud service, not a spectator screen</text>
   <path d="M445 820 V864" class="live-line"/>
   <rect x="55" y="870" width="780" height="125" class="live"/>
-  <text x="73" y="900" class="label">DDR Scoreboard - SQL Database</text>
+  <text x="73" y="900" class="label">Cloud storage - DDR Scoreboard SQL Database</text>
   <text x="73" y="928" class="body">One LiveBoard row: latest snapshot + publishedAt heartbeat</text>
   <text x="73" y="953" class="body">Current values and insights, not a second copy of event history</text>
   <text x="73" y="979" class="small">Publisher waits one second after each completed request; latest state wins locally</text>
@@ -103,9 +103,9 @@
   <text x="70" y="1060" class="small">Latest state via data API; frontend assets from AppBackend</text>
   <text x="985" y="1060" class="small">KQL queries</text>
   <rect x="55" y="1080" width="780" height="110" class="live"/>
-  <text x="73" y="1110" class="label">Remote scoreboard viewer - browser</text>
-  <text x="73" y="1138" class="body">P1/P2 scores, combos, per-arrow hits, arrow balance and hit pace</text>
-  <text x="73" y="1165" class="small">One-second query cycle; disconnected warning after 15 s without a new heartbeat</text>
+  <text x="73" y="1110" class="label">Scoreboard web page - runs in the viewer's browser (React)</text>
+  <text x="73" y="1138" class="body">Laptop / tablet / display PC: reads the API and displays scores</text>
+  <text x="73" y="1165" class="small">Microsoft sign-in; one-second query cycle; no video analysis or Eventhouse queries</text>
   <rect x="965" y="1080" width="780" height="110" class="history"/>
   <text x="983" y="1110" class="label">DDR Live - Real-Time Dashboard</text>
   <text x="983" y="1138" class="body">14 KQL tiles; ten-second refresh; trends, accepted values and events</text>

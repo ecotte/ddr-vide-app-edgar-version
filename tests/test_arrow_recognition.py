@@ -21,6 +21,8 @@ from app.models import Region
 from app.ocr_engine import OcrEngine
 from app.recognition import ArrowStateTracker, classify_arrow_state
 
+pytestmark = pytest.mark.usefixtures("synthetic_judgment_matching")
+
 
 def _solid(color_bgr, w=20, h=20):
     arr = np.zeros((h, w, 3), dtype=np.uint8)

@@ -21,12 +21,14 @@ class Region:
     ``direction`` is only used when ``kind == "arrow"`` and is one of config.ARROW_DIRECTIONS
     ("Up-Right"/"Up-Left"/"Down-Right"/"Down-Left"/"Center"), and ``reference_images`` holds
     user-captured example crops (base64 PNG) grouped under "active" and optional
-    "empty" examples. Active matches must clearly beat Empty examples when supplied.
+    "empty" examples. Colored Active shapes must clearly beat usable Empty masks
+    in the same learned hue when supplied. Search extends below the capture box.
     Legacy arrow "hit"/"miss"/"appeared" images are ignored and require fresh activity calibration. These
     are never pre-supplied by the app - only what the user captures from
     their own footage. ``game_end`` regions use ``reference_images["ended"]``
     for a shared, game-wide end indicator.
     Judgment regions use "perfect", "great", "good", and "miss" references;
+    optional "empty" samples represent no visible judgment and suppress background matches.
     legacy "idle" images are retained in layouts but ignored by recognition.
     old "hit" references retain ungraded success behavior until tier calibration starts.
     """
@@ -141,6 +143,25 @@ class LayoutProfile:
             source_height=int(d["source_height"]),
             regions=[Region.from_dict(r) for r in d.get("regions", [])],
         )
+
+
+def arrow_search_bounds(region: Region, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
+    """Include the approaching note below its receptor without crossing lanes."""
+    return (
+        max(0, min(region.x, frame_width)), max(0, min(region.y, frame_height)),
+        max(0, min(region.x + region.w, frame_width)),
+        max(0, min(region.y + region.h + round(region.h * .5), frame_height)),
+    )
+
+
+def judgment_search_bounds(region: Region, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
+    """Expand lettering search with padding proportional to calibrated crop size."""
+    dx, dy = round(40 * region.w / 286), round(12 * region.h / 53)
+    return (
+        max(0, min(region.x - dx, frame_width)), max(0, min(region.y - dy, frame_height)),
+        max(0, min(region.x + region.w + dx, frame_width)),
+        max(0, min(region.y + region.h + dy, frame_height)),
+    )
 
 
 def shared_reference_source(region: Region, regions: list[Region]) -> Region:

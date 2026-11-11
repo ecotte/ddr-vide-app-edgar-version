@@ -166,6 +166,9 @@ def test_separate_threshold_controls_route_to_independent_analysis_settings(root
     controller.set_judgment_similarity_threshold.side_effect = lambda value: App.set_judgment_similarity_threshold(controller, value)
     tab = VideoTab(root, controller)
     try:
+        assert tab.arrow_threshold_var.get() == .55
+        assert tab.judgment_threshold_var.get() == .65
+        assert controller.analysis.judgment_similarity_threshold == .65
         tab.arrow_threshold_var.set(.95)
         tab._on_arrow_threshold_changed()
         tab.judgment_threshold_var.set(.65)
@@ -215,6 +218,107 @@ def test_judgment_card_displays_its_own_diagnostics_without_modifying_other_play
             "diagnostics: No frame diagnostics available."
         )
     finally:
+        tab.destroy()
+
+
+def test_arrow_and_judgment_confirmation_controls_are_independent(root):
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.ui.app_window import App
+
+    controller = Mock()
+    controller.analysis = AnalysisSession(EventBus())
+    controller.set_arrow_min_confirm_frames.side_effect = lambda value: App.set_arrow_min_confirm_frames(controller, value)
+    controller.set_judgment_min_confirm_frames.side_effect = lambda value: App.set_judgment_min_confirm_frames(controller, value)
+    tab = VideoTab(root, controller)
+    try:
+        assert tab.arrow_confirm_var.get() == 1
+        assert tab.judgment_confirm_var.get() == 2
+        tab.judgment_confirm_var.set(3)
+        tab._on_judgment_confirm_changed()
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        assert controller.analysis.arrow_min_confirm_frames == 1
+        tab.arrow_confirm_var.set(2)
+        tab._on_arrow_confirm_changed()
+        assert controller.analysis.arrow_min_confirm_frames == 2
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        for value in ("invalid", 0, 11):
+            tab.judgment_confirm_var.set(value)
+            tab._on_judgment_confirm_changed()
+            assert "Invalid judgment confirmation" in tab.error_status_var.get()
+        assert controller.analysis.judgment_min_confirm_frames == 3
+        tab.judgment_confirm_var.set(2)
+        tab._on_judgment_confirm_changed()
+        assert not tab.error_status_var.get()
+    finally:
+        tab.destroy()
+
+
+def test_no_judgment_capture_gallery_and_deletion_refresh_real_player_cards(root):
+    import numpy as np
+    from app import image_utils
+    from app.analysis import AnalysisSession
+    from app.event_bus import EventBus
+    from app.models import Region
+    from app.ui.app_window import App
+    from app.ui.video_tab import ReferenceGalleryDialog
+
+    word = image_utils.encode_crop_to_base64_png(np.full((20, 20, 3), 255, dtype=np.uint8))
+    regions = [
+        Region(player, player, "judgment", index * 20, 0, 20, 20,
+               reference_images={"perfect": [word]})
+        for index, player in enumerate(("P1", "P2"))
+    ]
+    controller = Mock()
+    controller.regions = regions
+    controller.analysis = AnalysisSession(EventBus())
+    controller.analysis.set_regions(regions)
+    controller._analysis_generation = 0
+    controller._last_frame_bgr = np.full((20, 40, 3), 128, dtype=np.uint8)
+    controller._make_thumbnail_photo = App._make_thumbnail_photo
+    controller._refresh_arrow_reference_thumbnails = lambda: App._refresh_arrow_reference_thumbnails(controller)
+    controller.capture_arrow_reference = lambda region, state: App.capture_arrow_reference(controller, region, state)
+    controller.clear_arrow_reference = lambda region, state: App.clear_arrow_reference(controller, region, state)
+    controller.delete_arrow_reference = lambda region, state, index: App.delete_arrow_reference(controller, region, state, index)
+    tab = VideoTab(root, controller)
+    controller.video_tab = tab
+    tab.refresh_region_list(regions)
+    gallery = None
+    try:
+        for region in regions:
+            card = tab._region_rows[region.key()]["thumb_label"].master
+            buttons = {
+                widget["text"]: widget for group in card.winfo_children() if isinstance(group, ttk.Frame)
+                for widget in group.winfo_children() if isinstance(widget, ttk.Button)
+            }
+            buttons["Add No judgment ref"].invoke()
+            buttons["Add No judgment ref"].invoke()
+            assert len(region.reference_images["empty"]) == 2
+            assert tab._region_rows[region.key()]["empty_ref_label"]["image"]
+            assert tab._region_rows[region.key()]["empty_ref_label"]["text"] == "2 refs"
+            for title, state in (
+                ("Perfect", "perfect"), ("Great", "great"), ("Good", "good"),
+                ("Miss", "miss"), ("No judgment", "empty"),
+            ):
+                controller.show_arrow_reference_gallery.reset_mock()
+                buttons[f"View / delete {title} refs..."].invoke()
+                controller.show_arrow_reference_gallery.assert_called_once_with(region, state)
+        gallery = ReferenceGalleryDialog(root, controller, regions[1], "empty")
+        assert "No judgment" in gallery.title()
+        gallery._delete_reference(0)
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "1 ref"
+        assert len(regions[0].reference_images["empty"]) == 2
+        gallery._delete_reference(0)
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "(none)"
+        assert regions[1].reference_images["perfect"] == [word]
+        # A layout refresh restores the remaining negative preview for P1 only.
+        tab.refresh_region_list(regions)
+        controller._refresh_arrow_reference_thumbnails()
+        assert tab._region_rows[regions[0].key()]["empty_ref_label"]["text"] == "2 refs"
+        assert tab._region_rows[regions[1].key()]["empty_ref_label"]["text"] == "(none)"
+    finally:
+        if gallery is not None:
+            gallery.destroy()
         tab.destroy()
 
 

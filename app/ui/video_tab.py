@@ -8,6 +8,7 @@ from typing import List, Optional
 from PIL import Image, ImageTk
 
 from app import config, image_utils
+from app.models import arrow_search_bounds, judgment_search_bounds
 from app.ui.theme import FIELD, MUTED
 
 MAX_DISPLAY_W = 960
@@ -97,7 +98,8 @@ class ReferenceGalleryDialog(tk.Toplevel):
         self.region = region
         self.state = state
         self._photos = []
-        self.title(f"{region.player} {region.direction or region.kind} - {state.title()} references")
+        category = "No judgment" if region.kind == "judgment" and state == "empty" else state.title()
+        self.title(f"{region.player} {region.direction or region.kind} - {category} references")
         self.geometry("620x500")
         self.minsize(440, 300)
         self.count_var = tk.StringVar(self)
@@ -345,7 +347,7 @@ class VideoTab(ttk.Frame):
         consistency_spin.grid(row=0, column=1, sticky="w")
         consistency_spin.bind("<Return>", lambda e: self._on_consistency_changed())
 
-        ttk.Label(analysis_box, text="Arrow similarity:").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Arrow shape similarity:").grid(row=1, column=0, sticky="w", pady=(4, 0))
         self.arrow_threshold_var = tk.DoubleVar(value=config.DEFAULT_ARROW_SIMILARITY_THRESHOLD)
         arrow_threshold_spin = ttk.Spinbox(
             analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
@@ -354,7 +356,7 @@ class VideoTab(ttk.Frame):
         arrow_threshold_spin.grid(row=1, column=1, sticky="w", pady=(4, 0))
         arrow_threshold_spin.bind("<Return>", lambda e: self._on_arrow_threshold_changed())
 
-        ttk.Label(analysis_box, text="Judgment similarity:").grid(row=1, column=2, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Judgment shape similarity:").grid(row=1, column=2, sticky="w", pady=(4, 0))
         self.judgment_threshold_var = tk.DoubleVar(value=config.DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD)
         judgment_threshold_spin = ttk.Spinbox(
             analysis_box, from_=0.50, to=1.00, increment=0.01, width=5,
@@ -363,7 +365,7 @@ class VideoTab(ttk.Frame):
         judgment_threshold_spin.grid(row=1, column=3, sticky="w", pady=(4, 0))
         judgment_threshold_spin.bind("<Return>", lambda e: self._on_judgment_threshold_changed())
 
-        ttk.Label(analysis_box, text="Arrow/judgment confirm frames:").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(analysis_box, text="Arrow confirm frames:").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.arrow_confirm_var = tk.IntVar(value=config.DEFAULT_ARROW_MIN_CONFIRM_FRAMES)
         arrow_confirm_spin = ttk.Spinbox(
             analysis_box, from_=1, to=10, width=4, textvariable=self.arrow_confirm_var,
@@ -371,6 +373,14 @@ class VideoTab(ttk.Frame):
         )
         arrow_confirm_spin.grid(row=2, column=1, sticky="w", pady=(4, 0))
         arrow_confirm_spin.bind("<Return>", lambda e: self._on_arrow_confirm_changed())
+        ttk.Label(analysis_box, text="Judgment confirm frames:").grid(row=2, column=2, sticky="w", pady=(4, 0))
+        self.judgment_confirm_var = tk.IntVar(value=config.DEFAULT_JUDGMENT_MIN_CONFIRM_FRAMES)
+        judgment_confirm_spin = ttk.Spinbox(
+            analysis_box, from_=1, to=10, width=4, textvariable=self.judgment_confirm_var,
+            command=self._on_judgment_confirm_changed,
+        )
+        judgment_confirm_spin.grid(row=2, column=3, sticky="w", pady=(4, 0))
+        judgment_confirm_spin.bind("<Return>", lambda e: self._on_judgment_confirm_changed())
 
         self.start_stop_button = ttk.Button(
             analysis_box, text="Start Analysis", style="Accent.TButton", command=self.controller.toggle_analysis
@@ -566,6 +576,7 @@ class VideoTab(ttk.Frame):
     def redraw_region_overlays(self, regions) -> None:
         signature = (
             self.display_scale,
+            self._frame_image_size,
             tuple((r.x, r.y, r.w, r.h, r.player, r.kind, r.direction) for r in regions),
         )
         if signature == self._overlay_signature:
@@ -585,6 +596,21 @@ class VideoTab(ttk.Frame):
                 x0 + 3, y0 + 10, text=label_text, anchor="w", fill="#00ff00"
             )
             self._overlay_ids.extend([rect, text])
+            if r.kind in ("arrow", "judgment") and self._frame_image_size is not None:
+                width, height = (round(value / self.display_scale) for value in self._frame_image_size)
+                bounds_for = arrow_search_bounds if r.kind == "arrow" else judgment_search_bounds
+                sx0, sy0, sx1, sy1 = bounds_for(r, width, height)
+                color = "#66ddff" if r.kind == "arrow" else "#ffcc00"
+                search = self.canvas.create_rectangle(
+                    sx0 * self.display_scale, sy0 * self.display_scale,
+                    sx1 * self.display_scale, sy1 * self.display_scale,
+                    outline=color, dash=(4, 3), width=1,
+                )
+                search_label = self.canvas.create_text(
+                    sx0 * self.display_scale + 3, sy0 * self.display_scale - 3,
+                    text=f"{r.player}:{'arrow' if r.kind == 'arrow' else 'letter'} search", anchor="sw", fill=color,
+                )
+                self._overlay_ids.extend([search, search_label])
 
     def _rebuild_recognition_rows(self, regions) -> None:
         for widget in self.recognition_container.winfo_children():
@@ -715,7 +741,7 @@ class VideoTab(ttk.Frame):
         thumb_label.grid(row=1, column=0, sticky="w", pady=4)
 
         state_var = tk.StringVar(value="state: -")
-        confidence_var = tk.StringVar(value="active similarity: -")
+        confidence_var = tk.StringVar(value="active shape similarity: -")
         status_var = tk.StringVar(value=(
             "status: Activity only; outcomes require a matching judgment."
             if r.reference_images.get("active") else
@@ -768,6 +794,15 @@ class VideoTab(ttk.Frame):
         if r.player in ("P1", "P2"):
             ttk.Label(row, text="Capture this player's arrow separately. "
                       "Adding or clearing references does not change the other player.").grid(row=8, column=0, sticky="w")
+        diagnostics = tk.StringVar(value="diagnostics: Advance/play to inspect arrow matching.")
+        ttk.Label(row, textvariable=diagnostics, justify="left").grid(
+            row=9, column=0, sticky="w", pady=(4, 0),
+        )
+        ttk.Label(
+            row, text="Colored-shape matching: capture the colored note, not the white flash. "
+            "Cyan dashed bounds search half a box-height below the receptor. "
+            "Empty examples are compared in the same learned-color space.",
+        ).grid(row=10, column=0, sticky="w", pady=(4, 0))
 
         VideoTab._wrap_card_labels(row)
         self._region_rows[r.key()] = {
@@ -778,6 +813,7 @@ class VideoTab(ttk.Frame):
             "status_var": status_var,
             "active_ref_label": active_ref_label,
             "empty_ref_label": empty_ref_label,
+            "diagnostics_var": diagnostics,
         }
 
     def _build_judgment_row(self, region, parent, *, grid_row=None) -> None:
@@ -810,7 +846,7 @@ class VideoTab(ttk.Frame):
         }
         categories = (
             ("perfect", "Perfect"), ("great", "Great"), ("good", "Good"),
-            ("miss", "Miss"),
+            ("miss", "Miss"), ("empty", "No judgment"),
         )
         for index, (name, title) in enumerate(categories):
             controls = ttk.Frame(row)
@@ -825,12 +861,19 @@ class VideoTab(ttk.Frame):
                 controls, text=f"Clear {title} refs",
                 command=lambda reg=region, value=name: self.controller.clear_arrow_reference(reg, value),
             ).grid(row=1, column=1, padx=2)
+            ttk.Button(
+                controls, text=f"View / delete {title} refs...",
+                command=lambda reg=region, value=name: self.controller.show_arrow_reference_gallery(reg, value),
+            ).grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=(4, 0))
             data[f"{name}_ref_label"] = reference
         ttk.Label(
             row, text="Capture PERFECT, GREAT, and GOOD separately; all count as hits. "
-            "MISS counts as a miss. No Blank reference is needed. "
+            "Letter-shape matching is the default. Capture clear colored words; "
+            "yellow dashed bounds show the larger search area, green bounds the capture box. "
+            "MISS counts as a miss. Add optional No judgment samples when no word is visible. "
+            "Capture several background appearances; outcome matches must beat these samples. "
             "Old Success references remain ungraded until any success tier is taught. "
-            "Each taught outcome can count immediately; untaught categories are not recognized. "
+            "Taught outcomes require consecutive matching frames (default 2); untaught categories are not recognized. "
             f"Judgments count once, then rearm after {config.JUDGMENT_REARM_MS} ms of video time without any "
             "taught outcome matching. Changing words alone does not rearm. "
             "Ambiguous strong matches hold the current state. Prolonged matching failures "
@@ -904,11 +947,18 @@ class VideoTab(ttk.Frame):
             self._region_thumb_refs[region_key] = crop_photo
             row["thumb_label"].configure(image=crop_photo)
         row["state_var"].set(f"state: {observed_state if observed_state is not None else 'unreadable'}")
-        similarity_label = "active similarity" if row["kind"] == "arrow" else "similarity"
+        similarity_label = "active shape similarity" if row["kind"] == "arrow" else "similarity"
         row["confidence_var"].set(
             f"{similarity_label}: {confidence:.2f}" if confidence is not None else f"{similarity_label}: -"
         )
         row["status_var"].set(f"status: {status_text}")
+
+    def set_arrow_diagnostics(self, region_key: str, diagnostics: Optional[str]) -> None:
+        row = self._region_rows.get(region_key)
+        if row is not None and row.get("kind") == "arrow":
+            row["diagnostics_var"].set(
+                f"diagnostics: {diagnostics}" if diagnostics else "diagnostics: No frame diagnostics available."
+            )
 
     def set_judgment_diagnostics(self, region_key: str, diagnostics: Optional[str]) -> None:
         row = self._region_rows.get(region_key)
@@ -1097,9 +1147,24 @@ class VideoTab(ttk.Frame):
     def _on_arrow_confirm_changed(self) -> None:
         try:
             n = int(self.arrow_confirm_var.get())
-        except (tk.TclError, ValueError):
+            if not 1 <= n <= 10:
+                raise ValueError("use an integer from 1 to 10")
+            self.controller.set_arrow_min_confirm_frames(n)
+        except (tk.TclError, ValueError) as exc:
+            self.set_error_status(f"Invalid arrow confirmation: {exc}")
             return
-        self.controller.set_arrow_min_confirm_frames(n)
+        self.set_error_status("")
+
+    def _on_judgment_confirm_changed(self) -> None:
+        try:
+            n = int(self.judgment_confirm_var.get())
+            if not 1 <= n <= 10:
+                raise ValueError("use an integer from 1 to 10")
+            self.controller.set_judgment_min_confirm_frames(n)
+        except (tk.TclError, ValueError) as exc:
+            self.set_error_status(f"Invalid judgment confirmation: {exc}")
+            return
+        self.set_error_status("")
 
     def _on_game_end_settings_changed(self) -> None:
         try:

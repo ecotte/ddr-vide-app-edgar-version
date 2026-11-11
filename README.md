@@ -254,24 +254,33 @@ For fresher combo updates, enable **Fast live combo** in that region's card and 
 ### 5b. Arrow lanes (activity identification)
 
 1. With **Draw Region: ON**, draw a rectangle around one arrow's receptor (the fixed on-screen target the falling notes travel toward), and pick field kind **arrow** plus the matching **Arrow direction** (Up-Right/Up-Left/Down-Right/Down-Left/Center). Repeat for each of the 5 directions, and again for the other player if needed (up to 10 arrow boxes total for 2 players).
-2. On each player, select **Add Active Arrow ref** on frames that show activity in that direction, not the always-visible idle receptor. Capture multiple appearances separately for P1 and P2; examples are not shared. **Clear Active Arrow refs** removes only that card's examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
+2. On each player, select **Add Active Arrow ref** on frames that show a clear colored note overlapping the receptor, not the empty receptor or white flash. Capture multiple appearances separately for P1 and P2; examples are not shared. **Clear Active Arrow refs** removes only that card's examples. Old Hit/Miss arrow images are ignored, not automatically reused: every lane needs fresh Active Arrow calibration.
    For every direction on either player, **Add Empty ref** captures the unused
    receptor with no note overlapping it. These optional negative examples prevent
    look-alike empty tiles from being treated as active. Active must meet the
-   similarity threshold and beat the best Empty match by more than **0.02**.
+   shape threshold and beat the best Empty mask match in its learned color by
+   more than **0.02**. Empty samples without contrast in the learned colors
+   cannot provide a negative veto; the diagnostics report this explicitly.
    Ties and near-ties stay idle. Capture multiple empty appearances if the receptor
    animates. Each card has independent Empty preview, clear, and **View / delete
    Empty refs...** controls; deleting Empty samples never removes Active samples.
-3. Adjust **Arrow similarity** (default 0.90; higher = stricter/fewer false positives) and **Arrow/judgment confirm frames** (default 1, since real flashes are often brief) if needed - see section 6. **Judgment similarity** is a separate control (default 0.90); lowering it does not lower arrow matching.
+3. Adjust **Arrow shape similarity** (default 0.55; higher = stricter/fewer false positives) and **Arrow confirm frames** (default 1, since real flashes are often brief) if needed - see section 6. **Judgment shape similarity** is a separate control (default 0.65); lowering it does not lower arrow matching. **Judgment confirm frames** independently defaults to 2; increasing it does not delay arrow activity.
 4. Reference snapshots are saved as part of the region and travel with **Save Layout** / **Load Layout**, so you only need to capture them once per skin/resolution.
    **View / delete refs...** opens a scrollable gallery of every Active Arrow sample
    for that box. Delete individual examples without clearing the rest or changing
    the other player. Recognition and the card preview refresh immediately; close
    the gallery and **Save Layout** to persist deletions.
    Active and Empty examples are both saved, loaded, and rescaled with the layout.
-   Existing active-only layouts retain their original matching behavior until you
-   capture Empty samples. The displayed **active similarity** still measures the
-   best Active match; status explains when an Empty example overrides it.
+   Existing colored Active samples are reused, but the default matcher now uses
+   shapes rather than grayscale. Unusable or colorless samples are flagged,
+   never silently treated as valid or replaced by grayscale matching.
+   The displayed **active shape similarity** measures the best Active shape
+   match; status explains when an Empty example overrides it.
+   Cyan dashed bounds extend the search downward by half the calibrated box
+   height, within frame bounds and without expanding across lanes. Green bounds
+   remain the capture box; saved coordinates are not changed.
+   Arrow diagnostics show source frame/time, positive/negative scores, threshold,
+   expanded search bounds, best-match bounds, and calibration warnings.
 5. Add a judgment box for each player and teach Perfect/Great/Good/Miss separately on each player's card. Only a matching judgment produces an outcome; activity alone never counts a hit or miss. Existing layout coordinates and judgment/digit samples are retained during recalibration.
 
 There is no Appearance calibration. Old `appeared` references remain in saved
@@ -406,8 +415,8 @@ app restarts; exported events and queued Fabric messages retain their original I
 - **Important limitation the temporal filter cannot fix:** if OCR is *consistently* wrong for the same digits (a stable misread, not a one-frame glitch), the consistency filter will still "accept" that wrong value, because it only rejects readings that fail to repeat - it cannot know the true value. See section 7 for a real example of this happening. This is why the app always shows you the raw OCR text next to the accepted value, so you can visually sanity-check it.
 
 **Arrow lanes:**
-- **Classification only compares against fresh Active Arrow snapshots you captured.** The direction comes from the box configuration; the reference detects activity, not success. Missing Active Arrow calibration shows an error. Old Hit/Miss images are ignored.
-- **A frame is classified "idle"** whenever its similarity to your best-matching reference falls below the **Arrow similarity threshold** - "idle" is the honest default, not a third guess.
+- **Classification uses cached colored-arrow shapes learned from your Active samples.** A half-resolution search uses near-native widths and native height, including the approaching note just below the receptor. The direction comes from the box configuration; the reference detects activity, not success. Missing or unusable Active calibration shows an error. Old Hit/Miss images are ignored. Empty examples are evaluated in the same learned-color space, not mixed with grayscale scores.
+- **A frame is classified "idle"** whenever its best Active shape score falls below **Arrow shape similarity**, or an Empty mask wins or is within the required margin. Scores from the former grayscale matcher are not interchangeable with shape scores.
 - **Activity is edge-triggered:** a confirmed active arrow immediately emits one `arrow` with `state: "active"` and `evidence: "arrow_activity"`, then rearms after confirmed idle. It never waits for a judgment or emits repeatedly while held active. These activity-only events have no hit/miss outcome or tier and never affect score or accuracy. A later recognized player judgment emits `judgement` and determines outcomes.
 - **"Arrow confirm frames"** (default 1) can require a state to be seen for more than one frame before it's confirmed, if single-frame noise is producing false events - but raising it risks missing genuinely brief flashes, the same trade-off as consistency frames above.
 
@@ -425,22 +434,62 @@ and reteach its digits as needed. Nothing is deleted automatically.
 **Save Layout** persists both sets; existing files are unchanged until saved.
 
 1. Draw a tight region around P1's displayed judgment word, excluding combo digits, and choose kind **judgment**, player **P1**. Repeat for P2. These cards are paired on the same row.
-2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. No built-in text OCR or color interpretation is used.
-3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count immediately; untaught categories show a warning but do not block taught outcomes. No Blank reference is needed: the box rearms after 50 ms of source-video time without a taught outcome matching. Old Blank images are retained in layouts but ignored. Multiple examples per category are retained.
+2. Pause on PERFECT and choose **Add Perfect ref**; capture GREAT with **Add Great ref** and GOOD with **Add Good ref**. All three count as hits, but retain their distinct judgment tiers. Capture the full word during a clear, saturated phase of its animation. Lettering shape and hue are learned from your examples; colors are not hardcoded to tiers and no word OCR is used.
+3. Capture **Add Miss ref** on a clear MISS. Each taught outcome can count after its confirmation requirement (two matching frames by default); untaught categories show a warning but do not block taught outcomes. The box rearms after 50 ms of source-video time without a taught outcome matching. Multiple examples per category are retained; capture several clean animation phases separately for each player.
+   Use **Add No judgment ref** on each player's judgment card while no word is
+   visible. Capture several background appearances that previously caused false
+   matches. These optional negative examples are stored as `reference_images.empty`;
+   a positive outcome must pass its shape threshold and beat the best
+   No judgment mask match in the winning word's learned color by more than 0.02.
+   Background samples without contrast in those colors provide no negative veto;
+   the card reports this explicitly. A tie or near-tie is treated as no match
+   and contributes to the normal 50 ms rearm interval. **Clear No judgment refs**
+   affects only those samples; each category has a **View / delete ... refs...**
+   gallery for individual removal. **Save Layout** preserves both positive and
+   negative samples, and rescaling resizes both. Old `idle`/Blank samples remain
+   ignored rather than silently becoming negative examples.
 4. Keep each player's arrow reference calibration too. Each player uses its own references
    with its own screen boxes. **Save Layout** includes judgment regions and all their examples.
 
 **Independent similarity thresholds and diagnostics**
 
-- **Arrow similarity** controls activity matching, including comparison with Empty
-  samples. **Judgment similarity** controls Perfect/Great/Good/Miss matching only.
-  Both default to 0.90; game-end similarity remains separate. These are runtime
-  controls, not layout settings. If you previously used 0.65 for judgment words,
-  set Judgment similarity to 0.65 without lowering Arrow similarity.
+- **Letter-shape matching is the default judgment engine**, not an opt-in mode.
+  It learns saturated lettering masks from each player's references, removes tiny
+  components, and searches several sizes and positions at half resolution.
+  Templates are cached when regions/references change, not rebuilt each frame.
+  The original green rectangle remains the capture box; yellow dashed bounds
+  show the expanded search area (40 pixels horizontally and 12 vertically per
+  side for a 286x53 box, scaled proportionally and clipped to the source).
+  Crops in the cards still show the capture box; diagnostics give the expanded
+  search coordinates and best lettering bounds in source pixels.
+- Existing layouts and references remain readable and are not rewritten.
+  Clear colored-word samples can be reused. Unsaturated, invalid, or unusable
+  examples generate calibration warnings; if no usable words remain, recognition
+  reports a calibration error. There is no silent fallback to matching the
+  full moving background. Capture a clear example or remove the unsuitable
+  sample with the gallery. Partial usable calibration can still recognize its
+  taught categories.
+- **Arrow shape similarity** controls activity matching, including comparison with Empty
+  samples, and defaults to 0.55. **Judgment shape similarity** controls
+  Perfect/Great/Good/Miss shape matching only and defaults to 0.65; game-end
+  similarity remains separate. These are runtime controls, not layout settings.
+  The new shape score is not equivalent to the old grayscale score and is not
+  an accuracy probability. Do not copy previous tuned grayscale thresholds blindly.
+- **Arrow confirm frames** defaults to 1; **Judgment confirm frames** defaults to 2.
+  Only distinct advancing frames with the same recognized word confirm a judgment.
+  No-match, negative-reference suppression, unreadable frames, or ambiguity break
+  pending confirmation without prematurely clearing a latched outcome. Changing
+  the judgment frame setting clears pending confirmation but does not recount a
+  word already held active. These controls are runtime-only; restart uses defaults.
+  Older layouts still load without No judgment examples, but receive the new
+  two-frame default. Set Judgment confirm frames to 1 to restore single-frame
+  behavior if a genuinely brief word cannot be confirmed.
 - Each judgment card shows the source frame/time, best category and similarity,
   threshold, runner-up category/score, and the gap between them. The best
   candidate must reach the judgment threshold and beat other categories by at
   least 0.02. A high score can still be ambiguous if the top two are too close.
+  When No judgment examples exist, diagnostics also show their best similarity
+  and explicitly report when they suppress a look-alike word.
 - The diagnostic decision distinguishes **below threshold**, **ambiguous match**,
   **confirming frames**, **accepted/queued**, **latch blocked**, **recording off**,
   and **repeated frame**. It also shows the current latch and no-match elapsed
@@ -451,6 +500,16 @@ and reteach its digits as needed. Nothing is deleted automatically.
   arrow activity. Advance/play after changing settings to see fresh results.
   Lowering judgment similarity can also match backgrounds falsely, so compare
   the crop and runner-up scores instead of lowering it blindly.
+  Negative references do not guarantee accurate recognition on unseen backgrounds;
+  validate missed, duplicated, and misclassified words against footage before
+  relying on the totals. Do not capture a visible judgment as a negative example.
+- Judgment diagnostics also retain the **last direction decision**, including the
+  word timestamp and each candidate arrow's offset relative to it. They distinguish
+  no activation in the timing window, repeated activations of one lane, widely
+  spaced candidate arrows, competing judgments, and a successful assignment.
+  Pending judgments show the remaining settling time. The last decision remains
+  visible on subsequent frames until tracking resets; it is not the current
+  frame's recognition state and is not included in exported event payloads.
 
 For players with a judgment region, receptor flashes alone no longer count outcomes.
 A new confirmed judgment determines hit versus miss. Matching arrow
@@ -540,7 +599,7 @@ error blocks outcomes for that player. Partial calibration recognizes taught
 categories and warns about missing ones. Receptor flashes never substitute for
 an unrecognized judgment. Players without a
 judgment region produce no hit/miss outcomes, even with calibrated arrow activity.
-- **Similarity scores are a generic image-correlation measure** (grayscale normalized cross-correlation, with a mean-brightness fallback for near-flat/solid-color crops), not a calibrated accuracy probability, and carry no assumption about what any particular color or animation means.
+- **Similarity scores are not calibrated accuracy probabilities.** Game-end matching uses grayscale normalized cross-correlation with a mean-brightness fallback for near-flat crops. Arrow and judgment matching use spatial correlation of learned-color masks, with separately tuned thresholds. Their scales differ from grayscale, and colors are learned from labeled examples rather than mapped to outcomes by the app.
 
 **Both:**
 - **Session changes wait for in-flight numeric analysis before resetting tracking.** The old frame finishes under its original GUID. Manual **New Session** clears old history; automatic game-end transitions retain it. Queued jobs carrying an old session ID or tracking generation are ignored, including work queued before a seek or region change.
@@ -648,7 +707,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **Values seem clearly wrong even though the app "accepted" them** - check the raw OCR text shown in the recognition panel next to the accepted value; a consistent misread will still pass the consistency filter (see section 6/7). Try a tighter crop around just the digits, excluding glow/outline effects.
 - **Nothing appears in the Events tab** - confirm **Record events** is checked (Events tab) and that you clicked **Start Analysis** (Video & Regions tab, in the scrollable "Analysis" box - see the scrolling note above if you can't find it) - the app never runs OCR or emits events unless analysis is explicitly started. Also note that a continuously-animating on-screen score display can genuinely take a couple dozen frames before two consecutive OCR readings match and the first event is accepted - this is expected, not a bug (see section 6/7).
 - **Arrow row requests fresh calibration** - use **Add Active Arrow ref** on either player's matching direction. Old Hit/Miss references are ignored. Also calibrate the player's judgment box before expecting outcomes.
-- **Arrow events never fire even after capturing references** - check the live "similarity" number in the panel against your **Arrow similarity threshold**; if real frames never get close to your captured reference, try a tighter/cleaner crop, a lower threshold, or re-capturing the reference from a clearer example frame.
+- **Arrow events never fire even after capturing references** - check Active shape similarity and calibration diagnostics against **Arrow shape similarity**. Capture a clear colored incoming note, not a white receptor flash. Ensure the cyan search bounds include its approach. Inspect Empty examples if they suppress real activity.
 - **Arrow events fire constantly / seem spurious** - your threshold may be too low, or the idle appearance is naturally close to your reference. Raise the threshold, tighten the crop, or raise "Arrow confirm frames" slightly.
 
 ---

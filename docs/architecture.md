@@ -23,13 +23,13 @@ flowchart TB
     SEND["Background Event Hub sender<br/>up to 100 already-waiting events<br/>no batch-collection timer"]
   end
   subgraph FABRIC["Dance Dance Revolution - Fabric workspace"]
-    APP["DDR Scoreboard - Rayfin AppBackend<br/>GraphQL / Data API Builder<br/>React static hosting"]
-    SQL["DDR Scoreboard - SQL Database<br/>one LiveBoard current-state row"]
+    APP["Cloud backend + website hosting (Fabric / Rayfin)<br/>DDR Scoreboard AppBackend<br/>API for desktop writes and browser reads<br/>Serves the React web page"]
+    SQL["Cloud storage - SQL Database<br/>one LiveBoard current-state row"]
     STREAM["DDR-events - Eventstream<br/>Event Hub-compatible source"]
     HOUSE["DDR-Telemetry - Eventhouse<br/>DDR-Telemetry KQL database<br/>raw_events table"]
     DASH["DDR Live - Real-Time Dashboard<br/>14 KQL tiles; 10-second refresh"]
   end
-  VIEW["Remote scoreboard viewer<br/>latest state query every 1 second<br/>after previous query completes"]
+  VIEW["Scoreboard web page - runs in a viewer's browser<br/>Laptop / tablet / display PC; Microsoft sign-in<br/>React displays scores; does not analyze video<br/>Queries the cloud API 1 second after each completed query"]
   TOOLS["VS Code + Rayfin CLI + Fabric APIs<br/>build / deploy / configure"]
 
   VIDEO --> FRAMES --> ANALYSIS --> RULES --> BUS
@@ -38,8 +38,8 @@ flowchart TB
   FRAMES -->|"video time ages the five-second hit window"| LIVE
   LIVE --> SDK -->|"HTTPS current-state upsert"| APP
   APP --> SQL
-  SQL -->|"latest values, not replayed events"| VIEW
-  APP -->|"HTML / JS / CSS"| VIEW
+  APP -->|"API returns latest SQL values, not event history"| VIEW
+  APP -->|"Hosts and serves HTML / JS / CSS"| VIEW
   BUS -->|"Connect to Fabric ON"| OUTBOX --> SEND
   SEND -->|"separate JSON event messages<br/>AMQP over secure WebSockets :443"| STREAM
   SEND -->|"remove only acknowledged rows"| OUTBOX
@@ -48,6 +48,21 @@ flowchart TB
   TOOLS -.->|"deploy frontend and data schema"| APP
   TOOLS -.->|"configure and validate"| DASH
 ```
+
+## Cloud backend versus scoreboard web page
+
+These are two parts of the same scoreboard application, not two scoreboards:
+
+- **Cloud backend + website hosting (Fabric / Rayfin):** runs in Fabric.
+  Receives desktop updates through its API, stores the latest state in SQL,
+  and serves the scoreboard website. It is not a spectator screen.
+- **Scoreboard web page (React):** runs in a browser on a laptop, tablet,
+  or display PC. After Microsoft sign-in, it reads the cloud API and displays
+  the latest scores. It does not analyze video or query Eventhouse.
+
+The live flow is **desktop calculates scores -> cloud API stores them in SQL
+-> browser reads the API and displays them**. React is the technology used to
+build the web page; Rayfin provides its cloud backend and hosting.
 
 ## What changed
 
@@ -178,12 +193,23 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
 - Arrow references identify activity using fresh `active` samples; old `hit`/`miss`
   arrow images are ignored with a recalibration warning. Old `appeared` samples
   are also ignored. Optional per-region `empty` references suppress look-alike
-  receptors: Active must pass the configured similarity threshold and exceed the
-  best Empty similarity by more than 0.02. Ties and near-ties remain idle.
+  receptors: Active must pass the configured shape threshold and exceed the
+  best Empty mask score in the learned color by more than 0.02.
+  Empty masks lacking contrast cannot veto; diagnostics explain this explicitly.
+  Ties and near-ties remain idle.
   All five directions for each player have independent Active/Empty capture,
   thumbnail, clear, gallery, and individual deletion controls. Both reference sets
-  serialize and rescale with layouts. Active-only layouts preserve prior behavior.
-  The arrow preview reports Active similarity and explains Empty overrides in status.
+  serialize and rescale with layouts. Existing colored samples remain usable,
+  but the default engine now uses `ArrowShapeMatcher` in `arrow_shapes.py`.
+  It reuses shape extraction/search helpers, caches three near-native scale
+  templates per sample, and searches at half resolution. `arrow_search_bounds`
+  extends downward by half a box height, clamps to the source, and never expands
+  across lanes. Cyan dashed overlays expose search bounds without changing
+  calibration coordinates. Unusable/colorless examples are explicitly flagged;
+  no whole-crop grayscale fallback is used. Cache rebuilding follows
+  capture/delete/clear/load/rescale through `set_regions`.
+  Arrow diagnostics report positive/negative scores, source frame/time, threshold,
+  search and best-match bounds, and calibration warnings.
   Without Active Arrow calibration no lane evidence is produced.
 - `judgement`: one event per recognized outcome, whether directions are known
   or uncertain. `payload.outcome` and `state` are hit/miss, `judgment` is the
@@ -202,14 +228,44 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   Only the later `judgement` can add outcome counts, points, or lane accuracy.
   This replaces the earlier activity-only `arrow_hit` name; queued historical
   messages are unchanged and remain accepted without scoring their activity.
-- Per-player `judgment` regions compare Perfect/Great/Good/Miss reference images
-  at source-frame rate using an independent judgment similarity threshold
-  (default 0.90). Arrow activity uses its own threshold (also default 0.90);
+- Per-player `judgment` regions use cached letter-shape matching by default.
+  `judgment_shapes.py` learns the dominant saturated hue from each positive
+  reference, filters small components, then prepares 18 scaled binary masks.
+  Each frame searches those masks at half resolution with normalized correlation.
+  The search expands by 40x12 pixels on each side for a 286x53 calibrated crop,
+  proportionally scaled and frame-clamped via `judgment_search_bounds`.
+  Green capture boxes remain unchanged; yellow dashed overlays expose search
+  bounds. Diagnostics report the engine, search coordinates and best match bounds.
+  Invalid/unsaturated references produce explicit calibration warnings and block
+  recognition if none are usable; there is no implicit grayscale fallback.
+  Capture/delete/clear/load/rescale operations rebuild caches through `set_regions`.
+  Judgment shape similarity has its own threshold (default 0.65, not equivalent
+  to the former grayscale similarity). Arrow activity uses its own shape threshold (default 0.55);
   changing either cannot change the other or the game-end setting.
   Category ranking retains best and runner-up scores from the same matching
-  pass for diagnostics. A gap below 0.02 is ambiguous. Judgment cards show frame
+  pass for diagnostics. A gap below 0.02 is ambiguous. Optional per-player
+  `reference_images.empty` samples mean No judgment; their full-crop masks are
+  cached for each learned lettering hue. An outcome must beat their best
+  non-flat spatial match for its hue by more than 0.02 or it is classified idle.
+  A negative with no usable color-mask contrast cannot veto and is reported.
+  Legacy `idle` samples
+  remain ignored. Positive/negative examples support capture, per-category
+  galleries and individual deletion, save/load and rescaling.
+  Arrow confirmation defaults to one frame and judgment confirmation independently
+  defaults to two matching frames. No-match, ambiguous and unreadable observations
+  clear pending judgment evidence without rearming its active latch. Changing
+  judgment confirmation clears its pending evidence, not its active latch or
+  arrow/game-end settings. Existing layouts get the new two-frame runtime default.
+  Judgment cards show frame
   time, scores, threshold, ambiguity margin, confirmation progress, latch,
   rearm elapsed time, recording state, and the current acceptance/blocking reason.
+  No judgment similarity and suppression are also reported when negatives exist.
+  Judgment diagnostics retain the most recent correlation decision per region:
+  no candidate, repeated direction, excessive onset spread, competing/consumed
+  activity, or assigned directions. Candidate offsets are relative to the word
+  onset, and pending decisions expose the remaining settling time. These records
+  clear alongside pending correlation on tracking/lifecycle resets; they do not
+  change event payloads or relax direction-assignment rules.
   Calibration and crop failures remain explicit. These diagnostics stay in the
   UI, share preview pacing, and are not added to event payloads. Thresholds are
   runtime settings rather than persisted layout calibration.

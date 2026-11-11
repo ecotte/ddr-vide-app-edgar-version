@@ -81,13 +81,15 @@ ARROW_DIRECTIONS = ["Up-Right", "Up-Left", "Down-Right", "Down-Left", "Center"]
 ARROW_STATES = ["active", "empty"]
 ARROW_EMPTY_REFERENCE_MARGIN = 0.02
 
-# Similarity score (0..1, see app.image_utils.similarity) above which a live
-# crop is considered a match for a captured reference. Configurable from the
+# Shape similarity score (0..1) above which a live
+# crop is considered a match for a captured colored reference. Configurable from the
 # UI; higher = fewer false positives but more likely to miss real hits/misses
 # if lighting/animation varies frame to frame.
-DEFAULT_ARROW_SIMILARITY_THRESHOLD = 0.90
-DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD = 0.90
+DEFAULT_ARROW_SIMILARITY_THRESHOLD = 0.55
+DEFAULT_JUDGMENT_SIMILARITY_THRESHOLD = 0.65
 JUDGMENT_AMBIGUITY_MARGIN = 0.02
+JUDGMENT_EMPTY_REFERENCE_MARGIN = 0.02
+DEFAULT_JUDGMENT_MIN_CONFIRM_FRAMES = 2
 
 # Consecutive frames a candidate arrow state must be observed before it is
 # confirmed and correlated with a judgment. Activity flashes can be very
