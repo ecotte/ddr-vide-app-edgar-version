@@ -4,16 +4,46 @@ One desktop event source feeds two independent publishing paths. The live path
 publishes current state directly to Rayfin; the historical path preserves events
 in Eventhouse. This diagram focuses on components and data flow.
 
-![Overall DDR architecture](architecture.png)
+![DDR architecture with official Python, React, and Microsoft Fabric product icons](architecture-product-logos.png)
 
-[Scalable SVG](architecture.svg)
+[Editable, self-contained SVG](architecture-product-logos.svg) |
+[Full-resolution PNG](architecture-product-logos.png) |
+[Earlier text-only diagram](architecture.svg)
+
+### Product artwork sources
+
+The product-logo diagram uses original artwork without recoloring, cropping,
+rotation, or distortion. Logos identify the products actually used; Rayfin and
+custom application components are text-labeled rather than assigned substitute
+product logos. The SVG embeds its artwork and works offline.
+
+- **Microsoft Fabric, SQL Database, Eventstream, Eventhouse, Real-Time Dashboard:**
+  [official Fabric icons and architecture-diagram usage terms](https://learn.microsoft.com/en-us/fabric/fundamentals/icons),
+  from Microsoft's [Icons.zip](https://github.com/microsoft/fabric-samples/blob/main/docs-samples/Icons.zip),
+  package version 6.1.0. Microsoft permits use of these icons in architecture
+  diagrams, training materials, and documentation; other rights are reserved.
+- **Python:** [Python Software Foundation logo and usage guidance](https://www.python.org/community/logos/);
+  [original SVG](https://www.python.org/static/community_logos/python-logo-generic.svg).
+  Python and its logo are trademarks of the Python Software Foundation.
+- **React:** [original React website logo](https://github.com/reactjs/react.dev/blob/main/public/images/brand/logo_dark.svg),
+  from [react.dev](https://react.dev/), by Meta Platforms, Inc. and contributors.
+  Website content is provided under
+  [Creative Commons Attribution 4.0](https://github.com/reactjs/react.dev/blob/main/LICENSE-DOCS.md).
+  The original artwork is embedded unchanged; its placement in this diagram is new.
+
+The live browser reads current SQL-backed state through Rayfin; it does not
+consume the historical Eventhouse feed. The diagram's **Player logon / check-in**
+section expands the second route in the same React app: organizer authentication,
+station selection, registration functions, SQL records, the returned player pass,
+desktop relay, and both downstream uses. Repeated service names in that section
+refer to the same components above, not additional deployments.
 
 ```mermaid
 flowchart TB
   subgraph PC["Workshop PC - DDR desktop app"]
     VIDEO["Recorded video or HDMI capture + layout<br/>P1/P2 regions, references, teaching"]
     FRAMES["OpenCV file playback or background HDMI capture<br/>latest live frame only<br/>frame index + source timestamp"]
-    ANALYSIS["Arrow reference matching<br/>background score/combo OCR<br/>latest-frame and confirmation scheduler"]
+    ANALYSIS["Arrow and judgment shape matching<br/>background score/combo OCR<br/>bounded frame retention and confirmation"]
     RULES["Validation + desktop display<br/>raw / candidate / accepted<br/>source frame retained"]
     BUS["EventBus<br/>event_id + session_id + sequence<br/>Record events gate"]
     LOCAL["Local Events table<br/>optional JSONL export"]
@@ -29,7 +59,7 @@ flowchart TB
     HOUSE["DDR-Telemetry - Eventhouse<br/>DDR-Telemetry KQL database<br/>raw_events table"]
     DASH["DDR Live - Real-Time Dashboard<br/>14 KQL tiles; 10-second refresh"]
   end
-  VIEW["Scoreboard web page - runs in a viewer's browser<br/>Laptop / tablet / display PC; Microsoft sign-in<br/>React displays scores; does not analyze video<br/>Queries the cloud API 1 second after each completed query"]
+  VIEW["Scoreboard web page - runs in a viewer's browser<br/>Laptop / tablet / display PC; Microsoft sign-in<br/>React displays scores; does not analyze video<br/>Queries immediately after each successful response; 1-second error retry"]
   TOOLS["VS Code + Rayfin CLI + Fabric APIs<br/>build / deploy / configure"]
 
   VIDEO --> FRAMES --> ANALYSIS --> RULES --> BUS
@@ -104,8 +134,13 @@ registration and event envelope. A unique game/player `slotKey` allows just two
 rows per game, shared by normal and no-PIN special entries; SQL rejects racing
 claims for the same station. Normal names and PINs have unique reservation keys.
 The tablet invokes one authenticated `registerPlayer` Rayfin function, passing
-a request UUID, station, and optional special name. The server selects the
-game, generates credentials, checks history, and creates the slot via the
+a request UUID, station, and optional special name. The server queries SQL for the **newest `GameSession` by `startedAt`**, requires
+that game to be active and not ended, and verifies its desktop heartbeat. It
+does not search backward for an older active game or trust a browser-supplied
+game ID. It also checks `GamePlayerSession` for an already-saved request UUID
+(safe retry) or an occupied game/P1-or-P2 slot, plus legacy `UserSession` and
+`SpecialSession` registrations. For a new registration, it generates credentials,
+checks history, and creates the slot via the
 caller-scoped `ctx.getDataClient()`. Retry IDs recover a saved pass without
 claiming a second slot; the function does not elevate database permissions.
 Only player-pass fields return to the tablet. Per-operation duration/status logs
@@ -129,9 +164,12 @@ Normal registrations include their six-digit string PIN in `payload.pin`;
 special no-PIN registrations omit it. The PIN is stored in the local outbox and
 Eventhouse, so restrict both to trusted organizers. Public scoreboard snapshots
 and logs still exclude PINs. Already relayed registrations are not backfilled.
-Players photograph the saved name/PIN screen
-for future validation; gameplay player assignment and PIN redemption are separate,
-not yet implemented.
+Players photograph the saved name/PIN screen for future validation. The SDK worker
+joins `GamePlayerSession` names to the current game GUID and P1/P2 station before
+publishing `LiveBoard`, so the live scoreboard displays the registered names.
+This name enrichment does not send PINs to viewers or attach identities to
+gameplay event payloads. PIN redemption is not implemented; this is player
+registration, not authentication using a previously issued PIN.
 
 The kiosk's secondary Easy mode action calls `registerEasyPlayer`, which uses
 the same authenticated registration and station reservation path. Both registration
@@ -153,8 +191,9 @@ participation and gameplay event calculations are unaffected.
 
 This adds a SQL registration path, not an Eventhouse query connector. Both
 **Share live scoreboard** and **Connect to Fabric** must be configured for
-end-to-end registration delivery. The earlier overview diagram shows gameplay
-and scoreboard paths; this registration relay joins them at the desktop outbox.
+end-to-end registration delivery. The expanded logon section of the product-logo diagram shows how this
+registration relay joins the gameplay history path at the desktop outbox and
+how registered names enrich the separate live scoreboard path.
 
 ## Desktop video sources
 
