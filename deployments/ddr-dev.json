@@ -1,0 +1,12 @@
+{
+  "name": "ddr-dev",
+  "tenantId": "5551f16b-831c-46a7-a226-4aae2ddca51a",
+  "workspaceId": "1d44051f-9367-426b-9bac-6eae28584453",
+  "rayfinItemId": "695168d8-a160-4d69-af40-62a182d84dc6",
+  "rayfinApiUrl": "https://swedencentral.pbidedicated.windows.net/v1/tenants/5551f16b-831c-46a7-a226-4aae2ddca51a/workspaces/1d44051f-9367-426b-9bac-6eae28584453/appbackends/695168d8-a160-4d69-af40-62a182d84dc6/BaaSService/",
+  "publishableKey": "pk-XnS4cxloutohwVQB8sLb",
+  "portalUrl": "https://app.fabric.microsoft.com",
+  "hostingUrl": "https://hale-basin-ac349ac472-swedencentral.webapp.fabricapps.net",
+  "eventstreamId": "4240713c-9932-498f-8e53-bb3d01433cb5",
+  "eventstreamSourceId": "19eda61e-6119-49ce-838a-0dfbd612d39a"
+}
