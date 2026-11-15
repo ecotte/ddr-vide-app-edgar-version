@@ -12,6 +12,7 @@ export async function createClient() {
     workspaceId: import.meta.env.VITE_FABRIC_WORKSPACE_ID,
     itemId: import.meta.env.VITE_FABRIC_ITEM_ID,
     portalUrl: import.meta.env.VITE_FABRIC_PORTAL_URL,
+    tenantId: import.meta.env.VITE_FABRIC_TENANT_ID,
   });
   if (!resolved.baseUrl || !resolved.publishableKey) {
     throw new Error('Rayfin configuration is missing. Deploy DDR Scoreboard first.');
@@ -31,9 +32,11 @@ function authOptions(client: Client) {
   if (!config?.workspaceId || !config.itemId || !config.portalUrl) {
     throw new Error('Fabric sign-in configuration is missing.');
   }
+  const portal = new URL(config.portalUrl);
+  if (config.tenantId) portal.searchParams.set('ctid', config.tenantId);
   return {
     workspaceId: config.workspaceId, projectId: config.itemId,
-    fabricPortalUrl: config.portalUrl, returnOrigin: window.location.origin,
+    fabricPortalUrl: portal.toString(), returnOrigin: window.location.origin,
   };
 }
 
