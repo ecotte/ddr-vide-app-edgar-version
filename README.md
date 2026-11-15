@@ -33,6 +33,36 @@ external chart libraries. Replace `__KIND__` with `heatmap`, `judgments`,
 Run `node --test .\dashboards\current-game.test.cjs` after the scoreboard's
 existing npm dependencies are installed to test the rendered output.
 
+## Desktop environment selection
+
+The public DDR-dev connection IDs and hosting URLs are in
+[`deployments/ddr-dev.json`](deployments/ddr-dev.json). The Rayfin publishable
+key in that file is public, not a credential. Eventstream keys, tokens, local
+environment files, and the active deployment registry must never be committed.
+
+To select that environment on a desktop:
+
+1. Stop **Share live scoreboard** and disconnect Fabric in the Events tab.
+   Drain any pending events to their original destination first.
+2. Sign into Azure CLI with access to the profile's destination tenant.
+3. Run `.\.venv\Scripts\python.exe -m app.desktop_environment` to validate the
+   profile without changing settings.
+4. Run `.\.venv\Scripts\python.exe -m app.desktop_environment --apply --publishers-stopped`.
+   This retrieves the destination's Eventstream connection directly from Fabric
+   and saves it only in Windows Credential Manager. It updates ignored Rayfin
+   and Vite environment files and retains the original deployment registry entry.
+5. Reconnect Fabric and enable scoreboard sharing. Complete Microsoft sign-in
+   for the destination tenant using its authorized organizer, then start a new game.
+
+Use `--profile <path>` for another public profile with the same fields.
+The switch refuses a nonempty outbox or a `DDR_EVENTSTREAM_CONNECTION_STRING`
+launcher override. It does not restart the desktop, move queued events, copy
+cloud data, change organizer permissions, or enable publishing automatically.
+If the running desktop was launched with a connection-string override, remove
+that override and restart it before reconnecting.
+Cloud hosting origins are managed by Rayfin during deployment rather than
+hardcoded to the original workspace in `rayfin.yml`.
+
 ## Rayfin live scoreboard
 
 The Fabric sender immediately groups up to 100 already-queued events from the
