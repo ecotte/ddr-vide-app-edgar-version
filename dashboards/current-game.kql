@@ -1,0 +1,44 @@
+let realEvents = () {
+    raw_events
+    | where source_mode != "synthetic" and coalesce(tobool(payload.is_test), false) == false
+    | where isnotnull(session_id) and isnotnull(event_id)
+};
+let candidates = materialize(
+    realEvents()
+    | where observed_at_utc >= ago(24h)
+    | where event_type !in ("user.register", "session_end")
+    | summarize FirstSeen=min(observed_at_utc), LastSeen=max(observed_at_utc) by session_id
+);
+// Keep older start markers so delayed events cannot revive an announced old game.
+// Sharing enabled mid-game may omit the marker; use its first gameplay observation.
+let starts = realEvents()
+    | where event_type == "new_session" and session_id in (candidates | project session_id)
+    | summarize StartedAt=min(observed_at_utc) by session_id;
+let game = toscalar(candidates
+    | lookup kind=leftouter starts on session_id
+    | extend StartedAt=coalesce(StartedAt, FirstSeen)
+    | order by StartedAt desc, LastSeen desc
+    | take 1
+    | project session_id);
+let current = materialize(realEvents()
+    | where session_id == game
+    | summarize arg_max(observed_at_utc, *) by event_id);
+let startMs = toscalar(current | where isnotnull(video_time_ms) | summarize min(video_time_ms));
+let endMs = toscalar(current | where isnotnull(video_time_ms) | summarize max(video_time_ms));
+let outcomes = current
+    | where event_type == "judgement" and player in ("P1", "P2")
+    | extend Outcome = tolower(tostring(coalesce(payload.outcome, payload.state))),
+        Judgment = tolower(tostring(payload.judgment))
+    | where Outcome in ("hit", "miss")
+    | extend Directions = iff(isnotnull(payload.step_directions), payload.step_directions,
+        iff(isnotempty(tostring(payload.direction)), pack_array(tostring(payload.direction)), dynamic([])))
+    | project Player=player, Outcome, Judgment, Directions=tostring(Directions),
+        Seconds=(todouble(video_time_ms) - todouble(startMs)) / 1000.0,
+        Sequence=sequence, EventId=tostring(event_id), GameId=tostring(session_id),
+        DurationSeconds=(todouble(endMs) - todouble(startMs)) / 1000.0;
+union outcomes, (
+    print Player="", Outcome="", Judgment="", Directions="[]", Seconds=real(null),
+        Sequence=int(null), EventId="", GameId=tostring(game),
+        DurationSeconds=(todouble(endMs) - todouble(startMs)) / 1000.0
+)
+| order by Player asc, Seconds asc nulls last, Sequence asc, EventId asc

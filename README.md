@@ -4,6 +4,35 @@ See the [architecture diagram and data-flow guide](docs/architecture.md) for the
 desktop pipeline, both publishers, Rayfin hosting, Fabric items, authentication,
 storage, and latency boundaries. - Milestone 1 (recorded video)
 
+## Fabric dashboard: current-game insights
+
+The second page of **DDR Live** includes separate P1/P2 dance-pad heatmaps,
+a judgment showdown, five-second momentum bins, and current/best streaks with
+miss markers. The existing tiles remain unchanged. These use the latest
+non-test game observed in the last 24 hours, deduplicate `event_id`, and count
+only `judgement` outcomes, never raw arrow activity. Session start markers determine
+game order when available; games without a marker use their first observed gameplay
+event. Older start markers prevent late events from reviving an announced old game.
+All retained events for the selected game count, even if it began more than
+24 hours ago. Registration and session-end events do not select a game.
+A new game clears the visuals.
+Heatmaps count each matched direction once and leave unobserved positions as
+**No data**; judgments without a direction are excluded from the pad.
+Judgment percentages, momentum, and streaks count each recognized judgment
+once, including multi-arrow judgments. Misses reset streaks. Missing timing
+is excluded from momentum, and the final five-second bin can be incomplete.
+These are recognized outcomes, not ground-truth accuracy: unrecognized misses
+cannot count.
+
+The custom visual source and shared query are in
+[`dashboards/current-game.html`](dashboards/current-game.html) and
+[`dashboards/current-game.kql`](dashboards/current-game.kql).
+The HTML uses the dashboard's existing Visual Builder message protocol without
+external chart libraries. Replace `__KIND__` with `heatmap`, `judgments`,
+`momentum`, or `streaks`, and `__PLAYER__` with `P1`/`P2` for a pad.
+Run `node --test .\dashboards\current-game.test.cjs` after the scoreboard's
+existing npm dependencies are installed to test the rendered output.
+
 ## Rayfin live scoreboard
 
 The Fabric sender immediately groups up to 100 already-queued events from the
