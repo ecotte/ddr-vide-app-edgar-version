@@ -1,5 +1,12 @@
 # DDR Scoreboard (Rayfin)
 
+Browser sign-in routes the Fabric broker to the deployment's tenant using the
+runtime configuration's `tenantId` (`ctid` in the portal URL). This matters when
+the organizer's home tenant differs from the app's workspace tenant. The same
+Microsoft account can be used without relaxing the organizer's data permissions.
+Build-time `VITE_FABRIC_TENANT_ID` supplies the fallback tenant when the hosted
+runtime configuration is unavailable; existing portal query parameters are kept.
+
 ## Player registration kiosk
 
 Open the hosted app with `?player=1#register` or `?player=2#register` appended
