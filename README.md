@@ -63,6 +63,12 @@ that override and restart it before reconnecting.
 Cloud hosting origins are managed by Rayfin during deployment rather than
 hardcoded to the original workspace in `rayfin.yml`.
 
+Operator access follows Fabric app sharing rather than a personal email
+allowlist. Any signed-in user with **Run and interact** access can publish
+gameplay and operate check-in, including reading registration records.
+Share app access only with trusted operators; anonymous access stays blocked.
+This model does not provide a separate view-only app role.
+
 ## Rayfin live scoreboard
 
 The Fabric sender immediately groups up to 100 already-queued events from the
