@@ -11,7 +11,7 @@ runtime configuration is unavailable; existing portal query parameters are kept.
 
 Open the hosted app with `?player=1#register` or `?player=2#register` appended
 to its URL. The organizer signs in on this shared
-device using the authorized publisher account (`yaschust@microsoft.com`).
+device using a Microsoft account with **Run and interact** access to this app.
 Players take turns; they do not sign in with their own Microsoft accounts.
 Microsoft sessions can expire; the organizer must sign in again when prompted.
 Keep this organizer-authenticated device supervised.
@@ -135,8 +135,13 @@ do not protect the Eventhouse copy. Public scoreboard snapshots and logs omit PI
 A PIN-checking/claim-redemption flow is not
 included. The PIN is a workshop claim code, not strong account authentication.
 
-Registration entities restrict access to the authorized publisher account;
-ordinary scoreboard viewers cannot read registrations or PINs. Apply the new
+App access is the operator authorization boundary: any signed-in user with
+**Run and interact** access can publish gameplay and operate player check-in.
+There is no personal email allowlist. These users can also read registration
+records and PINs through the authenticated APIs, so share app access only with
+trusted operators. Anonymous users cannot access these records, and scoreboard
+snapshots still omit PINs. Existing delete restrictions, immutable session modes,
+and relay-only update fields are unchanged. Apply the new
 schema and frontend together with `npx rayfin up` before using the kiosk, and
 rebuild the desktop worker with `npm run build:publisher`.
 
@@ -412,8 +417,11 @@ npx rayfin up --workspace-id 83823ba5-af36-4336-a920-1454da98aa9d --item-name "D
 npx rayfin up status
 ```
 
-The hosted data policy permits authenticated reads and restricts create/update
-to `yaschust@microsoft.com`. No footage, reference images, or credentials are sent
+The hosted data policy permits the declared operations to any authenticated user
+who has access to the app; use Fabric app sharing to manage operators.
+**Run and interact** (Read and Execute) is sufficient; operators do not need
+workspace Admin, Contributor, or app Reshare permissions.
+No footage, reference images, or credentials are sent
 in snapshots. The deployment uses the existing workshop Fabric capacity.
 
 The scaffold's critical test-runner advisories were addressed by updating Vitest.

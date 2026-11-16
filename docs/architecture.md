@@ -150,8 +150,11 @@ created or have their identity fields updated through the old APIs. Their assign
 stations still count; ambiguous pre-limit games must be replaced with a new game.
 Corner gestures register the three special names but
 never bypass Microsoft authentication or grant authorization.
-These tables are accessible only to the authorized publisher account, unlike the
-scoreboard's authenticated-reader view. The kiosk rejects inactive or stale games.
+These tables require Microsoft sign-in and Fabric app access. Every signed-in app
+user is an operator, including for registration/PIN reads and desktop publishing;
+there is no personal email allowlist. Share app access only with trusted operators.
+Anonymous users remain blocked, and the scoreboard display omits PINs.
+The kiosk rejects inactive or stale games.
 
 The desktop SDK worker reads pending registrations with each publish cycle.
 Current slots and historical registrations share a 25-row limit, ordered by creation time,
@@ -176,7 +179,7 @@ the same authenticated registration and station reservation path. Both registrat
 functions claim an immutable `GameSessionMode` row whose primary key is the game
 UUID. The first claim chooses easy or normal; a concurrent duplicate-key loser
 reads and inherits the winner rather than saving a different player mode.
-The lock grants only organizer-scoped read/create permissions, not update/delete.
+The lock grants signed-in app users only read/create permissions, not update/delete.
 Special entries and retries inherit the same mode; only a new game UUID resets it.
 Existing registrations seed the lock, and mixed historical modes require a new
 session rather than retagging events. A failed player write retains its mode lock.

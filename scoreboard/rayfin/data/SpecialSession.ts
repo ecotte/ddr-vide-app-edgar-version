@@ -1,11 +1,8 @@
 import { entity, authenticated, uuid, text, date, boolean } from '@microsoft/rayfin-core';
 
 @entity()
-@authenticated('read', {
-  policy: claims => claims.email.eq('yaschust@microsoft.com'),
-})
+@authenticated('read')
 @authenticated('update', {
-  policy: claims => claims.email.eq('yaschust@microsoft.com'),
   include: ['id', 'eventQueued'],
 })
 export class SpecialSession {
