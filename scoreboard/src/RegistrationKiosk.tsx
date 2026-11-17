@@ -10,7 +10,7 @@ type Registration = { kind: 'player' | 'special'; data: PlayerPass };
 type Corner = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
 
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
-  0: 'Easy users are not ranked',
+  0: 'Not ranked',
   3: 'Standard score',
   4: 'Score multiplied by 1.25',
 };

@@ -29,7 +29,7 @@ function client() {
 it('describes the ranking and score rules underneath each accessible difficulty choice', () => {
   render(<RegistrationKiosk client={client()} />);
   for (const [label, description] of [
-    ['Easy', 'Easy users are not ranked'],
+    ['Easy', 'Not ranked'],
     ['Normal 3', 'Standard score'],
     ['Normal 4', 'Score multiplied by 1.25'],
   ]) {
