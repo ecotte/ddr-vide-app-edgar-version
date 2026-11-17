@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Client } from './client';
 import {
-  SPECIAL_NAMES, DIFFICULTIES, difficultyLabel, registrationStation, saveRegistration,
-  type Difficulty, type SpecialName, type RegistrationRequest, type PlayerPass,
+  SPECIAL_NAMES, DIFFICULTIES, difficultyLabel, getKioskStatus, registrationStation, saveRegistration,
+  type Difficulty, type KioskStatus, type SpecialName, type RegistrationRequest, type PlayerPass,
 } from './registration';
 import BoothShell from './BoothShell';
+import { poll } from './state';
 
 type Registration = { kind: 'player' | 'special'; data: PlayerPass };
 type Corner = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
@@ -26,9 +27,74 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   const [progress, setProgress] = useState('');
   const [station] = useState(() => registrationStation(window.location.search));
   const [difficulty, setDifficulty] = useState<Difficulty>(3);
+  const [status, setStatus] = useState<KioskStatus | null>(null);
+  const [statusError, setStatusError] = useState('');
+  const [lockedSessionId, setLockedSessionId] = useState<string | null>(null);
+  const currentGame = useRef<string | null>(null);
+  const requestVersion = useRef(0);
+  const statusVersion = useRef(0);
+  const clearDraft = useCallback(() => {
+    draft.current = null;
+    gesture.current = { taps: [], startedAt: 0 };
+    setChickenDancing(false);
+    setError('');
+    setDifficulty(3);
+  }, []);
+  useEffect(() => {
+    const player = station.player;
+    if (!player) return;
+    const requestCounter = requestVersion;
+    const statusCounter = statusVersion;
+    let disposed = false;
+    const stop = poll(async () => {
+      const version = statusVersion.current;
+      try {
+        const next = await getKioskStatus(client, player);
+        if (disposed || version !== statusVersion.current) return;
+        if (next.gameSessionId) {
+          if (currentGame.current && currentGame.current !== next.gameSessionId) {
+            requestVersion.current++;
+            busy.current = false;
+            setSaving(false);
+            setProgress('');
+            clearDraft();
+            setSaved(previous => previous?.data.gameSessionId === next.gameSessionId ? previous : null);
+            setLockedSessionId(previous => next.registered || previous === next.gameSessionId ? next.gameSessionId : null);
+          }
+          currentGame.current = next.gameSessionId;
+          if (next.registered) setLockedSessionId(next.gameSessionId);
+        }
+        setStatus(next);
+        setStatusError('');
+      } catch (e) {
+        if (!disposed && version === statusVersion.current) {
+          setStatusError(e instanceof Error ? e.message : 'Unable to check this station. Registration is paused.');
+        }
+      }
+    });
+    return () => {
+      disposed = true;
+      requestCounter.current++;
+      statusCounter.current++;
+      stop();
+    };
+  }, [client, station.player, clearDraft]);
+  useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(null), 5000);
+    return () => clearTimeout(timer);
+  }, [saved]);
+  const gameInProgress = Boolean(lockedSessionId) && !draft.current && !saving;
+  const showForm = Boolean(station.error) || Boolean(draft.current) || Boolean(status?.gameSessionId && !lockedSessionId);
+  const controlsDisabled = saving || Boolean(station.error) || Boolean(statusError);
   async function register(specialName?: SpecialName) {
     if (station.error || !station.player) { setError(station.error); return; }
     if (busy.current) return;
+    if (statusError || (!draft.current && (!status?.gameSessionId || lockedSessionId))) {
+      setError('This station is not ready for a new player. Wait for a new game session.');
+      return;
+    }
+    const version = requestVersion.current;
     busy.current = true;
     setSaving(true);
     setProgress('Saving your player pass. Please keep this page open.');
@@ -45,22 +111,24 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         };
       }
       const data = await saveRegistration(client, draft.current);
+      if (version !== requestVersion.current) return;
+      statusVersion.current++;
+      setLockedSessionId(data.gameSessionId);
       setSaved({ kind: data.registrationType, data });
+      draft.current = null;
+      gesture.current = { taps: [], startedAt: 0 };
+      setChickenDancing(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Registration failed. Ask the organizer for help.');
+      if (version === requestVersion.current) {
+        setError(e instanceof Error ? e.message : 'Registration failed. Ask the organizer for help.');
+      }
     } finally {
-      busy.current = false;
-      setSaving(false);
-      setProgress('');
+      if (version === requestVersion.current) {
+        busy.current = false;
+        setSaving(false);
+        setProgress('');
+      }
     }
-  }
-  function next() {
-    draft.current = null;
-    gesture.current = { taps: [], startedAt: 0 };
-    setChickenDancing(false);
-    setSaved(null);
-    setError('');
-    setDifficulty(3);
   }
   function tapCorner(corner: Corner) {
     if (busy.current) return;
@@ -82,7 +150,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
       void register(name);
     }
   }
-  return <BoothShell playerPass={Boolean(saved)}>
+  return <BoothShell playerPass={Boolean(saved) || gameInProgress}>
     {chickenDancing && <div className="booth-funky-chicken" role="img"
       aria-label="A chicken doing the funky chicken dance"
       onAnimationEnd={event => {
@@ -115,15 +183,15 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         <path d="M70 66h20" fill="none" stroke="#633c35" strokeWidth="2" />
       </svg>
     </div>}
-    {!saved && <>
+    {!saved && !gameInProgress && showForm && <>
       <button type="button" className="booth-corner booth-corner-top-left" aria-label="Top-left corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('top-left')} />
+        disabled={controlsDisabled} onClick={() => tapCorner('top-left')} />
       <button type="button" className="booth-corner booth-corner-top-right" aria-label="Top-right corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('top-right')} />
+        disabled={controlsDisabled} onClick={() => tapCorner('top-right')} />
       <button type="button" className="booth-corner booth-corner-bottom-right" aria-label="Bottom-right corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('bottom-right')} />
+        disabled={controlsDisabled} onClick={() => tapCorner('bottom-right')} />
       <button type="button" className="booth-corner booth-corner-bottom-left" aria-label="Bottom-left corner"
-        disabled={saving || Boolean(station.error)} onClick={() => tapCorner('bottom-left')} />
+        disabled={controlsDisabled} onClick={() => tapCorner('bottom-left')} />
     </>}
     {saved ? <section className="booth-card booth-player-pass" aria-label="Your player identity">
       <p className="booth-card-kicker"><span aria-hidden="true">&#10003;</span> PLAYER PASS / CHECKED IN</p>
@@ -155,15 +223,23 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           <p>{saved.kind === 'player' ? 'Your name and PIN will be used to validate who you are.'
             : 'Your special player name is registered for this game session.'}</p></div>
       </div>
-      <button className="booth-primary" onClick={next}>I have my photo - Next player <span aria-hidden="true">&#8594;</span></button>
+      <p className="booth-card-note">This player pass hides automatically after 5 seconds.</p>
       <p className="booth-privacy">{saved.kind === 'player'
         ? 'Keep your photo and PIN private.'
         : 'Your special player pass is ready.'}</p>
+    </section> : gameInProgress ? <section className="booth-card booth-game-in-progress" role="status">
+      <h2>GAME IN PROGRESS</h2>
+      <p>This station is checked in. New players can sign in when the organizer starts a new session.</p>
+      {statusError && <p role="alert" className="error">{statusError} Waiting for the connection to confirm a new game.</p>}
+    </section> : !showForm ? <section className="booth-card" aria-label="Station availability">
+      <h2>{status ? 'Waiting for a game' : 'Checking this station...'}</h2>
+      <p role="status">Check-in opens when the desktop starts a game session.</p>
+      {statusError && <p role="alert" className="error">{statusError}</p>}
     </section> : <section className="booth-card" aria-labelledby="check-in-title">
       <p className="booth-overline">PLAYER CHECK-IN</p>
       <h2 id="check-in-title">Ready to play?</h2>
       <p>Get your Fabric player name and PIN, then snap your pass.</p>
-      <fieldset className="booth-difficulty" disabled={saving || Boolean(station.error) || Boolean(draft.current)}>
+      <fieldset className="booth-difficulty" disabled={controlsDisabled || Boolean(draft.current)}>
         <legend>Choose your difficulty</legend>
         <div className="booth-difficulty-options">
           {DIFFICULTIES.map(value => <label key={value}>
@@ -179,7 +255,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         </div>
       </fieldset>
       <p className="booth-card-note">Each player chooses independently. Normal 4 rounds the full game total.</p>
-      <button className="booth-primary" disabled={saving || Boolean(station.error)} onClick={() => { void register(); }}>
+      <button className="booth-primary" disabled={controlsDisabled} onClick={() => { void register(); }}>
         {saving ? 'Registering...' : draft.current ? 'Retry registration' : 'Register me'}
         <span aria-hidden="true">&#8594;</span>
       </button>
@@ -187,8 +263,9 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         Retrying {difficultyLabel(difficulty)}. Choose Start over to change difficulty.
       </p>}
       {saving && <p role="status" className="booth-card-note">{progress}</p>}
+      {statusError && <p role="alert" className="error">{statusError} Registration is paused until the connection returns.</p>}
       {(station.error || error) && <p role="alert" className="error">{station.error || error}</p>}
-      {error && <button className="booth-secondary" onClick={next}>Next player / Start over</button>}
+      {error && <button className="booth-secondary" onClick={clearDraft}>Start over</button>}
     </section>}
   </BoothShell>;
 }

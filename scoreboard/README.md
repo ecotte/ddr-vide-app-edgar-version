@@ -40,7 +40,7 @@ The sign-in and check-in content is centered horizontally and in the space below
 the station header, keeping its heading and footer together. Saved player passes
 are centered too; short screens scroll normally instead of clipping the top.
 The saved player pass omits the decorative heading/footer and uses viewport-aware
-spacing so the identity, photo instruction, and Next player action fit on tablets.
+spacing so the identity and photo instruction fit on tablets.
 The saved player pass includes its game session ID as a compact line.
 Player-facing screens omit database and event-delivery implementation details.
 Registration and the scoreboard are designed for separate screens, with no
@@ -60,7 +60,7 @@ data; neither registration/PIN access nor scoreboard data is anonymous.
 
 1. Enable **Share live scoreboard** in the DDR desktop and **Connect to Fabric**
    using the existing Eventstream destination.
-2. Select **Register me** on the kiosk. One authenticated `registerPlayer`
+2. Select **Register me** on the kiosk. One authenticated `registerPlayerWithDifficulty`
    server function reads the newest SQL `GameSession`, requires an active
    heartbeat within 15 seconds and no `endedAt`, generates the identity, and
    saves a `GamePlayerSession` linked by `gameSessionId`.
@@ -75,9 +75,13 @@ data; neither registration/PIN access nor scoreboard data is anonymous.
    Existing registered names are unchanged. The independent PIN has
    six digits. SQL unique constraints reserve both names and PINs across all
    registrations; confirmed collisions generate a fresh pair.
-4. The player photographs the saved name/PIN screen and keeps it private for
-   later identity validation. Choose **I have my photo - Next player** to clear
-   the screen before handing over the device.
+4. The player has **five seconds** to photograph the saved name/PIN screen.
+   The pass then disappears automatically and the kiosk displays
+   **GAME IN PROGRESS**, without names, PINs, registration buttons or corner
+   gestures. Special no-PIN passes follow the same five-second rule.
+5. The station reopens automatically after the desktop resets to a **new game
+   session ID** and that station is available. The next player starts with a
+   fresh request and Normal 3 selected; their difficulty remains independent.
 
 There are exactly two available slots per game: P1 and P2. A database unique
 constraint on `slotKey` reserves each game/player pair atomically, including
@@ -85,17 +89,32 @@ easter eggs. Clearing the kiosk screen does not free the slot. Start a new game
 to register another pair. Name and PIN reservation keys retain uniqueness
 without requiring a PIN for special entries.
 
-Registration makes one browser-to-Fabric function call rather than querying
+Saving a registration makes one browser-to-Fabric function call rather than querying
 individual tables from the tablet. The browser sends only a request UUID,
-station, and optional allowed easter-egg name; game selection, name/PIN
+station, selected difficulty, and optional allowed easter-egg name; game selection, name/PIN
 generation, historical checks, and slot reservation run on the server. Functions
 use `ctx.getDataClient()` so the organizer's existing row permissions still
 apply; no external resource credentials or app-owner elevation are used.
 The response contains only the player-pass fields, not internal reservation keys.
 
+The kiosk independently polls authenticated `getKioskStatus` after each completed
+request plus a one-second interval. This read-only endpoint returns only the
+latest open game ID and the selected station's occupancy, using the same current
+and legacy slot rules as registration. It never returns player names or PINs.
+An occupied station loads directly into **GAME IN PROGRESS** after a page refresh.
+An inactive/missing game, stale responses, or connection failures do not unlock
+a checked-in station; failures show a connection message. New check-in waits for
+an initial successful availability check. The registration operation still
+verifies heartbeat liveness before saving a player.
+
 The kiosk retains its request UUID on failure and sends the same one on retry.
 A previously committed registration is returned without creating another slot,
-including after a game changes. The request must match the original station and
+including after a game changes for legacy clients. A failed in-flight request
+can be retried while the same game is current, even if its slot has since been
+reported occupied, so a lost response can recover its pass. **Start over** never
+unlocks an occupied station. A confirmed new game clears old drafts and ignores
+late registration responses rather than redisplaying an old pass.
+The request must match the original station and
 special-name choice. A function invocation is bounded to 120 seconds; if a
 response is lost, retry the same registration rather than starting over.
 Eventhouse delivery is independent and never blocks the player-pass response.

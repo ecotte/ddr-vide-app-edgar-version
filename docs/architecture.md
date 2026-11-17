@@ -133,8 +133,8 @@ Required `?player=1` / `?player=2` kiosk flags persist `P1` / `P2` on the
 registration and event envelope. A unique game/player `slotKey` allows just two
 rows per game, shared by normal and no-PIN special entries; SQL rejects racing
 claims for the same station. Normal names and PINs have unique reservation keys.
-The tablet invokes one authenticated `registerPlayer` Rayfin function, passing
-a request UUID, station, and optional special name. The server queries SQL for the **newest `GameSession` by `startedAt`**, requires
+The tablet invokes one authenticated `registerPlayerWithDifficulty` Rayfin function, passing
+a request UUID, station, difficulty, and optional special name. The server queries SQL for the **newest `GameSession` by `startedAt`**, requires
 that game to be active and not ended, and verifies its desktop heartbeat. It
 does not search backward for an older active game or trust a browser-supplied
 game ID. It also checks `GamePlayerSession` for an already-saved request UUID
@@ -145,6 +145,14 @@ caller-scoped `ctx.getDataClient()`. Retry IDs recover a saved pass without
 claiming a second slot; the function does not elevate database permissions.
 Only player-pass fields return to the tablet. Per-operation duration/status logs
 exclude names, PINs, tokens, and database response bodies.
+The pass remains visible for five seconds and is then removed from the kiosk,
+which shows **GAME IN PROGRESS**. A separate authenticated `getKioskStatus`
+poll returns only the newest open game ID and this station's occupancy, using the
+same slot checks as registration. Refreshing an occupied station does not expose
+the previous pass or allow another registration. Only a new available game
+session reopens check-in; no slots or registration records are deleted.
+Connection errors retain the lock and show a warning. A confirmed session change
+clears old drafts and ignores in-flight registration responses from the old game.
 Historical `UserSession` and `SpecialSession` rows remain readable but cannot be
 created or have their identity fields updated through the old APIs. Their assigned
 stations still count; ambiguous pre-limit games must be replaced with a new game.

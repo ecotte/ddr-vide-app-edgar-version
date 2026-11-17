@@ -113,6 +113,8 @@ button:disabled { opacity: .6; cursor: wait; }
 .booth-difficulty-options input:focus-visible + span { outline: 3px solid white; outline-offset: 3px; }
 .booth-difficulty:disabled label { cursor: default; opacity: .7; }
 .booth-player-pass { text-align: center; }
+.booth-game-in-progress { text-align: center; }
+.booth-game-in-progress h2 { margin-bottom: 20px; font-size: clamp(26px, 4vw, 42px); }
 .booth-player-pass .booth-card-kicker { margin-bottom: 18px; }
 .booth-player-pass h2 { font-size: 30px; }
 .booth-credentials { border-block: 1px solid #4b415e; margin: 24px 0; padding: 4px 0 12px; }

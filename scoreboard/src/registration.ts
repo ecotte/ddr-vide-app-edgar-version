@@ -5,6 +5,11 @@ export { DIFFICULTIES, difficultyLabel, type Difficulty } from '../rayfin/functi
 
 export type RegistrationRequest = AppFunctionsSchema['registerPlayerWithDifficulty']['input'];
 export type PlayerPass = AppFunctionsSchema['registerPlayerWithDifficulty']['output'];
+export type KioskStatus = AppFunctionsSchema['getKioskStatus']['output'];
+
+export function getKioskStatus(client: Client, player: 'P1' | 'P2'): Promise<KioskStatus> {
+  return client.functions.getKioskStatus.invoke({ player });
+}
 
 export function registrationStation(search: string): { player?: 'P1' | 'P2'; error: string } {
   const flags = new URLSearchParams(search).getAll('player');

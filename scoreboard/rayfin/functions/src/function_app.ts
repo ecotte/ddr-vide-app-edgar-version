@@ -2,10 +2,20 @@ import {
   UserDataFunctions, UserThrownError, UserDataFunctionInternalError, type RayfinContext,
 } from '@microsoft/fabric-user-data-functions';
 import type { AppSchema } from '../../data/schema.js';
-import { getRegistrationMode, registerPlayer, RegistrationError, type PlayerPass } from './registration.js';
+import { getKioskStatus, getRegistrationMode, registerPlayer, RegistrationError, type KioskStatus, type PlayerPass } from './registration.js';
 import { isDifficulty } from './difficulty.js';
 
 const udf = new UserDataFunctions();
+
+udf.func('getKioskStatus', async (player: string, ctx: RayfinContext<AppSchema>): Promise<KioskStatus> => {
+  try {
+    return await getKioskStatus(ctx.getDataClient(), player);
+  } catch (error) {
+    console.error(JSON.stringify({ operation: 'getKioskStatus', status: 'failed' }));
+    if (error instanceof RegistrationError) throw new UserThrownError(error.message);
+    throw new UserDataFunctionInternalError('Unable to check this station. Ask the organizer to check the connection.');
+  }
+}, []);
 
 async function savePlayer(
   requestId: string, player: string, specialName: string, ctx: RayfinContext<AppSchema>, difficulty: number | null,
