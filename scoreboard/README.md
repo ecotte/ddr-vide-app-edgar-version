@@ -181,7 +181,7 @@ Each player chooses **Easy**, **Normal 3**, or **Normal 4** before selecting
 on that player's `GamePlayerSession.difficulty` as numeric `0`, `3`, or `4`.
 The other station's choice never changes it, even when both stations register
 at the same time. Special entries use the selected difficulty too.
-Each choice explains its rule underneath: **Easy users are not ranked**,
+Each choice explains its rule underneath: **Not ranked**,
 **Standard score**, or **Score multiplied by 1.25**.
 
 The kiosk calls `registerPlayerWithDifficulty` once. The server validates the
