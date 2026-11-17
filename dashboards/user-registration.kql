@@ -1,0 +1,17 @@
+.create-or-alter function user_registration(time_zone:string="US/Pacific", day_filter:datetime=datetime(null), remove_special:bool=true, only_leaderboard_players:bool=true) {
+raw_events
+| where event_type == "user.register"
+| where isnotempty(player)
+| where not(remove_special) or payload.registration_type == "player"
+| where not(only_leaderboard_players) or payload.exclude_from_leaderboard == false
+| extend observed_at_local = datetime_utc_to_local(observed_at_utc,time_zone)
+| where isempty(day_filter) or observed_at_local between (startofday(day_filter) .. endofday(day_filter))
+| extend user_session_id = toguid(payload.user_session_id),
+    game_session_id = toguid(payload.game_session_id),
+    username = tostring(payload.username),
+    registration_type = tostring(payload.registration_type),
+    pin = toint(payload.pin),
+    exclude_from_leaderboard = tobool(payload.exclude_from_leaderboard),
+    difficulty = toint(payload.difficulty)
+| project-away payload
+}

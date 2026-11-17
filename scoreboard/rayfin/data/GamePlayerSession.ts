@@ -1,4 +1,4 @@
-import { entity, authenticated, uuid, text, date, boolean, set } from '@microsoft/rayfin-core';
+import { entity, authenticated, uuid, text, date, boolean, set, int } from '@microsoft/rayfin-core';
 
 @entity()
 @authenticated(['read', 'create'])
@@ -16,6 +16,7 @@ export class GamePlayerSession {
   @text({ max: 80, unique: true }) pinKey!: string;
   @set('player', 'special') registrationType!: 'player' | 'special';
   @boolean({ optional: true }) excludeFromLeaderboard?: boolean;
+  @int({ optional: true, min: 0, max: 4 }) difficulty?: number;
   @date() createdAt!: Date;
   @boolean() eventQueued!: boolean;
 }

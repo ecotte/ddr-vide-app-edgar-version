@@ -25,6 +25,8 @@ only the current game's `GamePlayerSession` player/name fields for the scoreboar
 names remain available after event relay and are cleared for unregistered slots in
 a new game. Signed-in scoreboard viewers see those names, but never PINs or
 registration records. Older snapshots without names keep the Player 1/2 labels.
+Per-arrow icons, direction labels, and counts share grid rows, so longer
+Down-Left/Down-Right labels can wrap without moving their counts out of line.
 Side-by-side player panels share section and metric-row heights: names, scores,
 combos, totals, arrows, matching tiles, hit pace, and balance stay aligned even
 when a field is missing or text wraps. Main tiles remain visible with Waiting for
@@ -34,6 +36,9 @@ Both screens use the supplied white Microsoft Fabric logo asset, preserving its
 colors, aspect ratio, and transparent clear space on the dark background.
 Check-in uses a compact, single-column card for tablets in portrait or landscape,
 with short instructions and large touch targets rather than a large marketing panel.
+The sign-in and check-in content is centered horizontally and in the space below
+the station header, keeping its heading and footer together. Saved player passes
+are centered too; short screens scroll normally instead of clipping the top.
 The saved player pass omits the decorative heading/footer and uses viewport-aware
 spacing so the identity, photo instruction, and Next player action fit on tablets.
 The saved player pass includes its game session ID as a compact line.
@@ -169,41 +174,60 @@ name occupies that station's only registration slot and can be used again in a
 new game. An occupied station rejects further normal or special registrations.
 Normal player names and PINs retain their unique constraints.
 
-### Easy mode
+### Independent player difficulty
 
-A small **Easy mode (not ranked)** button below **Register me** checks in a
-normal named player with a PIN. The player still occupies the station's single
-slot and appears on the live scoreboard. It does not change Microsoft sign-in,
-OCR, scores, or game difficulty; the organizer selects the game difficulty separately.
-The saved pass confirms that easy-mode entries are not ranked.
+Each player chooses **Easy**, **Normal 3**, or **Normal 4** before selecting
+**Register me**. Normal 3 is selected initially. The three choices are stored
+on that player's `GamePlayerSession.difficulty` as numeric `0`, `3`, or `4`.
+The other station's choice never changes it, even when both stations register
+at the same time. Special entries use the selected difficulty too.
+Each choice explains its rule underneath: **Easy users are not ranked**,
+**Standard score**, or **Score multiplied by 1.25**.
 
-The first registration reserves the game mode before saving its player pass.
-`registerEasyPlayer` requests easy mode; `registerPlayer` requests normal mode.
-Both functions then inherit the same immutable `GameSessionMode` record, keyed
-by the game UUID. SQL primary-key uniqueness resolves simultaneous opposing
-requests: one mode wins, and both players receive it. Neither update nor delete
-permission is granted on the lock. Special entries inherit it too.
+The kiosk calls `registerPlayerWithDifficulty` once. The server validates the
+numeric choice and derives `excludeFromLeaderboard` as `difficulty === 0`;
+the browser cannot send a conflicting ranking flag. The saved pass displays
+the registered difficulty. Easy remains visible on the live scoreboard but
+is excluded from leaderboard rankings; both Normal choices are ranked.
+This records the player's choice; the organizer still configures the DDR
+machine's actual difficulty separately.
 
-The kiosk polls the current mode once after each completed one-second interval,
-shows the locked mode, and hides the alternate easy-mode action. Server-side
-enforcement also covers stale screens and older kiosk clients. The saved pass
-always confirms the actual mode. Each player stores that mode in
-`GamePlayerSession.excludeFromLeaderboard`. Retries recover the saved pass
-without changing its mode. **Start over** clears only the local request;
-changing the game mode requires **New Session** in the desktop.
+Retries reuse the same request ID and difficulty. A saved request cannot be
+replayed with a different known difficulty. **Start over** clears the local
+draft, not an already-reserved player slot; a new game is still required to
+replace a committed registration.
 
-A lock survives a failed player write so retries and the other kiosk cannot
-choose conflicting modes. Existing single-mode registrations seed the lock;
-historical rows without the exclusion flag count as normal. A pre-existing game
-with conflicting modes is rejected with a New Session instruction rather than
-rewriting registrations or already-queued events.
+Game-wide mode locks are no longer read or created. Existing `GameSessionMode`
+rows are retained for non-destructive schema compatibility but ignored. Cached
+older kiosks can still call `registerPlayer` (legacy Normal) or
+`registerEasyPlayer` (Easy); their choices are also independent.
+`getRegistrationMode` remains available for cached clients but returns no shared
+mode. Old Normal registrations have unknown numeric difficulty (`null`), not
+an invented 3 or 4; known legacy Easy entries use 0. Existing registrations and
+already-queued events are not backfilled or retagged.
 
-The desktop relays this flag as `payload.exclude_from_leaderboard` in `user.register`
-events. A future leaderboard must join registrations to gameplay by
-`game_session_id`/`session_id` and `player`, then exclude flagged registrations.
-No leaderboard is implemented here, and live-scoreboard calculations are unchanged.
-Deploy schema, Functions and frontend together with `npx rayfin up`, rebuild the
-publisher and restart desktop sharing to relay the new field.
+The desktop relays numeric `payload.difficulty` and
+`payload.exclude_from_leaderboard` in `user.register` events. A future
+leaderboard must join by `game_session_id`/`session_id` and `player`, then exclude
+only that player's Easy entries. No leaderboard is implemented here, and
+hit/miss counts, streaks and pace are unchanged.
+Deploy schema, Functions and frontend together with `npx rayfin up`, rebuild
+the publisher and restart desktop sharing **before** creating registrations.
+The reusable Eventhouse function in
+[`dashboards/user-registration.kql`](../dashboards/user-registration.kql) exposes
+numeric `difficulty` alongside the existing registration fields. Use
+`only_leaderboard_players=false` to include Easy registrations in analysis.
+
+Normal 4 multiplies the player's full base running score by **1.25**, rounding
+the final total to a whole point (half points round up). It applies to the whole
+current game even if registration arrives after points were earned; it does not
+round each hit separately. Easy, Normal 3, and legacy/unregistered players use
+multiplier 1. The desktop's raw judgment events and OCR score stay unchanged.
+The SDK publisher fetches the current game's registration at each heartbeat,
+publishes the adjusted `runningScore`, and retains `baseRunningScore` and
+`difficulty` in the snapshot. Repeated publishing cannot compound the multiplier.
+The scoreboard shows the Normal 4 base and multiplier beneath the adjusted total;
+a new game clears player difficulty until its own registration is available.
 
 No-PIN entries use the same `GamePlayerSession` slots as normal players.
 The desktop relays current slots and both historical
@@ -270,9 +294,10 @@ Connection/publish errors appear in the desktop Events tab.
 ## Fixed event rules
 
 - The main **Running score** comes from desktop snapshot `runningScore`, not OCR:
-  Good +10, Great +20, Perfect +40, Miss 0 per matched arrow. Simultaneous arrows
+  Bad +5, Good +10, Great +20, Perfect +40, Miss 0 per matched arrow. Simultaneous arrows
   score individually; unknown-direction judgments score once. Ungraded legacy
-  hits receive no points. No score region is required.
+  hits receive no points. BAD counts toward hit metrics but leaves current and
+  best streaks unchanged. No score region is required.
 - Running scores start at zero for each game and reset with New Session/game-end
   rotation. Event-ID deduplication prevents retry inflation; OCR values cannot
   overwrite the calculated total. Enable desktop sharing before gameplay:

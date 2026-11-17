@@ -128,3 +128,41 @@ test('missing timing is explicit, and ungraded judgments remain visible', () => 
   assert.match(judgments.document.querySelector('main').textContent, /Ungraded: 1 \(100.0%\)/);
   judgments.dom.window.close();
 });
+
+test('BAD is a separate hit tier and contributes to pad accuracy and momentum', () => {
+  const rows = [
+    context,
+    outcome('P1', 'hit', 'bad', ['Center'], 1, 1, 'bad'),
+    outcome('P1', 'hit', 'perfect', ['Center'], 2, 2, 'perfect')
+  ];
+  const judgments = open('judgments');
+  judgments.send(rows);
+  assert.match(judgments.document.querySelector('main').textContent, /Bad: 1 \(50.0%\)/);
+  assert.doesNotMatch(judgments.document.querySelector('.summary').textContent, /Ungraded/);
+  judgments.dom.window.close();
+  const pad = open('heatmap', 'P1');
+  pad.send(rows);
+  assert.match(pad.document.querySelectorAll('.cell')[2].textContent, /100%2 hits \/ 0 misses/);
+  pad.dom.window.close();
+  const pace = open('momentum');
+  pace.send(rows);
+  assert.equal(pace.document.querySelector('path').getAttribute('d'), 'M 60 14 L 334 228 L 608 228 L 882 228');
+  pace.dom.window.close();
+});
+
+test('BAD leaves streaks unchanged before, during and after a run, including delayed duplicates', () => {
+  const { dom, document, send } = open('streaks');
+  send([
+    context,
+    outcome('P1', 'hit', 'bad', [], 0, 1, 'initial-bad'),
+    outcome('P1', 'hit', 'perfect', ['Center'], 1, 2, 'perfect'),
+    outcome('P1', 'hit', 'good', ['Center'], 3, 4, 'good'),
+    outcome('P1', 'miss', 'miss', [], 4, 5, 'miss'),
+    outcome('P1', 'hit', 'bad', [], 5, 6, 'last-bad'),
+    outcome('P1', 'hit', 'bad', ['Center'], 2, 3, 'delayed-bad'),
+    outcome('P1', 'hit', 'bad', ['Center'], 2, 3, 'delayed-bad')
+  ]);
+  assert.match(document.querySelector('main').textContent, /P1: 0 current \u00b7 2 best/);
+  assert.equal(document.querySelectorAll('circle[fill="#e03131"]').length, 1);
+  dom.window.close();
+});

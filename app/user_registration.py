@@ -1,6 +1,6 @@
 """Convert private registration relay messages into the existing event envelope."""
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from app.models import Event
@@ -17,6 +17,11 @@ def registration_event(row: dict) -> Event:
         if excluded is None:
             excluded = False
         if type(excluded) is not bool:
+            raise ValueError
+        difficulty = row.get("difficulty")
+        if difficulty is None:
+            difficulty = 0 if excluded else None
+        elif type(difficulty) is not int or difficulty not in (0, 3, 4) or (difficulty == 0) != excluded:
             raise ValueError
         player = row.get("player")
         if player not in (None, "P1", "P2"):
@@ -41,7 +46,8 @@ def registration_event(row: dict) -> Event:
         parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         if parsed.utcoffset() is None:
             raise ValueError
-    except (KeyError, ValueError, TypeError, AttributeError):
+        timestamp = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
         raise ValueError("Invalid user registration received from Rayfin.") from None
     return Event(
         schema_version="1.0", event_id=event_id, session_id=session_id, sequence=0,
@@ -52,5 +58,6 @@ def registration_event(row: dict) -> Event:
             "username": username, "registration_type": registration_type,
             **({"pin": pin} if registration_type == "player" else {}),
             "exclude_from_leaderboard": excluded,
+            "difficulty": difficulty,
         },
     )

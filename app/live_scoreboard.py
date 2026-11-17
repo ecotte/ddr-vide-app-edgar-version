@@ -225,7 +225,7 @@ class LiveScoreboard:
                     self._error = "Live scoreboard: running score exceeds the supported range."
                     return
                 player["runningScore"] += points
-                if is_judgement:
+                if is_judgement and judgment != "bad":
                     self._record_streak(event, is_miss)
                 if is_miss:
                     player["misses"] += outcome_count

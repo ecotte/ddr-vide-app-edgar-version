@@ -21,6 +21,11 @@ class FakeCapture:
         self.released = threading.Event()
         self.fps = 30.0
         self.opened = True
+        self.settings = []
+
+    def set(self, prop, value):
+        self.settings.append((prop, value))
+        return True
 
     def isOpened(self):
         return self.opened
@@ -90,6 +95,7 @@ def test_capture_delivers_latest_frame_only_and_keeps_capture_gaps_out_of_seek_l
     assert source.current_frame_index() == 20
     assert source.read_next() == (None, None, False)
     assert not source.is_at_end()
+    assert driver.settings == []
 
 
 def test_timestamps_follow_elapsed_capture_time_not_reported_fps(capture):
@@ -201,3 +207,79 @@ def test_live_input_does_not_support_replay_operations(capture):
         source.seek_to_frame(0)
     with pytest.raises(ValueError, match="latest frame"):
         source.skip_to_frame(100)
+
+
+@pytest.mark.parametrize("name", ["Cam Link 4K", "Elgato CAM LINK"])
+@pytest.mark.parametrize("fps", [30.0, 29.97, 0.0])
+def test_cam_link_requests_1080p30_before_delivering_frames(monkeypatch, name, fps):
+    driver = FakeCapture()
+    driver.fps = fps
+    driver.frames.put(np.full((1080, 1920, 3), 32, dtype=np.uint8))
+    monkeypatch.setattr("app.live_video_source.cv2.VideoCapture", lambda *_: driver)
+    source = LiveVideoSource(CaptureDevice(2, name, cv2.CAP_DSHOW, "cam-link"))
+    try:
+        wait_for(lambda: source._latest is not None)
+        assert driver.settings == [
+            (cv2.CAP_PROP_FRAME_WIDTH, 1920),
+            (cv2.CAP_PROP_FRAME_HEIGHT, 1080),
+            (cv2.CAP_PROP_FPS, 30),
+        ]
+        frame, index, _ = source.read_next()
+        assert frame.shape == (1080, 1920, 3)
+        assert index == 0
+        assert (source.width, source.height, source.fps) == (1920, 1080, fps)
+    finally:
+        source._stop.set()
+        driver.frames.put(None)
+        source.close()
+    assert driver.released.is_set()
+
+
+@pytest.mark.parametrize("rejected", [
+    cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS,
+])
+def test_cam_link_reports_rejected_mode_settings_and_releases_driver(monkeypatch, rejected):
+    driver = FakeCapture()
+    driver.set = Mock(side_effect=lambda prop, value: prop != rejected)
+    driver.read = Mock()
+    monkeypatch.setattr("app.live_video_source.cv2.VideoCapture", lambda *_: driver)
+    source = LiveVideoSource(CaptureDevice(2, "Cam Link 4K", cv2.CAP_DSHOW, "cam-link"))
+    try:
+        wait_for(lambda: source.error is not None)
+        with pytest.raises(OSError, match="Could not select 1920x1080 at 30 fps"):
+            source.read_next()
+        driver.read.assert_not_called()
+    finally:
+        source.close()
+    assert driver.released.is_set()
+
+
+def test_cam_link_reports_a_driver_that_ignores_requested_resolution(monkeypatch):
+    driver = FakeCapture()
+    driver.frames.put(np.zeros((480, 640, 3), dtype=np.uint8))
+    monkeypatch.setattr("app.live_video_source.cv2.VideoCapture", lambda *_: driver)
+    source = LiveVideoSource(CaptureDevice(2, "Cam Link 4K", cv2.CAP_DSHOW, "cam-link"))
+    try:
+        wait_for(lambda: source.error is not None)
+        with pytest.raises(OSError, match="returned 640x480 instead of the requested 1920x1080"):
+            source.read_next()
+        assert source._latest is None
+    finally:
+        source.close()
+    assert driver.released.is_set()
+
+
+def test_cam_link_reports_a_driver_that_ignores_requested_fps(monkeypatch):
+    driver = FakeCapture()
+    driver.fps = 60.0
+    driver.read = Mock()
+    monkeypatch.setattr("app.live_video_source.cv2.VideoCapture", lambda *_: driver)
+    source = LiveVideoSource(CaptureDevice(2, "Cam Link 4K", cv2.CAP_DSHOW, "cam-link"))
+    try:
+        wait_for(lambda: source.error is not None)
+        with pytest.raises(OSError, match="reported 60 fps instead of the requested 30 fps"):
+            source.read_next()
+        driver.read.assert_not_called()
+    finally:
+        source.close()
+    assert driver.released.is_set()

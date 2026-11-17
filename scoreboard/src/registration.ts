@@ -1,14 +1,10 @@
 import type { AppFunctionsSchema } from '../rayfin/functions/src/types';
 import type { Client } from './client';
 export { SPECIAL_NAMES, type SpecialName } from '../rayfin/functions/src/identity';
+export { DIFFICULTIES, difficultyLabel, type Difficulty } from '../rayfin/functions/src/difficulty';
 
-export type RegistrationRequest = AppFunctionsSchema['registerPlayer']['input'] & { excludeFromLeaderboard?: boolean };
-export type PlayerPass = AppFunctionsSchema['registerPlayer']['output'];
-export type RegistrationMode = AppFunctionsSchema['getRegistrationMode']['output'];
-
-export function getRegistrationMode(client: Client): Promise<RegistrationMode> {
-  return client.functions.getRegistrationMode.invoke(undefined);
-}
+export type RegistrationRequest = AppFunctionsSchema['registerPlayerWithDifficulty']['input'];
+export type PlayerPass = AppFunctionsSchema['registerPlayerWithDifficulty']['output'];
 
 export function registrationStation(search: string): { player?: 'P1' | 'P2'; error: string } {
   const flags = new URLSearchParams(search).getAll('player');
@@ -20,8 +16,5 @@ export function registrationStation(search: string): { player?: 'P1' | 'P2'; err
 }
 
 export function saveRegistration(client: Client, request: RegistrationRequest): Promise<PlayerPass> {
-  const { excludeFromLeaderboard, ...input } = request;
-  return excludeFromLeaderboard
-    ? client.functions.registerEasyPlayer.invoke(input, { timeoutMs: 120000 })
-    : client.functions.registerPlayer.invoke(input, { timeoutMs: 120000 });
+  return client.functions.registerPlayerWithDifficulty.invoke(request, { timeoutMs: 120000 });
 }

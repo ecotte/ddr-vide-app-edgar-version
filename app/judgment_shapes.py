@@ -105,8 +105,8 @@ class JudgmentShapeMatcher:
         self.references: dict[str, list[ShapeReference]] = {}
         self.warnings: list[str] = []
         categories = (
-            ("perfect", "great", "good", "miss")
-            if any(references.get(tier) for tier in ("perfect", "great", "good"))
+            tuple(config.JUDGMENT_POINTS)
+            if any(references.get(tier) for tier in config.JUDGMENT_HIT_TIERS)
             else ("hit", "miss")
         )
         for category in categories:

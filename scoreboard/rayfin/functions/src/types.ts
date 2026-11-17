@@ -19,11 +19,15 @@
 export type AppFunctionsSchema = {
   registerPlayer: {
     input: { requestId: string; player: string; specialName: string };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
   };
   registerEasyPlayer: {
     input: { requestId: string; player: string; specialName: string };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
+  };
+  registerPlayerWithDifficulty: {
+    input: { requestId: string; player: string; specialName: string; difficulty: number };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
   };
   getRegistrationMode: {
     input: Record<string, never>;

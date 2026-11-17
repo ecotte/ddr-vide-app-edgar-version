@@ -147,7 +147,7 @@ class ArrowStateTracker:
     captured reference matches closely enough). An unreadable frame is
     represented by passing ``None``, which - as with TemporalValueTracker -
     never resets tracking state and never fires an event by itself.
-    Judgment boxes also pass "perfect", "great", and "good"; ``require_idle=True`` blocks
+    Judgment boxes also pass "perfect", "great", "good", and "bad"; ``require_idle=True`` blocks
     all subsequent outcomes until a confirmed idle, even if the word changes.
     """
 
@@ -281,8 +281,8 @@ def match_judgment(crop_bgr, reference_images: dict, threshold: float) -> Judgme
         (
             (max(image_utils.similarity(crop_bgr, image) for image in references), state)
             for state in (
-                ("perfect", "great", "good", "miss")
-                if any(reference_images.get(tier) for tier in ("perfect", "great", "good"))
+                tuple(config.JUDGMENT_POINTS)
+                if any(reference_images.get(tier) for tier in config.JUDGMENT_HIT_TIERS)
                 else ("hit", "miss")
             )
             if (references := reference_images.get(state, []))

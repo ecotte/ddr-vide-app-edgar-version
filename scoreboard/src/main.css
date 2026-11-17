@@ -15,6 +15,7 @@ h1 { font-size: clamp(28px, 4vw, 48px); margin: 6px 0; }
 h2 { margin: 0 0 30px; font-size: 28px; }
 .score-label, .combo span, .counts span { color: #aebbd4; font-size: 13px; letter-spacing: 2px; }
 .score { font-size: clamp(26px, 4.5vw, 62px); font-weight: 750; font-variant-numeric: tabular-nums; margin: 12px 0 28px; overflow-wrap: anywhere; }
+.score-adjustment { color: #c4bfd4; font-size: 13px; margin: -16px 0 24px; }
 .waiting-data { font-size: 14px; font-weight: 400; letter-spacing: 0; overflow-wrap: anywhere; }
 .counts strong .waiting-data { font-size: 11px; }
 .combo { grid-row: 3; display: flex; justify-content: space-between; align-items: center; border-block: 1px solid #33465e; padding: 22px 0; }
@@ -23,7 +24,8 @@ h2 { margin: 0 0 30px; font-size: 28px; }
 .total-hits { grid-row: 4; display: flex; justify-content: space-between; align-items: center; padding-top: 24px; }
 .total-hits span { color: #aebbd4; font-size: 13px; letter-spacing: 2px; }
 .total-hits strong { font-size: 32px; }
-.counts { grid-row: 5; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; padding-top: 20px; text-align: center; }
+.counts { grid-row: 5; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); column-gap: 12px; padding-top: 20px; text-align: center; }
+.counts > div { display: grid; grid-template-rows: subgrid; grid-row: span 3; min-width: 0; align-items: start; }
 .counts .arrow-icon { display: block; font-size: 36px; color: #7cebe1; margin-bottom: 8px; }
 .pink .counts .arrow-icon { color: #f3a1ed; }
 .counts span { letter-spacing: 1px; font-size: 12px; overflow-wrap: anywhere; }
@@ -99,9 +101,17 @@ button:disabled { opacity: .6; cursor: wait; }
 .booth-card .booth-primary > span { font-size: 20px; }
 .booth-card > p.booth-card-note { text-align: center; font-size: 11px; color: #b3a9c5; margin: 16px 0 0; }
 .booth-secondary { background: transparent; border: 1px solid #77698e; color: #e0d9eb; margin-top: 16px; width: 100%; }
-.booth-easy-mode { display: block; margin: 8px auto 0; min-height: 44px; padding: 8px 12px; background: transparent; color: #cbc4dc; font-size: 13px; font-weight: 400; }
-.booth-easy-mode span { color: #b3a9c5; }
-.booth-easy-mode:hover:not(:disabled) { text-decoration: underline; }
+.booth-difficulty { min-width: 0; margin: 20px 0 12px; padding: 0; border: 0; }
+.booth-difficulty legend { margin-bottom: 10px; color: #d3cee4; font-size: 14px; }
+.booth-difficulty-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.booth-difficulty-options label { position: relative; min-width: 0; cursor: pointer; }
+.booth-difficulty-options input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.booth-difficulty-options span { display: flex; flex-direction: column; justify-content: flex-start; align-items: center; gap: 6px; min-height: 52px; height: 100%; padding: 10px 6px; border: 1px solid #6b6193; border-radius: 10px; color: #e3d6fa; background: #242036; font-size: 15px; text-align: center; }
+.booth-difficulty-options strong { font-weight: 650; }
+.booth-difficulty-options small { color: #c4bfd4; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.booth-difficulty-options input:checked + span { border-color: #92e4ef; background: #324559; color: #fff; box-shadow: inset 0 0 0 1px #92e4ef; }
+.booth-difficulty-options input:focus-visible + span { outline: 3px solid white; outline-offset: 3px; }
+.booth-difficulty:disabled label { cursor: default; opacity: .7; }
 .booth-player-pass { text-align: center; }
 .booth-player-pass .booth-card-kicker { margin-bottom: 18px; }
 .booth-player-pass h2 { font-size: 30px; }
@@ -114,11 +124,15 @@ button:disabled { opacity: .6; cursor: wait; }
 .booth-photo-prompt strong { color: #f1d4ef; font-size: 14px; }
 .booth-photo-prompt p { font-size: 12px; color: #d2c7df; margin: 6px 0 0; line-height: 1.5; }
 .booth-card > p.booth-privacy { color: #b4a9c5; font-size: 11px; line-height: 1.6; margin-bottom: 0; }
+.booth-registration { display: flex; flex-direction: column; }
+.booth-registration .booth-content { display: flex; flex: 1; flex-direction: column; }
 .booth-registration .booth-header { margin-bottom: 24px; }
+.booth-registration .booth-layout { width: 100%; margin-block: auto 0; }
+.booth-registration .booth-layout:last-child { margin-block: auto; }
 .booth-registration .booth-card { padding: clamp(24px, 3vw, 32px); }
 .booth-registration .booth-primary { min-height: 60px; font-size: 17px; }
 .booth-registration .booth-identity { font-size: clamp(26px, 4vw, 36px); }
-.booth-registration .booth-footer { justify-content: center; margin-top: 24px; }
+.booth-registration .booth-footer { justify-content: center; margin-top: 24px; margin-bottom: auto; }
 .booth-footer { margin-top: 42px; align-items: center; color: #a197b4; font-size: 10px; letter-spacing: 1.3px; }
 .booth-footer a { color: #c8bddb; font-size: 12px; letter-spacing: 0; text-decoration: none; padding: 8px 0; }
 .booth-footer a:hover { text-decoration: underline; }

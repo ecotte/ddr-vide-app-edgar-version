@@ -285,6 +285,20 @@ it('shows per-player response averages, sourced comparisons, cumulative percenta
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
 });
 
+it('shows the published Normal 4 total and its base-score explanation without multiplying twice', async () => {
+  const { client } = fakeClient({
+    ...snapshot, players: {
+      P1: { ...player, runningScore: 13, baseRunningScore: 10, difficulty: 4 },
+      P2: { ...player, runningScore: 10, baseRunningScore: 10, difficulty: 3 },
+    },
+  });
+  await act(async () => { render(<App client={client} />); });
+  expect(screen.getByLabelText('Player 1 score')).toHaveTextContent('13');
+  expect(screen.getByLabelText('Player 2 score')).toHaveTextContent('10');
+  expect(screen.getByLabelText('Player 1 score adjustment')).toHaveTextContent('Normal 4: 10 base × 1.25 (rounded).');
+  expect(screen.queryByLabelText('Player 2 score adjustment')).not.toBeInTheDocument();
+});
+
 it('shows independent best streaks rather than OCR combos or lane counts and resets for a new game', async () => {
   const p2 = {
     ...player, hits: 3, misses: 1, bestStreak: 3, currentStreak: 0, averageResponseTimeMs: null, responseSamples: 0,

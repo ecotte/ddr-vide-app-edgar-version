@@ -21,6 +21,9 @@ ROW = {
     ("username", "SILLYEventhouse1234"), ("username", "sillyEVENTHOUSE1234"),
     ("username", "sillyEventhouse123"), ("username", "silly Eventhouse1234"),
     ("createdAt", "2026-10-29"), ("createdAt", "bad"),
+    ("createdAt", "2026-11-16T16:40:58"),
+    ("createdAt", "0001-01-01T00:00:00+14:00"),
+    ("createdAt", "9999-12-31T23:59:59-12:00"),
 ])
 def test_invalid_registration_is_not_an_event(field, value):
     with pytest.raises(ValueError, match="Invalid user registration"):
@@ -31,6 +34,31 @@ def test_invalid_registration_is_not_an_event(field, value):
 def test_registration_preserves_capitalized_and_legacy_names(username):
     event = registration_event({**ROW, "username": username})
     assert event.payload["username"] == username
+
+
+@pytest.mark.parametrize("timestamp", [
+    "2026-11-16T16:40:58.123456-08:00",
+    "2026-11-17T02:40:58.123456+02:00",
+    "2026-11-17T06:10:58.123456+05:30",
+    "2026-11-17T00:41:58.123456+00:01",
+    "2026-11-17T00:40:58.123456+00:00",
+    "2026-11-17T00:40:58.123456Z",
+])
+@pytest.mark.parametrize("registration_type", ["player", "special"])
+def test_registration_timestamps_are_normalized_to_utc_before_delivery(tmp_path, timestamp, registration_type):
+    row = {**ROW, "createdAt": timestamp, "registrationType": registration_type}
+    if registration_type == "special":
+        row.update(username="YaelTheChampion", pin=None)
+    original = dict(row)
+    event = registration_event(row)
+    assert event.observed_at_utc == "2026-11-17T00:40:58.123456Z"
+    assert row == original
+    outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "test")
+    try:
+        outbox.enqueue(event)
+        assert json.loads(outbox.next_event()[2])["observed_at_utc"] == "2026-11-17T00:40:58.123456Z"
+    finally:
+        outbox.close()
 
 
 @pytest.mark.parametrize("username", ["YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen"])
@@ -92,6 +120,48 @@ def test_legacy_registration_is_not_excluded(excluded):
 def test_invalid_leaderboard_exclusion_is_not_published(excluded):
     with pytest.raises(ValueError, match="Invalid user registration"):
         registration_event({**ROW, "excludeFromLeaderboard": excluded})
+
+
+@pytest.mark.parametrize("difficulty", [0, 3, 4])
+@pytest.mark.parametrize("kind", ["player", "special"])
+def test_numeric_difficulty_is_preserved_in_the_signin_event_and_durable_outbox(tmp_path, difficulty, kind):
+    row = {
+        **ROW, "player": "P2", "difficulty": difficulty,
+        "excludeFromLeaderboard": difficulty == 0, "registrationType": kind,
+    }
+    if kind == "special":
+        row.update(username="The Dancing Queen", pin=None)
+    event = registration_event(row)
+    assert event.payload["difficulty"] == difficulty
+    assert type(event.payload["difficulty"]) is int
+    assert event.payload["exclude_from_leaderboard"] is (difficulty == 0)
+    outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "test")
+    try:
+        outbox.enqueue(event)
+        wire = json.loads(outbox.next_event()[2])
+        assert wire["payload"]["difficulty"] == difficulty
+        assert wire["player"] == "P2"
+    finally:
+        outbox.close()
+
+
+@pytest.mark.parametrize("difficulty", [-1, 1, 2, 5, "3", "4", True, False, 3.0, [], {}])
+def test_invalid_difficulty_is_rejected_without_publishing(difficulty):
+    with pytest.raises(ValueError, match="Invalid user registration"):
+        registration_event({**ROW, "difficulty": difficulty})
+
+
+@pytest.mark.parametrize("difficulty,excluded", [(0, False), (3, True), (4, True)])
+def test_conflicting_difficulty_and_ranking_flag_is_rejected(difficulty, excluded):
+    with pytest.raises(ValueError, match="Invalid user registration"):
+        registration_event({**ROW, "difficulty": difficulty, "excludeFromLeaderboard": excluded})
+
+
+@pytest.mark.parametrize("excluded", [False, True])
+def test_legacy_registration_does_not_invent_a_normal_difficulty(excluded):
+    event = registration_event({**ROW, "excludeFromLeaderboard": excluded})
+    assert event.payload["difficulty"] == (0 if excluded else None)
+
 
 def test_registration_is_durable_and_duplicates_pending_are_safe(tmp_path):
     publisher = EventstreamPublisher(str(tmp_path / "outbox.sqlite3"))

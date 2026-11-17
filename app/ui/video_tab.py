@@ -842,7 +842,7 @@ class VideoTab(ttk.Frame):
             row, text="Capture this arrow while active, not its always-visible idle receptor. "
             "Capture Empty when no note overlaps the receptor. Empty examples suppress "
             "look-alike idle matches; Active must clearly match better. "
-            "The judgment box alone decides Perfect/Great/Good/Miss. "
+            "The judgment box alone decides Perfect/Great/Good/Bad/Miss. "
             "Old Hit/Miss/Appearance refs are ignored.",
         ).grid(row=7, column=0, sticky="w", pady=(4, 0))
         if r.player in ("P1", "P2"):
@@ -883,7 +883,7 @@ class VideoTab(ttk.Frame):
         thumb.grid(row=1, column=0, sticky="w", pady=4)
         state = tk.StringVar(value="state: -")
         confidence = tk.StringVar(value="similarity: -")
-        status = tk.StringVar(value="status: Capture Perfect, Great, Good, and Miss examples.")
+        status = tk.StringVar(value="status: Capture Perfect, Great, Good, Bad, and Miss examples.")
         for index, variable in enumerate((state, confidence, status), 2):
             ttk.Label(row, textvariable=variable).grid(row=index, column=0, sticky="w")
         diagnostics = VideoTab._add_diagnostics(row, 5, "judgment")
@@ -892,9 +892,8 @@ class VideoTab(ttk.Frame):
             "confidence_var": confidence, "status_var": status,
             **diagnostics,
         }
-        categories = (
-            ("perfect", "Perfect"), ("great", "Great"), ("good", "Good"),
-            ("miss", "Miss"), ("empty", "No judgment"),
+        categories = tuple((name, name.title()) for name in config.JUDGMENT_POINTS) + (
+            ("empty", "No judgment"),
         )
         for index, (name, title) in enumerate(categories):
             controls = ttk.Frame(row)
@@ -915,7 +914,8 @@ class VideoTab(ttk.Frame):
             ).grid(row=2, column=0, columnspan=2, sticky="w", padx=2, pady=(4, 0))
             data[f"{name}_ref_label"] = reference
         ttk.Label(
-            row, text="Capture PERFECT, GREAT, and GOOD separately; all count as hits. "
+            row, text="Capture PERFECT, GREAT, GOOD, and BAD separately; all count as hits. "
+            "BAD awards 5 points per arrow and leaves the streak unchanged. "
             "Letter-shape matching is the default. Capture clear colored words; "
             "yellow dashed bounds show the larger search area, green bounds the capture box. "
             "MISS counts as a miss. Add optional No judgment samples when no word is visible. "

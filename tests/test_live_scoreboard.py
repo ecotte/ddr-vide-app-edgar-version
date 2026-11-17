@@ -79,6 +79,60 @@ def test_streak_ignores_ocr_combos_legacy_lane_events_and_synthetic_events():
         board.stop()
 
 
+@pytest.mark.parametrize("player", ["P1", "P2"])
+@pytest.mark.parametrize("directions", [[], ["Center"], ["Center", "Up-Right"]])
+def test_bad_scores_five_per_arrow_and_counts_as_a_hit_without_changing_streaks(player, directions):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        board.record(judgement_event(bus, player=player), bus.session_id)
+        row = judgement_event(bus, tier="bad", directions=directions, player=player)
+        board.record(row, bus.session_id)
+        board.record(row, bus.session_id)
+        count = len(directions) or 1
+        stats = board.snapshot()["players"][player]
+        assert stats["runningScore"] == 40 + 5 * count
+        assert stats["hits"] == 1 + count
+        assert stats["misses"] == 0
+        assert stats["unassignedHits"] == int(not directions)
+        assert stats["hitPace"] == (1 + count) / 5
+        assert (stats["currentStreak"], stats["bestStreak"]) == (1, 1)
+        board.record(judgement_event(bus, tier="great", player=player), bus.session_id)
+        stats = board.snapshot()["players"][player]
+        assert (stats["currentStreak"], stats["bestStreak"]) == (2, 2)
+        board.record(judgement_event(bus, tier="miss", player=player), bus.session_id)
+        board.record(judgement_event(bus, tier="bad", player=player), bus.session_id)
+        stats = board.snapshot()["players"][player]
+        assert (stats["currentStreak"], stats["bestStreak"]) == (0, 2)
+        other = "P2" if player == "P1" else "P1"
+        assert board.snapshot()["players"][other]["runningScore"] == 0
+        assert "invalid" not in board.status()
+    finally:
+        board.stop()
+
+
+@pytest.mark.parametrize("arrival", [(0, 1, 2, 3, 4), (4, 3, 2, 1, 0), (1, 4, 0, 3, 2)])
+@pytest.mark.parametrize("same_timestamp", [False, True])
+def test_delayed_bad_judgments_do_not_extend_or_bridge_streaks(arrival, same_timestamp):
+    bus = EventBus()
+    board = LiveScoreboard(FakeSender)
+    board.start(bus.session_id)
+    try:
+        rows = [judgement_event(bus, tier=tier) for tier in ("perfect", "bad", "miss", "bad", "great")]
+        for index, row in enumerate(rows):
+            row.video_time_ms = 100 if same_timestamp else (index + 1) * 100
+        for index in arrival:
+            board.record(rows[index], bus.session_id)
+            board.record(rows[index], bus.session_id)
+        stats = board.snapshot()["players"]["P1"]
+        assert stats["runningScore"] == 70
+        assert (stats["hits"], stats["misses"]) == (4, 1)
+        assert (stats["currentStreak"], stats["bestStreak"]) == (1, 1)
+    finally:
+        board.stop()
+
+
 @pytest.mark.parametrize("timestamps", [(100, 200, 300), (100, 100, 100)])
 def test_delayed_judgments_recompute_streak_in_video_time_and_sequence_order(timestamps):
     bus = EventBus()

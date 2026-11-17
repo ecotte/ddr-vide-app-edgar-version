@@ -123,7 +123,7 @@ class EventBus:
                 source_mode=self.source_mode,
                 frame_index=frame_index,
                 video_time_ms=video_time_ms,
-                observed_at_utc=datetime.now(timezone.utc).isoformat(),
+                observed_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 event_type=event_type,
                 player=player,
                 payload=payload,
