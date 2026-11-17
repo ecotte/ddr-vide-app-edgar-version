@@ -111,6 +111,9 @@ The same Rayfin app includes a shared-device **Player check-in kiosk** at
 `#register`. An organizer signs in once (and again if the Microsoft session
 expires); players generate a Fabric-themed name and unique six-digit PIN without
 their own Microsoft accounts. They photograph the saved identity screen.
+The player pass stays visible for five seconds, then the station displays
+**GAME IN PROGRESS** until a new game session opens that station for check-in.
+Refreshing an occupied kiosk keeps it locked without redisplaying credentials.
 Registrations link to the current game in Rayfin SQL and are relayed through
 the desktop's durable Eventstream outbox as `user.register`, including the six-digit
 PIN in `payload.pin` for normal registrations. PINs remain excluded from the public

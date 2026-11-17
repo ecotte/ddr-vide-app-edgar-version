@@ -18,6 +18,32 @@ export interface PlayerPass {
   difficulty: Difficulty | null;
 }
 
+export interface KioskStatus {
+  gameSessionId: string | null;
+  registered: boolean;
+}
+
+async function stationOccupied(data: RegistrationData, gameId: string, player: 'P1' | 'P2'): Promise<boolean> {
+  const [slots, players, specials] = await Promise.all([
+    data.GamePlayerSession.select(['id']).where({ slotKey: { eq: `${gameId}:${player}` } }).first(1).execute(),
+    data.UserSession.select(['id', 'player']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+    data.SpecialSession.select(['id', 'player']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+  ]);
+  const legacy = [...players, ...specials];
+  if (legacy.some(row => !row.player) || legacy.length > 2) {
+    throw new RegistrationError('This game has registrations from before station limits. Ask the organizer to start a new session.');
+  }
+  return slots.length > 0 || legacy.length === 2 || legacy.some(row => row.player === player);
+}
+
+export async function getKioskStatus(data: RegistrationData, player: string): Promise<KioskStatus> {
+  if (player !== 'P1' && player !== 'P2') throw new RegistrationError('Invalid kiosk station.');
+  const [game] = await data.GameSession.select(['id', 'startedAt', 'active', 'endedAt'])
+    .orderBy({ startedAt: 'desc' }).first(1).execute();
+  if (!game?.active || game.endedAt != null) return { gameSessionId: null, registered: false };
+  return { gameSessionId: game.id, registered: await stationOccupied(data, game.id, player) };
+}
+
 function playerPass(row: GamePlayerSession): PlayerPass {
   const difficulty = row.difficulty ?? (row.excludeFromLeaderboard ? 0 : null);
   if (difficulty !== null && (!isDifficulty(difficulty)
@@ -119,18 +145,12 @@ export async function registerPlayer(
     ]);
     return oldPin.length + oldName.length > 0;
   };
-  const [legacyPlayers, legacySpecials, slotOccupied, firstIdentityTaken] = await Promise.all([
-    data.UserSession.select(['id', 'player']).where({ gameSessionId: { eq: game.id } }).first(3).execute(),
-    data.SpecialSession.select(['id', 'player']).where({ gameSessionId: { eq: game.id } }).first(3).execute(),
-    occupied(),
+  const [slotOccupied, firstIdentityTaken] = await Promise.all([
+    stationOccupied(data, game.id, player),
     historicalIdentityTaken(firstIdentity.username, firstIdentity.pin),
     verifyLiveGame(data, game, started),
   ]);
-  const legacy = [...legacyPlayers, ...legacySpecials];
-  if (legacy.some(row => !row.player) || legacy.length > 2) {
-    throw new RegistrationError('This game has registrations from before station limits. Ask the organizer to start a new session.');
-  }
-  if (legacy.length === 2 || legacy.some(row => row.player === player) || slotOccupied) throw full();
+  if (slotOccupied) throw full();
   for (let attempt = 0; attempt < 10; attempt++) {
     const identity = attempt === 0 ? firstIdentity : specialName ? { username: specialName, pin: undefined } : newIdentity();
     const pin = identity.pin;

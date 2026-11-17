@@ -4,34 +4,59 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
 import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import RegistrationKiosk from '../RegistrationKiosk';
-import { saveRegistration, type PlayerPass } from '../registration';
+import { getKioskStatus, saveRegistration, type KioskStatus, type PlayerPass } from '../registration';
 
 vi.mock('../registration', async importOriginal => ({
   ...await importOriginal<typeof import('../registration')>(),
   saveRegistration: vi.fn(),
+  getKioskStatus: vi.fn(),
 }));
 const pass: PlayerPass = {
   id: 'user', gameSessionId: 'game', player: 'P1', username: 'SillyEventhouse1234',
-  pin: '123456', registrationType: 'player',
-  excludeFromLeaderboard: false,
-  difficulty: 3,
+  pin: '123456', registrationType: 'player', excludeFromLeaderboard: false, difficulty: 3,
 };
+const clients: RayfinClient<AppSchema, AppFunctionsSchema>[] = [];
 beforeEach(() => {
+  vi.useFakeTimers();
   window.history.replaceState(null, '', '/?player=1#register');
   vi.mocked(saveRegistration).mockResolvedValue(pass);
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'game', registered: false });
 });
-afterEach(() => { cleanup(); vi.resetAllMocks(); });
+afterEach(() => {
+  cleanup();
+  clients.splice(0).forEach(client => client.auth.destroy());
+  vi.restoreAllMocks();
+  vi.resetAllMocks();
+  vi.useRealTimers();
+});
 function client() {
-  return new RayfinClient<AppSchema, AppFunctionsSchema>({
+  const value = new RayfinClient<AppSchema, AppFunctionsSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
+  clients.push(value);
+  return value;
 }
-it('describes the ranking and score rules underneath each accessible difficulty choice', () => {
-  render(<RegistrationKiosk client={client()} />);
+async function open() {
+  const value = client();
+  const view = await act(async () => render(<RegistrationKiosk client={value} />));
+  return { ...view, client: value };
+}
+async function advance(ms: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+}
+async function register() {
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+it('describes the ranking and score rules underneath each accessible difficulty choice', async () => {
+  await open();
   for (const [label, description] of [
-    ['Easy', 'Not ranked'],
-    ['Normal 3', 'Standard score'],
-    ['Normal 4', 'Score multiplied by 1.25'],
+    ['Easy', 'Not ranked'], ['Normal 3', 'Standard score'], ['Normal 4', 'Score multiplied by 1.25'],
   ]) {
     const radio = screen.getByRole('radio', { name: label });
     expect(radio).toHaveAccessibleDescription(description);
@@ -41,25 +66,180 @@ it('describes the ranking and score rules underneath each accessible difficulty 
   }
 });
 
-it('shows only a saved pass, its game ID and camera prompt, then clears them for the next player', async () => {
-  render(<RegistrationKiosk client={client()} />);
+it('shows the saved identity for exactly five seconds, then hides it behind GAME IN PROGRESS', async () => {
+  await open();
   expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  await register();
   expect(saveRegistration).toHaveBeenCalledTimes(1);
   expect(screen.getByText(pass.username)).toBeInTheDocument();
   expect(screen.getByText(pass.pin!)).toBeInTheDocument();
   expect(screen.getByText('game', { selector: 'code' })).toBeInTheDocument();
   expect(screen.getByText(/Photograph this screen now/)).toBeInTheDocument();
-  expect(screen.queryByText(/registration database|Eventhouse delivery/)).not.toBeInTheDocument();
+  expect(screen.getByText(/hides automatically after 5 seconds/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Next player/ })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /scoreboard/i })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: /Next player/ }));
+  await advance(4999);
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'GAME IN PROGRESS' })).not.toBeInTheDocument();
+  await advance(1);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  expect(screen.queryByText(pass.username)).not.toBeInTheDocument();
   expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
   expect(screen.queryByText(/Game session ID:/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Register|Start over|Next player/ })).not.toBeInTheDocument();
+  await advance(10000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
 });
+
+it('reopens automatically only after a new available game and resets the next difficulty and request', async () => {
+  await open();
+  fireEvent.click(screen.getByRole('radio', { name: 'Easy' }));
+  vi.mocked(saveRegistration).mockResolvedValueOnce({ ...pass, difficulty: 0, excludeFromLeaderboard: true });
+  await register();
+  const previousRequest = vi.mocked(saveRegistration).mock.calls[0][1];
+  await advance(5000);
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: null, registered: false });
+  await advance(1000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: false });
+  await advance(1000);
+  expect(screen.getByRole('radio', { name: 'Normal 3' })).toBeChecked();
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, gameSessionId: 'new-game' });
+  await register();
+  const next = vi.mocked(saveRegistration).mock.calls[1][1];
+  expect(next.requestId).not.toBe(previousRequest.requestId);
+  expect(next.difficulty).toBe(3);
+});
+
+it('detects an already occupied station after refresh without redisplaying a player pass', async () => {
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'game', registered: true });
+  await open();
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Register me' })).not.toBeInTheDocument();
+  expect(saveRegistration).not.toHaveBeenCalled();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: true });
+  await advance(1000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'next-game', registered: false });
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+});
+
+it('waits for the initial station lookup and for a game instead of showing an available slot by default', async () => {
+  const status = deferred<KioskStatus>();
+  vi.mocked(getKioskStatus).mockReturnValue(status.promise);
+  render(<RegistrationKiosk client={client()} />);
+  expect(screen.getByRole('heading', { name: 'Checking this station...' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Register me' })).not.toBeInTheDocument();
+  await act(async () => { status.resolve({ gameSessionId: null, registered: false }); });
+  expect(screen.getByRole('heading', { name: 'Waiting for a game' })).toBeInTheDocument();
+});
+
+it('fails closed on a station lookup error and recovers only when a lookup succeeds', async () => {
+  vi.mocked(getKioskStatus).mockRejectedValueOnce(new Error('Station lookup unavailable'));
+  await open();
+  expect(screen.getByRole('alert')).toHaveTextContent('Station lookup unavailable');
+  expect(screen.queryByRole('button', { name: 'Register me' })).not.toBeInTheDocument();
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+  vi.mocked(getKioskStatus).mockRejectedValueOnce(new Error('Connection interrupted'));
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeDisabled();
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+});
+
+it('keeps an occupied station locked through connection failures and recovers on a confirmed new game', async () => {
+  vi.mocked(getKioskStatus).mockResolvedValueOnce({ gameSessionId: 'game', registered: true })
+    .mockRejectedValueOnce(new Error('Connection interrupted'));
+  await open();
+  await advance(1000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('Connection interrupted');
+  expect(screen.queryByRole('button', { name: 'Register me' })).not.toBeInTheDocument();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: false });
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+});
+
+it('does not apply an old status response that started before registration succeeded', async () => {
+  await open();
+  const status = deferred<KioskStatus>();
+  vi.mocked(getKioskStatus).mockReturnValueOnce(status.promise);
+  await advance(1000);
+  await register();
+  await act(async () => { status.resolve({ gameSessionId: 'old-game', registered: false }); });
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  await advance(5000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+});
+
+it('ignores a registration response from an old game after the session is reset', async () => {
+  const pending = deferred<PlayerPass>();
+  vi.mocked(saveRegistration).mockReturnValueOnce(pending.promise);
+  await open();
+  await register();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: false });
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+  await act(async () => { pending.resolve(pass); });
+  expect(screen.queryByText(pass.username)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Register me' })).toBeEnabled();
+});
+
+it('clears an old pass on reset and cancels its timer so it cannot hide the next player early', async () => {
+  await open();
+  await register();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: false });
+  await advance(1000);
+  expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
+  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, gameSessionId: 'new-game', pin: '654321' });
+  await register();
+  await advance(4000);
+  expect(screen.getByText('654321')).toBeInTheDocument();
+  await advance(1000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+});
+
+it('preserves a pass saved in the new game before the status poll observes that reset', async () => {
+  await open();
+  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, gameSessionId: 'new-game' });
+  await register();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'new-game', registered: true });
+  await advance(1000);
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  await advance(3999);
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+  await advance(1);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+});
+
+it('cleans up polling and the five-second timer on unmount', async () => {
+  const view = await open();
+  await register();
+  const calls = vi.mocked(getKioskStatus).mock.calls.length;
+  view.unmount();
+  await advance(10000);
+  expect(getKioskStatus).toHaveBeenCalledTimes(calls);
+});
+
+it('hides credentials after five seconds even while a status request is stalled', async () => {
+  await open();
+  await register();
+  const pending = deferred<KioskStatus>();
+  vi.mocked(getKioskStatus).mockReturnValueOnce(pending.promise);
+  await advance(5000);
+  expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  await act(async () => { pending.resolve({ gameSessionId: 'game', registered: true }); });
+});
+
 it('retains the request ID after a failure so retry cannot create a duplicate', async () => {
   vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Connection interrupted'));
-  render(<RegistrationKiosk client={client()} />);
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  await open();
+  await register();
   const request = vi.mocked(saveRegistration).mock.calls[0][1];
   expect(screen.getByRole('alert')).toHaveTextContent('Connection interrupted');
   expect(screen.queryByText(pass.pin!)).not.toBeInTheDocument();
@@ -68,54 +248,79 @@ it('retains the request ID after a failure so retry cannot create a duplicate', 
   expect(screen.getByText(pass.username)).toBeInTheDocument();
 });
 
-it('retains the selected Easy difficulty on retry and resets the next player independently', async () => {
+it('permits an idempotent retry to recover a lost player pass even after status reports the slot occupied', async () => {
+  vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Lost registration response'));
+  await open();
+  await register();
+  const request = vi.mocked(saveRegistration).mock.calls[0][1];
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'game', registered: true });
+  await advance(1000);
+  expect(screen.getByRole('button', { name: 'Retry registration' })).toBeEnabled();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
+  expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
+  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
+});
+
+it('Start over cannot reopen an occupied station after a failed registration', async () => {
+  vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Station is already registered'));
+  await open();
+  await register();
+  vi.mocked(getKioskStatus).mockResolvedValue({ gameSessionId: 'game', registered: true });
+  await advance(1000);
+  fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Register me' })).not.toBeInTheDocument();
+});
+
+it('retains Easy on retry, and Start over clears only an uncommitted draft', async () => {
   vi.mocked(saveRegistration).mockRejectedValueOnce(new Error('Connection interrupted'))
-    .mockResolvedValueOnce({ ...pass, excludeFromLeaderboard: true, difficulty: 0 });
-  render(<RegistrationKiosk client={client()} />);
+    .mockRejectedValueOnce(new Error('Still interrupted'));
+  await open();
   fireEvent.click(screen.getByRole('radio', { name: 'Easy' }));
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  await register();
   const request = vi.mocked(saveRegistration).mock.calls[0][1];
   expect(request).toMatchObject({ player: 'P1', specialName: '', difficulty: 0 });
   expect(screen.getByRole('radio', { name: 'Normal 4' })).toBeDisabled();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Retry registration' })); });
   expect(vi.mocked(saveRegistration).mock.calls[1][1]).toEqual(request);
-  expect(screen.getByText(/Easy mode: shown on the live scoreboard/)).toBeInTheDocument();
-  expect(screen.getByText(pass.pin!)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: /Next player/ }));
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
-  expect(vi.mocked(saveRegistration).mock.calls[2][1]).toMatchObject({ difficulty: 3 });
+  fireEvent.click(screen.getByRole('button', { name: 'Start over' }));
+  expect(screen.getByRole('radio', { name: 'Normal 3' })).toBeChecked();
+  await register();
   expect(vi.mocked(saveRegistration).mock.calls[2][1].requestId).not.toBe(request.requestId);
 });
 
 it.each([[0, 'Easy'], [3, 'Normal 3'], [4, 'Normal 4']] as const)(
-  'registers an independent numeric difficulty %s and shows %s on the saved pass',
+  'registers independent numeric difficulty %s and shows %s on the saved pass',
   async (difficulty, label) => {
-  vi.mocked(saveRegistration).mockResolvedValue({ ...pass, difficulty, excludeFromLeaderboard: difficulty === 0 });
-  render(<RegistrationKiosk client={client()} />);
-  expect(screen.getByRole('radio', { name: 'Normal 3' })).toBeChecked();
-  fireEvent.click(screen.getByRole('radio', { name: label }));
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
-  expect(vi.mocked(saveRegistration).mock.calls[0][1].difficulty).toBe(difficulty);
-  expect(screen.getByText(`Difficulty: ${label}`)).toBeInTheDocument();
-  expect(screen.getByText(difficulty === 0 ? /Easy mode: shown/ : /This player is eligible/)).toBeInTheDocument();
-});
-it('shows progress and prevents concurrent clicks while its single server request is pending', async () => {
-  let resolve!: (value: PlayerPass) => void;
-  vi.mocked(saveRegistration).mockReturnValue(new Promise(done => { resolve = done; }));
-  render(<RegistrationKiosk client={client()} />);
+    vi.mocked(saveRegistration).mockResolvedValue({ ...pass, difficulty, excludeFromLeaderboard: difficulty === 0 });
+    await open();
+    expect(screen.getByRole('radio', { name: 'Normal 3' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: label }));
+    await register();
+    expect(vi.mocked(saveRegistration).mock.calls[0][1].difficulty).toBe(difficulty);
+    expect(screen.getByText(`Difficulty: ${label}`)).toBeInTheDocument();
+    expect(screen.getByText(difficulty === 0 ? /Easy mode: shown/ : /This player is eligible/)).toBeInTheDocument();
+  },
+);
+
+it('shows progress and prevents concurrent clicks while its registration request is pending', async () => {
+  const pending = deferred<PlayerPass>();
+  vi.mocked(saveRegistration).mockReturnValue(pending.promise);
+  await open();
   fireEvent.click(screen.getByRole('button', { name: 'Register me' }));
   expect(screen.getByRole('status')).toHaveTextContent('Saving your player pass');
   expect(screen.getByRole('button', { name: 'Registering...' })).toBeDisabled();
   expect(saveRegistration).toHaveBeenCalledTimes(1);
-  await act(async () => { resolve(pass); });
+  await act(async () => { pending.resolve(pass); });
 });
+
 it.each([
   ['YaelTheChampion', ['Top-right corner', 'Top-right corner', 'Bottom-left corner', 'Bottom-left corner']],
   ['EdgarIsGoingDown', ['Bottom-left corner', 'Bottom-left corner', 'Top-right corner', 'Top-right corner']],
   ['The Dancing Queen', ['Top-left corner', 'Top-right corner', 'Bottom-right corner', 'Bottom-left corner']],
-])('sends one special registration request for %s without creating a PIN', async (name, corners) => {
+])('uses the same five-second lifecycle for special player %s without creating a PIN', async (name, corners) => {
   vi.mocked(saveRegistration).mockResolvedValue({ ...pass, username: name, pin: null, registrationType: 'special' });
-  render(<RegistrationKiosk client={client()} />);
+  await open();
   for (const corner of corners.slice(0, 3)) fireEvent.click(screen.getByRole('button', { name: corner }));
   expect(saveRegistration).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: corners[3] })); });
@@ -123,83 +328,85 @@ it.each([
   expect(vi.mocked(saveRegistration).mock.calls[0][1]).toMatchObject({ player: 'P1', specialName: name });
   expect(screen.getByText(name)).toBeInTheDocument();
   expect(screen.queryByText('Your unique PIN')).not.toBeInTheDocument();
+  await advance(5000);
+  expect(screen.getByRole('heading', { name: 'GAME IN PROGRESS' })).toBeInTheDocument();
+  expect(screen.queryByText(name)).not.toBeInTheDocument();
 });
-it.each(['wrong order', 'expired'])('does not activate The Dancing Queen for %s taps', reason => {
+
+it.each(['wrong order', 'expired'])('does not activate The Dancing Queen for %s taps', async reason => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
-  render(<RegistrationKiosk client={client()} />);
+  await open();
   const corners = reason === 'wrong order'
     ? ['Top-left corner', 'Bottom-right corner', 'Top-right corner', 'Bottom-left corner']
     : ['Top-left corner', 'Top-right corner', 'Bottom-right corner', 'Bottom-left corner'];
-  try {
-    for (const [index, corner] of corners.entries()) {
-      if (reason === 'expired' && index === 3) now.mockReturnValue(18001);
-      fireEvent.click(screen.getByRole('button', { name: corner }));
-    }
-    expect(saveRegistration).not.toHaveBeenCalled();
-  } finally {
-    now.mockRestore();
+  for (const [index, corner] of corners.entries()) {
+    if (reason === 'expired' && index === 3) now.mockReturnValue(18001);
+    fireEvent.click(screen.getByRole('button', { name: corner }));
   }
+  expect(saveRegistration).not.toHaveBeenCalled();
 });
-it('launches a chicken after three top-left taps without registering, cleans up and can repeat', () => {
-  render(<RegistrationKiosk client={client()} />);
+
+it('launches and cleans up a chicken after three top-left taps without registering', async () => {
+  await open();
   const corner = screen.getByRole('button', { name: 'Top-left corner' });
-  const chickenName = 'A chicken doing the funky chicken dance';
+  const name = 'A chicken doing the funky chicken dance';
   fireEvent.click(corner);
   fireEvent.click(corner);
-  expect(screen.queryByRole('img', { name: chickenName })).not.toBeInTheDocument();
+  expect(screen.queryByRole('img', { name })).not.toBeInTheDocument();
   fireEvent.click(corner);
-  const chicken = screen.getByRole('img', { name: chickenName });
+  const chicken = screen.getByRole('img', { name });
   expect(chicken.querySelectorAll('.booth-chicken-eye')).toHaveLength(2);
   fireEvent.animationEnd(chicken.querySelector('svg')!);
   expect(chicken).toBeInTheDocument();
   fireEvent.animationEnd(chicken);
-  expect(screen.queryByRole('img', { name: chickenName })).not.toBeInTheDocument();
+  expect(screen.queryByRole('img', { name })).not.toBeInTheDocument();
   for (let i = 0; i < 3; i++) fireEvent.click(corner);
-  expect(screen.getByRole('img', { name: chickenName })).toBeInTheDocument();
+  expect(screen.getByRole('img', { name })).toBeInTheDocument();
   expect(saveRegistration).not.toHaveBeenCalled();
 });
-it('does not launch a chicken for expired top-left taps', () => {
+
+it('does not launch a chicken for expired top-left taps', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
-  render(<RegistrationKiosk client={client()} />);
-  try {
-    const corner = screen.getByRole('button', { name: 'Top-left corner' });
-    fireEvent.click(corner);
-    fireEvent.click(corner);
-    now.mockReturnValue(18001);
-    fireEvent.click(corner);
-    expect(screen.queryByRole('img', { name: /funky chicken dance/ })).not.toBeInTheDocument();
-    expect(saveRegistration).not.toHaveBeenCalled();
-  } finally {
-    now.mockRestore();
-  }
+  await open();
+  const corner = screen.getByRole('button', { name: 'Top-left corner' });
+  fireEvent.click(corner);
+  fireEvent.click(corner);
+  now.mockReturnValue(18001);
+  fireEvent.click(corner);
+  expect(screen.queryByRole('img', { name: /funky chicken dance/ })).not.toBeInTheDocument();
+  expect(saveRegistration).not.toHaveBeenCalled();
 });
-it.each([['1', 'P1'], ['2', 'P2']])('sends station %s in its single request', async (flag, player) => {
+
+it.each([['1', 'P1'], ['2', 'P2']])('polls and registers only its own station %s', async (flag, player) => {
   window.history.replaceState(null, '', `/?player=${flag}#register`);
-  render(<RegistrationKiosk client={client()} />);
+  const view = await open();
   expect(screen.getByText(`Station ${flag}`)).toBeInTheDocument();
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Register me' })); });
+  expect(getKioskStatus).toHaveBeenCalledWith(view.client, player);
+  await register();
   expect(vi.mocked(saveRegistration).mock.calls[0][1]).toMatchObject({ player, specialName: '' });
 });
-it.each(['/', '/?player=3#register'])('blocks missing or invalid station URLs %s', url => {
+
+it.each(['/', '/?player=3#register'])('blocks missing or invalid station URLs %s without polling', async url => {
   window.history.replaceState(null, '', url);
-  render(<RegistrationKiosk client={client()} />);
+  await open();
   expect(screen.getByRole('alert')).toHaveTextContent(/station/i);
   expect(screen.getByRole('button', { name: 'Register me' })).toBeDisabled();
   for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
   expect(saveRegistration).not.toHaveBeenCalled();
+  expect(getKioskStatus).not.toHaveBeenCalled();
 });
-it('does not activate on interleaved or expired corner taps', () => {
+
+it('does not activate special registration on interleaved or expired corner taps', async () => {
   const now = vi.spyOn(Date, 'now').mockReturnValue(10000);
-  render(<RegistrationKiosk client={client()} />);
+  await open();
   for (const corner of ['Top-right corner', 'Bottom-left corner', 'Top-right corner', 'Bottom-left corner']) {
     fireEvent.click(screen.getByRole('button', { name: corner }));
   }
   now.mockReturnValue(20000);
   fireEvent.click(screen.getByRole('button', { name: 'Top-right corner' }));
   fireEvent.click(screen.getByRole('button', { name: 'Top-right corner' }));
-  now.mockReturnValue(29000);
+  now.mockReturnValue(28001);
   fireEvent.click(screen.getByRole('button', { name: 'Bottom-left corner' }));
   fireEvent.click(screen.getByRole('button', { name: 'Bottom-left corner' }));
   expect(saveRegistration).not.toHaveBeenCalled();
-  now.mockRestore();
 });

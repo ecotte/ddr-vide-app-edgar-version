@@ -3,7 +3,7 @@ import { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../../rayfin/data/schema';
 import type { GamePlayerSession } from '../../rayfin/data/GamePlayerSession';
 import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
-import { getRegistrationMode, registerPlayer } from '../../rayfin/functions/src/registration';
+import { getKioskStatus, getRegistrationMode, registerPlayer } from '../../rayfin/functions/src/registration';
 import { ADJECTIVES, NOUNS, newIdentity } from '../../rayfin/functions/src/identity';
 import { registrationStation, saveRegistration } from '../registration';
 import { DIFFICULTIES } from '../../rayfin/functions/src/difficulty';
@@ -44,7 +44,7 @@ function setup() {
   vi.spyOn(client.data.SpecialSession, 'select').mockReturnValue(specials);
   vi.spyOn(specials, 'where').mockReturnValue(specials);
   vi.spyOn(specials, 'first').mockReturnValue(specials);
-  vi.spyOn(specials, 'execute').mockResolvedValue([]);
+  const specialExecute = vi.spyOn(specials, 'execute').mockResolvedValue([]);
   const create = vi.spyOn(client.data.GamePlayerSession, 'create').mockImplementation(async row => ({
     ...row, id: row.id ?? crypto.randomUUID(), pin: row.pin ?? undefined,
   }));
@@ -68,7 +68,7 @@ function setup() {
     return saved;
   });
   return { client, game, gameExecute, slotExecute, slotWhere, userExecute, find, create,
-    modes, createMode, modeExecute };
+    modes, createMode, modeExecute, specialExecute };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
@@ -77,6 +77,72 @@ it.each([['?player=1', 'P1'], ['?player=2', 'P2']])('reads station %s', (search,
 });
 it.each(['', '?player=', '?player=3', '?player=P1', '?player=1&player=2'])('blocks missing or invalid station %s', search => {
   expect(registrationStation(search).error).not.toBe('');
+});
+
+it.each(['P1', 'P2'])('returns only game identity and occupancy for station %s', async player => {
+  const { client, slotExecute, slotWhere, create } = setup();
+  expect(await getKioskStatus(client.data, player)).toEqual({ gameSessionId: gameId, registered: false });
+  expect(slotWhere).toHaveBeenLastCalledWith({ slotKey: { eq: `${gameId}:${player}` } });
+  slotExecute.mockResolvedValue([{
+    id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1',
+    slotKey: `${gameId}:${player}`, username: 'PrivatePlayer1234', pin: '123456',
+    usernameKey: 'private', pinKey: 'private', registrationType: 'player',
+    createdAt: new Date(), eventQueued: true,
+  }]);
+  expect(await getKioskStatus(client.data, player)).toEqual({ gameSessionId: gameId, registered: true });
+  expect(client.data.GamePlayerSession.select).toHaveBeenCalledWith(['id']);
+  expect(create).not.toHaveBeenCalled();
+});
+
+it.each(['', 'P3', '1'])('rejects invalid status station %s before reading data', async player => {
+  const { client, gameExecute } = setup();
+  await expect(getKioskStatus(client.data, player)).rejects.toThrow('Invalid kiosk station');
+  expect(gameExecute).not.toHaveBeenCalled();
+});
+
+it('does not reopen check-in from an absent, inactive or ended newest game', async () => {
+  const { client, game, gameExecute, slotExecute } = setup();
+  for (const rows of [[], [{ ...game, active: false }], [{ ...game, endedAt: new Date() }]]) {
+    gameExecute.mockResolvedValueOnce(rows);
+    expect(await getKioskStatus(client.data, 'P1')).toEqual({ gameSessionId: null, registered: false });
+  }
+  expect(slotExecute).not.toHaveBeenCalled();
+});
+
+it('keeps occupancy independent and checks the new game rather than an old station row', async () => {
+  const { client, game, gameExecute, slotExecute, slotWhere } = setup();
+  const nextId = crypto.randomUUID();
+  const occupied = {
+    id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1' as const,
+    slotKey: `${gameId}:P1`, username: 'PlayerName1234', usernameKey: 'test',
+    pinKey: 'test', registrationType: 'special' as const, createdAt: new Date(), eventQueued: true,
+  };
+  slotExecute.mockImplementation(async () => JSON.stringify(slotWhere.mock.lastCall?.[0]).includes(`${gameId}:P1`) ? [occupied] : []);
+  expect((await getKioskStatus(client.data, 'P1')).registered).toBe(true);
+  expect((await getKioskStatus(client.data, 'P2')).registered).toBe(false);
+  gameExecute.mockResolvedValue([{ ...game, id: nextId }]);
+  expect(await getKioskStatus(client.data, 'P1')).toEqual({ gameSessionId: nextId, registered: false });
+});
+
+it.each(['normal', 'special'])('recognizes %s historical registrations as occupied without returning credentials', async kind => {
+  const { client, userExecute, specialExecute } = setup();
+  const common = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P2' as const,
+    username: 'SillyEventhouse1234', createdAt: new Date(), eventQueued: true };
+  if (kind === 'normal') userExecute.mockResolvedValue([{ ...common, pin: '123456' }]);
+  else specialExecute.mockResolvedValue([{ ...common, registrationKey: 'special' }]);
+  expect(await getKioskStatus(client.data, 'P2')).toEqual({ gameSessionId: gameId, registered: true });
+  expect(await getKioskStatus(client.data, 'P1')).toEqual({ gameSessionId: gameId, registered: false });
+});
+
+it('surfaces status lookup failures and ambiguous legacy games rather than guessing that a station is free', async () => {
+  const { client, slotExecute, userExecute } = setup();
+  slotExecute.mockRejectedValueOnce(new Error('Status database unavailable'));
+  await expect(getKioskStatus(client.data, 'P1')).rejects.toThrow('Status database unavailable');
+  userExecute.mockResolvedValue([{
+    id: crypto.randomUUID(), gameSessionId: gameId, username: 'SillyEventhouse1234',
+    pin: '123456', createdAt: new Date(), eventQueued: true,
+  }]);
+  await expect(getKioskStatus(client.data, 'P1')).rejects.toThrow('before station limits');
 });
 it('generates forty distinct words per list and capitalized names with four digits and independent six-digit PINs', () => {
   for (const words of [ADJECTIVES, NOUNS]) {
