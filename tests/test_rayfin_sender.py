@@ -165,6 +165,44 @@ def test_current_player_slots_are_acknowledged_only_after_durable_enqueue(monkey
         sender.close()
 
 
+def test_bowser_does_not_block_the_following_player_and_both_keep_all_registration_fields(monkeypatch, tmp_path):
+    bowser = {
+        **REGISTRATION, "player": "P1", "username": "Bowser", "registrationType": "special",
+        "relaySource": "slot", "pin": None, "difficulty": 4, "excludeFromLeaderboard": False,
+    }
+    player = {
+        **REGISTRATION, "id": "a81f58cf-407f-4074-ab48-e4f37732672e", "player": "P2",
+        "registrationType": "player", "relaySource": "slot", "difficulty": 0, "excludeFromLeaderboard": True,
+    }
+    process, _ = fake_process(monkeypatch, tmp_path, [
+        {"status": "ready"},
+        {"status": "published", "revision": 3, "registrations": [bowser, player]},
+        {"status": "published", "revision": 4, "registrations": []},
+    ])
+    sink = Mock()
+    sender = RayfinSender(registration_sink=sink)
+    try:
+        sender.publish({"revision": 3})
+        assert sink.call_count == 2
+        for call, row in zip(sink.call_args_list, [bowser, player]):
+            event = call.args[0]
+            assert event.event_id == row["id"]
+            assert event.session_id == row["gameSessionId"]
+            assert event.player == row["player"]
+            assert event.observed_at_utc == row["createdAt"]
+            assert event.payload == {
+                "user_session_id": row["id"], "game_session_id": row["gameSessionId"],
+                "username": row["username"], "registration_type": row["registrationType"],
+                "difficulty": row["difficulty"], "exclude_from_leaderboard": row["excludeFromLeaderboard"],
+                **({"pin": row["pin"]} if row["registrationType"] == "player" else {}),
+            }
+        sender.publish({"revision": 4})
+        request = json.loads(process.stdin.getvalue().splitlines()[1])
+        assert request["acknowledgedGamePlayerRegistrations"] == [bowser["id"], player["id"]]
+    finally:
+        sender.close()
+
+
 def test_invalid_pin_is_not_acknowledged_or_exposed(monkeypatch, tmp_path):
     row = {**REGISTRATION, "pin": "bad-pin"}
     process, _ = fake_process(monkeypatch, tmp_path, [
@@ -178,6 +216,7 @@ def test_invalid_pin_is_not_acknowledged_or_exposed(monkeypatch, tmp_path):
         with pytest.raises(ScoreboardPublishError) as error:
             sender.publish({"revision": 3})
         assert "bad-pin" not in str(error.value)
+        assert "data is invalid or unsupported" in str(error.value)
         sink.assert_not_called()
         sender.publish({"revision": 4})
         requests = [json.loads(line) for line in process.stdin.getvalue().splitlines()]

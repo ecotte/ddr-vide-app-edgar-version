@@ -79,18 +79,27 @@ it.each(['', '?player=', '?player=3', '?player=P1', '?player=1&player=2'])('bloc
   expect(registrationStation(search).error).not.toBe('');
 });
 
-it.each(['P1', 'P2'])('returns only game identity and occupancy for station %s', async player => {
+it.each(['P1', 'P2'] as const)('returns game identity, occupancy, player name and difficulty without PINs for station %s', async player => {
   const { client, slotExecute, slotWhere, create } = setup();
   expect(await getKioskStatus(client.data, player)).toEqual({ gameSessionId: gameId, registered: false });
   expect(slotWhere).toHaveBeenLastCalledWith({ slotKey: { eq: `${gameId}:${player}` } });
-  slotExecute.mockResolvedValue([{
-    id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1',
+  const row = {
+    id: crypto.randomUUID(), gameSessionId: gameId, player,
     slotKey: `${gameId}:${player}`, username: 'PrivatePlayer1234', pin: '123456',
-    usernameKey: 'private', pinKey: 'private', registrationType: 'player',
+    usernameKey: 'private', pinKey: 'private', registrationType: 'player' as const,
     createdAt: new Date(), eventQueued: true,
-  }]);
-  expect(await getKioskStatus(client.data, player)).toEqual({ gameSessionId: gameId, registered: true });
-  expect(client.data.GamePlayerSession.select).toHaveBeenCalledWith(['id']);
+  };
+  for (const [difficulty, excludeFromLeaderboard, expected] of [
+    [0, true, 0], [3, false, 3], [4, false, 4], [undefined, true, 0], [undefined, false, null],
+  ] as const) {
+    slotExecute.mockResolvedValue([{ ...row, difficulty, excludeFromLeaderboard }]);
+    expect(await getKioskStatus(client.data, player)).toEqual({
+      gameSessionId: gameId, registered: true, username: 'PrivatePlayer1234', difficulty: expected,
+    });
+  }
+  expect(client.data.GamePlayerSession.select).toHaveBeenCalledWith(['id', 'username', 'difficulty', 'excludeFromLeaderboard']);
+  slotExecute.mockResolvedValue([{ ...row, difficulty: 4, excludeFromLeaderboard: true }]);
+  await expect(getKioskStatus(client.data, player)).rejects.toThrow('invalid difficulty');
   expect(create).not.toHaveBeenCalled();
 });
 
@@ -124,13 +133,15 @@ it('keeps occupancy independent and checks the new game rather than an old stati
   expect(await getKioskStatus(client.data, 'P1')).toEqual({ gameSessionId: nextId, registered: false });
 });
 
-it.each(['normal', 'special'])('recognizes %s historical registrations as occupied without returning credentials', async kind => {
+it.each(['normal', 'special'])('returns the %s historical station name without returning PINs', async kind => {
   const { client, userExecute, specialExecute } = setup();
   const common = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P2' as const,
     username: 'SillyEventhouse1234', createdAt: new Date(), eventQueued: true };
   if (kind === 'normal') userExecute.mockResolvedValue([{ ...common, pin: '123456' }]);
   else specialExecute.mockResolvedValue([{ ...common, registrationKey: 'special' }]);
-  expect(await getKioskStatus(client.data, 'P2')).toEqual({ gameSessionId: gameId, registered: true });
+  expect(await getKioskStatus(client.data, 'P2')).toEqual({
+    gameSessionId: gameId, registered: true, username: common.username, difficulty: null,
+  });
   expect(await getKioskStatus(client.data, 'P1')).toEqual({ gameSessionId: gameId, registered: false });
 });
 
@@ -349,7 +360,7 @@ it.each(['', 'YaelTheChampion'])('lets only one request win when a normal and %s
   expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
   expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
 });
-it.each(['YaelTheChampion', 'EdgarIsGoingDown', 'The Dancing Queen'])('keeps %s in the same slot limit without generating a PIN', async name => {
+it.each(['YaelTheChampion', 'EdgarIsGoingDown', 'The Dancing Queen', 'Bowser'])('keeps %s in the same slot limit without generating a PIN', async name => {
   const { client, create } = setup();
   const pass = await registerPlayer(client.data, crypto.randomUUID(), 'P1', name);
   expect(pass).toMatchObject({ username: name, pin: null, registrationType: 'special' });

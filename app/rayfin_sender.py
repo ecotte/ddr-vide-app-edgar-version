@@ -110,6 +110,12 @@ class RayfinSender:
         for row in rows:
             try:
                 event = registration_event(row)
+            except ValueError:
+                raise ScoreboardRegistrationError(
+                    "Player registration data is invalid or unsupported by this desktop version. "
+                    "Update and restart the desktop; SQL registrations remain pending."
+                ) from None
+            try:
                 self._registration_sink(event)
             except (ValueError, RuntimeError):
                 raise ScoreboardRegistrationError(

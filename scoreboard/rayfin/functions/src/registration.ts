@@ -21,19 +21,31 @@ export interface PlayerPass {
 export interface KioskStatus {
   gameSessionId: string | null;
   registered: boolean;
+  username?: string;
+  difficulty?: Difficulty | null;
 }
 
-async function stationOccupied(data: RegistrationData, gameId: string, player: 'P1' | 'P2'): Promise<boolean> {
+async function stationStatus(
+  data: RegistrationData, gameId: string, player: 'P1' | 'P2',
+): Promise<Pick<KioskStatus, 'registered' | 'username' | 'difficulty'>> {
   const [slots, players, specials] = await Promise.all([
-    data.GamePlayerSession.select(['id']).where({ slotKey: { eq: `${gameId}:${player}` } }).first(1).execute(),
-    data.UserSession.select(['id', 'player']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
-    data.SpecialSession.select(['id', 'player']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+    data.GamePlayerSession.select(['id', 'username', 'difficulty', 'excludeFromLeaderboard'])
+      .where({ slotKey: { eq: `${gameId}:${player}` } }).first(1).execute(),
+    data.UserSession.select(['id', 'player', 'username']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
+    data.SpecialSession.select(['id', 'player', 'username']).where({ gameSessionId: { eq: gameId } }).first(3).execute(),
   ]);
   const legacy = [...players, ...specials];
   if (legacy.some(row => !row.player) || legacy.length > 2) {
     throw new RegistrationError('This game has registrations from before station limits. Ask the organizer to start a new session.');
   }
-  return slots.length > 0 || legacy.length === 2 || legacy.some(row => row.player === player);
+  const registration = slots[0] ?? legacy.find(row => row.player === player);
+  return {
+    registered: slots.length > 0 || legacy.length === 2 || Boolean(registration),
+    ...(registration ? {
+      username: registration.username,
+      difficulty: slots[0] ? registrationDifficulty(slots[0]) : null,
+    } : {}),
+  };
 }
 
 export async function getKioskStatus(data: RegistrationData, player: string): Promise<KioskStatus> {
@@ -41,15 +53,20 @@ export async function getKioskStatus(data: RegistrationData, player: string): Pr
   const [game] = await data.GameSession.select(['id', 'startedAt', 'active', 'endedAt'])
     .orderBy({ startedAt: 'desc' }).first(1).execute();
   if (!game?.active || game.endedAt != null) return { gameSessionId: null, registered: false };
-  return { gameSessionId: game.id, registered: await stationOccupied(data, game.id, player) };
+  return { gameSessionId: game.id, ...await stationStatus(data, game.id, player) };
 }
 
-function playerPass(row: GamePlayerSession): PlayerPass {
+function registrationDifficulty(row: Pick<GamePlayerSession, 'difficulty' | 'excludeFromLeaderboard'>): Difficulty | null {
   const difficulty = row.difficulty ?? (row.excludeFromLeaderboard ? 0 : null);
   if (difficulty !== null && (!isDifficulty(difficulty)
       || (difficulty === 0) !== (row.excludeFromLeaderboard ?? false))) {
     throw new RegistrationError('The saved registration has an invalid difficulty. Ask the organizer for help.');
   }
+  return difficulty;
+}
+
+function playerPass(row: GamePlayerSession): PlayerPass {
+  const difficulty = registrationDifficulty(row);
   return {
     id: row.id, gameSessionId: row.gameSessionId, player: row.player, username: row.username,
     pin: row.registrationType === 'special' ? null : row.pin ?? null,
@@ -146,11 +163,11 @@ export async function registerPlayer(
     return oldPin.length + oldName.length > 0;
   };
   const [slotOccupied, firstIdentityTaken] = await Promise.all([
-    stationOccupied(data, game.id, player),
+    stationStatus(data, game.id, player),
     historicalIdentityTaken(firstIdentity.username, firstIdentity.pin),
     verifyLiveGame(data, game, started),
   ]);
-  if (slotOccupied) throw full();
+  if (slotOccupied.registered) throw full();
   for (let attempt = 0; attempt < 10; attempt++) {
     const identity = attempt === 0 ? firstIdentity : specialName ? { username: specialName, pin: undefined } : newIdentity();
     const pin = identity.pin;

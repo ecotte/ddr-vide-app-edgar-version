@@ -61,7 +61,7 @@ def test_registration_timestamps_are_normalized_to_utc_before_delivery(tmp_path,
         outbox.close()
 
 
-@pytest.mark.parametrize("username", ["YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen"])
+@pytest.mark.parametrize("username", ["YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen", "Bowser"])
 def test_special_registration_is_explicit_and_needs_no_pin(username):
     row = {**ROW, "username": username, "registrationType": "special", "pin": None}
     event = registration_event(row)
@@ -70,6 +70,31 @@ def test_special_registration_is_explicit_and_needs_no_pin(username):
     assert "pin" not in event.payload
     with pytest.raises(ValueError):
         registration_event({**row, "registrationType": "player"})
+
+
+@pytest.mark.parametrize("kind,username", [("player", "SillyEventhouse1234"), ("special", "Bowser")])
+def test_registration_wire_event_contains_all_registration_data(tmp_path, kind, username):
+    row = {
+        **ROW, "username": username, "registrationType": kind, "player": "P2",
+        "difficulty": 4, "excludeFromLeaderboard": False,
+        "pin": ROW["pin"] if kind == "player" else None,
+    }
+    outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "test")
+    try:
+        outbox.enqueue(registration_event(row))
+        assert json.loads(outbox.next_event()[2]) == {
+            "schema_version": "1.0", "event_id": ROW["id"], "session_id": ROW["gameSessionId"],
+            "sequence": 0, "source_mode": "registration", "frame_index": None, "video_time_ms": None,
+            "observed_at_utc": ROW["createdAt"], "event_type": "user.register", "player": "P2", "confidence": None,
+            "payload": {
+                "user_session_id": ROW["id"], "game_session_id": ROW["gameSessionId"],
+                "username": username, "registration_type": kind,
+                **({"pin": ROW["pin"]} if kind == "player" else {}),
+                "difficulty": 4, "exclude_from_leaderboard": False,
+            },
+        }
+    finally:
+        outbox.close()
 
 
 @pytest.mark.parametrize("kind,username", [
