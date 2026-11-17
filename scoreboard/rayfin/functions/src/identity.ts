@@ -1,4 +1,4 @@
-export const SPECIAL_NAMES = ['YaelTheChampion', 'EdgarIsGoingDown', 'The Dancing Queen'] as const;
+export const SPECIAL_NAMES = ['YaelTheChampion', 'EdgarIsGoingDown', 'The Dancing Queen', 'Bowser'] as const;
 export type SpecialName = typeof SPECIAL_NAMES[number];
 
 export const ADJECTIVES = [

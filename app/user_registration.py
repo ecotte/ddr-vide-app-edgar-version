@@ -30,7 +30,7 @@ def registration_event(row: dict) -> Event:
         if registration_type == "special":
             if pin is not None:
                 raise ValueError
-            valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen")
+            valid_name = username in ("YaelTheChampion", "EdgarIsGoingDown", "The Dancing Queen", "Bowser")
         elif registration_type == "player":
             if not isinstance(pin, str) or re.fullmatch(r"[0-9]{6}", pin) is None:
                 raise ValueError

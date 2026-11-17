@@ -19,7 +19,7 @@
 export type AppFunctionsSchema = {
   getKioskStatus: {
     input: { player: string };
-    output: { gameSessionId: null | string; registered: boolean };
+    output: { gameSessionId: null | string; registered: boolean; username?: undefined | string; difficulty?: undefined | null | 0 | 3 | 4 };
   };
   registerPlayer: {
     input: { requestId: string; player: string; specialName: string };

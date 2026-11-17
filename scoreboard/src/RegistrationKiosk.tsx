@@ -30,6 +30,10 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   const [status, setStatus] = useState<KioskStatus | null>(null);
   const [statusError, setStatusError] = useState('');
   const [lockedSessionId, setLockedSessionId] = useState<string | null>(null);
+  const [playerName, setPlayerName] = useState('');
+  const [playerDifficulty, setPlayerDifficulty] = useState<Difficulty | null>();
+  const [lastPlayerName, setLastPlayerName] = useState('');
+  const stationPlayer = useRef<{ gameSessionId: string; username: string } | null>(null);
   const currentGame = useRef<string | null>(null);
   const requestVersion = useRef(0);
   const statusVersion = useRef(0);
@@ -52,6 +56,17 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
         const next = await getKioskStatus(client, player);
         if (disposed || version !== statusVersion.current) return;
         if (next.gameSessionId) {
+          if (stationPlayer.current && stationPlayer.current.gameSessionId !== next.gameSessionId) {
+            setLastPlayerName(stationPlayer.current.username);
+            stationPlayer.current = null;
+            setPlayerName('');
+            setPlayerDifficulty(undefined);
+          }
+          if (next.registered && next.username) {
+            stationPlayer.current = { gameSessionId: next.gameSessionId, username: next.username };
+            setPlayerName(next.username);
+            setPlayerDifficulty(next.difficulty);
+          }
           if (currentGame.current && currentGame.current !== next.gameSessionId) {
             requestVersion.current++;
             busy.current = false;
@@ -81,7 +96,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
   }, [client, station.player, clearDraft]);
   useEffect(() => {
     if (!saved) return;
-    const timer = setTimeout(() => setSaved(null), 5000);
+    const timer = setTimeout(() => setSaved(null), 8000);
     return () => clearTimeout(timer);
   }, [saved]);
   const gameInProgress = Boolean(lockedSessionId) && !draft.current && !saving;
@@ -113,6 +128,9 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
       const data = await saveRegistration(client, draft.current);
       if (version !== requestVersion.current) return;
       statusVersion.current++;
+      stationPlayer.current = { gameSessionId: data.gameSessionId, username: data.username };
+      setPlayerName(data.username);
+      setPlayerDifficulty(data.difficulty);
       setLockedSessionId(data.gameSessionId);
       setSaved({ kind: data.registrationType, data });
       draft.current = null;
@@ -144,7 +162,8 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
     const sequence = gesture.current.taps.join(',');
     const name = sequence === 'top-right,top-right,bottom-left,bottom-left' ? SPECIAL_NAMES[0]
       : sequence === 'bottom-left,bottom-left,top-right,top-right' ? SPECIAL_NAMES[1]
-      : sequence === 'top-left,top-right,bottom-right,bottom-left' ? SPECIAL_NAMES[2] : undefined;
+      : sequence === 'top-left,top-right,bottom-right,bottom-left' ? SPECIAL_NAMES[2]
+      : gesture.current.taps.slice(-3).join(',') === 'bottom-right,bottom-right,bottom-right' ? SPECIAL_NAMES[3] : undefined;
     if (name) {
       gesture.current = { taps: [], startedAt: 0 };
       void register(name);
@@ -223,12 +242,15 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           <p>{saved.kind === 'player' ? 'Your name and PIN will be used to validate who you are.'
             : 'Your special player name is registered for this game session.'}</p></div>
       </div>
-      <p className="booth-card-note">This player pass hides automatically after 5 seconds.</p>
+      <p className="booth-card-note">This player pass hides automatically after 8 seconds.</p>
       <p className="booth-privacy">{saved.kind === 'player'
         ? 'Keep your photo and PIN private.'
         : 'Your special player pass is ready.'}</p>
     </section> : gameInProgress ? <section className="booth-card booth-game-in-progress" role="status">
       <h2>GAME IN PROGRESS</h2>
+      {playerName && <strong className="booth-identity">{playerName}</strong>}
+      {playerName && playerDifficulty !== undefined
+        && <p className="booth-card-note">Difficulty: {difficultyLabel(playerDifficulty)}</p>}
       <p>This station is checked in. New players can sign in when the organizer starts a new session.</p>
       {statusError && <p role="alert" className="error">{statusError} Waiting for the connection to confirm a new game.</p>}
     </section> : !showForm ? <section className="booth-card" aria-label="Station availability">
@@ -238,6 +260,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
     </section> : <section className="booth-card" aria-labelledby="check-in-title">
       <p className="booth-overline">PLAYER CHECK-IN</p>
       <h2 id="check-in-title">Ready to play?</h2>
+      {lastPlayerName && <p>Last player: <strong>{lastPlayerName}</strong></p>}
       <p>Get your Fabric player name and PIN, then snap your pass.</p>
       <fieldset className="booth-difficulty" disabled={controlsDisabled || Boolean(draft.current)}>
         <legend>Choose your difficulty</legend>

@@ -75,13 +75,16 @@ data; neither registration/PIN access nor scoreboard data is anonymous.
    Existing registered names are unchanged. The independent PIN has
    six digits. SQL unique constraints reserve both names and PINs across all
    registrations; confirmed collisions generate a fresh pair.
-4. The player has **five seconds** to photograph the saved name/PIN screen.
+4. The player has **eight seconds** to photograph the saved name/PIN screen.
    The pass then disappears automatically and the kiosk displays
-   **GAME IN PROGRESS**, without names, PINs, registration buttons or corner
-   gestures. Special no-PIN passes follow the same five-second rule.
+   **GAME IN PROGRESS** with that station's player name and difficulty, but without PINs,
+   registration buttons or corner gestures. Special no-PIN passes follow the
+   same eight-second rule.
 5. The station reopens automatically after the desktop resets to a **new game
    session ID** and that station is available. The next player starts with a
    fresh request and Normal 3 selected; their difficulty remains independent.
+   The check-in screen shows **Last player:** followed by the most recent player
+   name observed at that station while the kiosk page has been open.
 
 There are exactly two available slots per game: P1 and P2. A database unique
 constraint on `slotKey` reserves each game/player pair atomically, including
@@ -99,8 +102,10 @@ The response contains only the player-pass fields, not internal reservation keys
 
 The kiosk independently polls authenticated `getKioskStatus` after each completed
 request plus a one-second interval. This read-only endpoint returns only the
-latest open game ID and the selected station's occupancy, using the same current
-and legacy slot rules as registration. It never returns player names or PINs.
+latest open game ID, the selected station's occupancy, and its player name and difficulty when
+registered, using the same current and legacy slot rules as registration.
+It never returns PINs or internal reservation keys.
+Historical registrations without a recorded numeric difficulty display **Normal (legacy)**.
 An occupied station loads directly into **GAME IN PROGRESS** after a page refresh.
 An inactive/missing game, stale responses, or connection failures do not unlock
 a checked-in station; failures show a connection message. New check-in waits for
@@ -182,12 +187,13 @@ eight seconds, in order:
 - Top-right twice, then bottom-left twice: **YaelTheChampion**.
 - Bottom-left twice, then top-right twice: **EdgarIsGoingDown**.
 - Top-left, top-right, bottom-right, then bottom-left: **The Dancing Queen**.
+- Bottom-right three times: **Bowser**.
 
 Tap top-left three times within eight seconds to send a funky dancing chicken
 across the screen. It disappears after six seconds and does not register a player.
 With reduced motion enabled, the chicken appears without dancing or crossing.
 
-The fourth tap immediately registers the special name with **no PIN**. These
+The final tap immediately registers the special name with **no PIN**. These
 are easter eggs, not Microsoft sign-in or authorization bypasses. Each special
 name occupies that station's only registration slot and can be used again in a
 new game. An occupied station rejects further normal or special registrations.
@@ -254,6 +260,13 @@ registration tables through the same durable outbox as `user.register`, with
 `payload.registration_type` set to `player` or `special`. All tables' pending
 rows share the 25-per-cycle relay limit. Restart the DDR desktop after updating
 its Python code and rebuilding its SDK worker to enable this relay.
+All four special identities, including **Bowser**, are accepted by the desktop
+relay. Registration events retain the event/registration ID, game ID, station,
+UTC registration timestamp, name, registration type, numeric difficulty and
+leaderboard exclusion flag. Normal registrations also retain the six-digit PIN
+as a string, including leading zeroes; special registrations have no PIN.
+Unsupported registration data is reported separately from a local queue failure
+and remains pending in SQL rather than being acknowledged or dropped.
 
 ### Force a new game from the desktop
 
