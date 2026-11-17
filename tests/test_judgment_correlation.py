@@ -18,7 +18,7 @@ from app.ui.video_tab import VideoTab
 pytestmark = pytest.mark.usefixtures("synthetic_judgment_matching")
 
 
-COLORS = {"hit": 255, "perfect": 255, "great": 225, "good": 200, "miss": 0, "idle": 128, "appeared": 64}
+COLORS = {"hit": 255, "perfect": 255, "great": 225, "good": 200, "bad": 175, "miss": 0, "idle": 128, "appeared": 64}
 
 
 def image(state):
@@ -44,7 +44,7 @@ def setup(players=("P1",), directions=("Up-Right",), judgments=("P1",), graded=F
                 "Judgment", player, "judgment", len(regions) * 20, 0, 20, 20,
                 reference_images={
                     state: [image_utils.encode_crop_to_base64_png(image(state))]
-                    for state in (("perfect", "great", "good", "miss", "idle") if graded else ("hit", "miss", "idle"))
+                    for state in ((*config.JUDGMENT_POINTS, "idle") if graded else ("hit", "miss", "idle"))
                 },
             ))
     bus = EventBus()
@@ -71,7 +71,7 @@ def outcomes(bus):
     return [event for event in bus.events if event.event_type == "judgement"]
 
 
-@pytest.mark.parametrize("tier", ["perfect", "great", "good", "miss", "hit"])
+@pytest.mark.parametrize("tier", [*config.JUDGMENT_POINTS, "hit"])
 @pytest.mark.parametrize("player", ["P1", "P2"])
 @pytest.mark.parametrize("directions", [(), ("Center",), ("Center", "Up-Right"), tuple(config.ARROW_DIRECTIONS)])
 def test_new_contract_emits_immediate_activity_then_one_judgement(tier, player, directions, tmp_path):
@@ -161,7 +161,7 @@ def test_new_contract_emits_immediate_activity_then_one_judgement(tier, player, 
         outbox.close()
 
 
-@pytest.mark.parametrize("outcome", ["hit", "perfect", "great", "good", "miss"])
+@pytest.mark.parametrize("outcome", ["hit", *config.JUDGMENT_POINTS])
 @pytest.mark.parametrize("offset", [-501, -500, -499, -300, -151, -150, -1, 0, 1, 150, 151])
 def test_correlates_only_within_source_time_window_and_uses_judgment_outcome(outcome, offset):
     session, bus, _, frame = setup(graded=outcome != "hit")
@@ -565,7 +565,7 @@ def test_judgment_cards_align_and_route_all_calibration_actions():
             data = tab._region_rows[region.key()]
             card = data["thumb_label"].master
             assert card.grid_info()["column"] == (0 if player == "P1" else 1)
-            for name, title in (("perfect", "Perfect"), ("great", "Great"), ("good", "Good"), ("miss", "Miss")):
+            for name, title in ((tier, tier.title()) for tier in config.JUDGMENT_POINTS):
                 button, = [
                     widget for group in card.winfo_children() if isinstance(group, ttk.Frame)
                     for widget in group.winfo_children()
@@ -898,8 +898,13 @@ def test_diagnostics_reuse_the_single_judgment_matching_pass(monkeypatch):
     similarity = Mock(wraps=image_utils.similarity)
     monkeypatch.setattr(image_utils, "similarity", similarity)
     result = frame(0, **{"P1:judgment": "perfect"}).region_results[-1]
-    assert similarity.call_count == 4
+    assert similarity.call_count == len(config.JUDGMENT_POINTS)
     assert "Next:" in result.judgment_diagnostics
+
+
+def test_bad_only_calibration_supersedes_legacy_ungraded_success():
+    references = {"bad": [image("bad")], "hit": [image("bad")]}
+    assert match_judgment(image("bad"), references, .99).state == "bad"
 
 
 def test_judgment_diagnostics_distinguish_ambiguity_from_low_similarity():

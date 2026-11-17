@@ -69,8 +69,26 @@ class LiveVideoSource:
                     f"Could not open {self.device.name}. Close other capture apps and check "
                     "Windows camera permissions and the USB connection."
                 )
+            cam_link = "cam link" in self.device.name.lower()
+            if cam_link:
+                # The driver's default 640x480 mode can return only black frames.
+                for prop, value in (
+                    (cv2.CAP_PROP_FRAME_WIDTH, 1920),
+                    (cv2.CAP_PROP_FRAME_HEIGHT, 1080),
+                    (cv2.CAP_PROP_FPS, 30),
+                ):
+                    if not capture.set(prop, value):
+                        raise OSError(
+                            f"Could not select 1920x1080 at 30 fps on {self.device.name}. "
+                            "Check its USB 3.x connection and reconnect to retry."
+                        )
             fps = capture.get(cv2.CAP_PROP_FPS)
             self.fps = fps if math.isfinite(fps) and fps > 0 else 0.0
+            if cam_link and self.fps and abs(self.fps - 30) > 0.5:
+                raise OSError(
+                    f"{self.device.name} reported {self.fps:g} fps instead of the requested 30 fps. "
+                    "Reconnect the capture device and retry."
+                )
             started = time.monotonic()
             index = 0
             while not self._stop.is_set():
@@ -83,6 +101,11 @@ class LiveVideoSource:
                         "USB connection, and whether another app is using the device. Reconnect to retry."
                     )
                 height, width = frame.shape[:2]
+                if cam_link and not self.width and (width, height) != (1920, 1080):
+                    raise OSError(
+                        f"{self.device.name} returned {width}x{height} instead of the requested "
+                        "1920x1080. Reconnect and check the capture device's USB connection."
+                    )
                 if self.width and (width, height) != (self.width, self.height):
                     raise OSError("HDMI capture resolution changed. Reconnect and check your layout resolution.")
                 self.width, self.height = width, height

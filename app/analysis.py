@@ -13,7 +13,7 @@ Region kinds:
     require a matching player judgment; activity alone cannot emit hits/misses.
   * "game_end" - a shared reference-matched end indicator that rotates
     game GUIDs once per confirmed appearance.
-  * "judgment" - per-player Perfect/Great/Good/Miss reference pulses correlated with
+  * "judgment" - per-player Perfect/Great/Good/Bad/Miss reference pulses correlated with
     arrow activity; uncertain directions remain player-level outcomes.
 """
 from __future__ import annotations
@@ -800,10 +800,10 @@ class AnalysisSession:
         references = self._arrow_references.get(region.key(), {})
         previous = self._last_arrow_frame.get(region.key())
         error = None
-        graded = any(references.get(state) for state in ("perfect", "great", "good"))
-        categories = ("perfect", "great", "good", "miss") if graded or not references.get("hit") else ("hit", "miss")
+        graded = any(references.get(state) for state in config.JUDGMENT_HIT_TIERS)
+        categories = tuple(config.JUDGMENT_POINTS) if graded or not references.get("hit") else ("hit", "miss")
         if not any(references.get(state) for state in categories):
-            error = "No judgment outcome references. Capture a Perfect, Great, Good, or Miss example for this player."
+            error = "No judgment outcome references. Capture a Perfect, Great, Good, Bad, or Miss example for this player."
         elif crop.size == 0:
             error = "Empty judgment crop (region out of frame bounds?)"
         matcher = self._judgment_shapes[region.key()]
@@ -830,7 +830,7 @@ class AnalysisSession:
             if tracker.status().pending_state != observation:
                 self._arrow_state_started[region.key()] = video_time_ms
             confirmed = tracker.observe(observation)
-            if confirmed in ("perfect", "great", "good", "hit", "miss") and self.recording_enabled:
+            if confirmed in (*config.JUDGMENT_POINTS, "hit") and self.recording_enabled:
                 self._pending_judgments.append(JudgmentEvidence(
                     region, confirmed, self._arrow_state_started[region.key()], score,
                 ))
@@ -843,7 +843,7 @@ class AnalysisSession:
                 if state == "idle" and tracker.status().active_state is not None
                 else "Ready for the next judgment." if state == "idle"
                 else f"Holding judgment; waiting for {config.JUDGMENT_REARM_MS} ms without a match before counting again."
-                if state in ("perfect", "great", "good", "hit", "miss") else None
+                if state in (*config.JUDGMENT_POINTS, "hit") else None
         )
         if error is None:
             missing = [name.capitalize() for name in categories if not matcher.references.get(name)]

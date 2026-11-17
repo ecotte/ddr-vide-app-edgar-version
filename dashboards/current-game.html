@@ -45,7 +45,7 @@
     const COLORS = { P1: '#22b8cf', P2: '#f783ac' };
     const TIERS = [
       ['perfect', 'Perfect', '#63e6be'], ['great', 'Great', '#74c0fc'],
-      ['good', 'Good', '#ffe066'], ['miss', 'Miss', '#ffa8a8'],
+      ['good', 'Good', '#ffe066'], ['bad', 'Bad', '#ffc078'], ['miss', 'Miss', '#ffa8a8'],
       ['ungraded', 'Ungraded', '#ced4da']
     ];
     const root = document.getElementById('visual');
@@ -130,7 +130,7 @@
         if (!selected.length) { el('p', 'No observed judgments', group); return; }
         const counts = Object.fromEntries(TIERS.map(([key]) => [key, 0]));
         selected.forEach(r => {
-          const tier = r.Outcome === 'miss' ? 'miss' : ['perfect', 'great', 'good'].includes(r.Judgment) ? r.Judgment : 'ungraded';
+          const tier = r.Outcome === 'miss' ? 'miss' : TIERS.some(([key]) => key === r.Judgment) ? r.Judgment : 'ungraded';
           counts[tier]++;
         });
         const bar = el('div', null, group, 'bar');
@@ -157,7 +157,7 @@
         selected.sort((a, b) => (completeTiming ? a.Seconds - b.Seconds : 0) || a.Sequence - b.Sequence || a.EventId.localeCompare(b.EventId));
         let current = 0, best = 0;
         series[player] = selected.map((r, i) => {
-          current = r.Outcome === 'miss' ? 0 : current + 1;
+          current = r.Outcome === 'miss' ? 0 : r.Judgment === 'bad' ? current : current + 1;
           best = Math.max(best, current);
           return { x: i + 1, y: current, miss: r.Outcome === 'miss' };
         });
@@ -166,7 +166,7 @@
         el('span', selected.length ? ' current \u00b7 ' + best + ' best' : '', stat);
       });
       plot(series, 'Judgment number (each player)', 'Consecutive successful judgments', true);
-      el('p', 'Misses reset the streak (red dots). A multi-arrow judgment extends it once. Ordered by video time, then sequence; sequence is used if timing is missing.', root, 'note');
+      el('p', 'Misses reset the streak (red dots). BAD is a hit but leaves the streak unchanged. Other successful multi-arrow judgments extend it once. Ordered by video time, then sequence; sequence is used if timing is missing.', root, 'note');
     }
     function momentum(rows, duration) {
       const timed = rows.filter(r => Number.isFinite(r.Seconds) && r.Seconds >= 0);

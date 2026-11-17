@@ -5,6 +5,7 @@ import RegistrationKiosk from './RegistrationKiosk';
 import BoothShell from './BoothShell';
 import { animalComparison, cumulativeHitPercentage, stepTitle, totalDetectedSteps } from './dashboardMetrics';
 import { CAPTION_COUNT, CAPTION_INTERVAL_MS, sessionCaptionDecks } from './dashboardCaptions';
+import { difficultyLabel } from '../rayfin/functions/src/difficulty';
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : 'The scoreboard request failed.';
@@ -51,6 +52,10 @@ function Player({ name, state, waiting, sessionId, live }: {
       <div className="score-label">{score == null || hasRunningScore ? 'RUNNING SCORE' : 'ACCEPTED SCORE'}</div>
       <div className="score" aria-label={`${name} score`}>{score == null
         ? <span className="waiting-data">Waiting for data</span> : score.toLocaleString()}</div>
+      {player?.difficulty === 4 && player.baseRunningScore != null && <p className="score-adjustment"
+        aria-label={`${name} score adjustment`}>
+        {difficultyLabel(player.difficulty)}: {player.baseRunningScore.toLocaleString()} base &#215; 1.25 (rounded).
+      </p>}
     </div>
     {player?.combo != null && <div className="combo"><span>COMBO</span><strong>{player.combo}</strong></div>}
     <div className="total-hits"><span>TOTAL HITS</span><strong>{player

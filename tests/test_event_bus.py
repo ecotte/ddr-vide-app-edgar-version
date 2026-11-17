@@ -4,11 +4,15 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import config
 from app.event_bus import EventBus
+from app.eventstream import Outbox
 
 
 def test_sequence_increments_and_session_id_stable_within_session():
@@ -109,3 +113,38 @@ def test_export_jsonl_writes_one_json_object_per_line(tmp_path):
     for i, line in enumerate(lines):
         obj = json.loads(line)  # must be valid standalone JSON per line
         assert obj["sequence"] == i
+
+
+@pytest.mark.parametrize("offset_hours", [-8, -7, 0, 2, 5.5])
+def test_event_times_are_utc_on_the_wire_regardless_of_local_timezone(monkeypatch, tmp_path, offset_hours):
+    local_now = datetime(2026, 11, 16, 16, 40, 58, 123456, tzinfo=timezone(timedelta(hours=offset_hours)))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return local_now.replace(tzinfo=None) if tz is None else local_now.astimezone(tz)
+
+    monkeypatch.setattr("app.event_bus.datetime", Clock)
+    bus = EventBus()
+    delivered = []
+    bus.set_delivery_sink(delivered.append)
+    event = bus.make_event("judgement", {"judgment": "bad", "outcome": "hit"}, 10, 333)
+    bus.record(event)
+    bus.new_session(clear_events=False)
+    expected = local_now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    assert [row.event_type for row in delivered] == ["new_session", "judgement", "session_end", "new_session"]
+    assert all(row.observed_at_utc == expected for row in delivered)
+    assert event.video_time_ms == 333
+    path = tmp_path / "events.jsonl"
+    bus.export_jsonl(str(path))
+    assert all(json.loads(line)["observed_at_utc"] == expected for line in path.read_text().splitlines())
+    with_outbox = Outbox(str(tmp_path / "outbox.sqlite3"), "test")
+    try:
+        for row in delivered:
+            with_outbox.enqueue(row)
+        while with_outbox.count():
+            row_id, _, body = with_outbox.next_event()
+            assert json.loads(body)["observed_at_utc"] == expected
+            with_outbox.acknowledge(row_id)
+    finally:
+        with_outbox.close()

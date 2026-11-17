@@ -1,3 +1,5 @@
+import { isDifficulty, type Difficulty } from '../rayfin/functions/src/difficulty.js';
+
 export const BOARD_ID = 'd00d0001-0000-4000-8000-000000000001';
 export const DIRECTIONS = ['Up-Right', 'Up-Left', 'Down-Right', 'Down-Left', 'Center'] as const;
 export type Direction = typeof DIRECTIONS[number];
@@ -6,6 +8,8 @@ export interface PlayerState {
   username?: string | null;
   score: number | null;
   runningScore?: number | null;
+  baseRunningScore?: number | null;
+  difficulty?: Difficulty | null;
   combo: number | null;
   currentStreak?: number | null;
   bestStreak?: number | null;
@@ -57,6 +61,11 @@ function isPlayer(value: unknown): value is PlayerState {
   const directions = value.hitsByDirection;
   return isRecord(value) && numberOrNull(value.score) && numberOrNull(value.combo)
     && (value.runningScore == null || numberOrNull(value.runningScore))
+    && (value.difficulty == null || isDifficulty(value.difficulty))
+    && (value.baseRunningScore == null || (
+      typeof value.baseRunningScore === 'number' && numberOrNull(value.baseRunningScore)
+      && typeof value.runningScore === 'number'
+    ))
     && (value.username == null || (
       typeof value.username === 'string' && value.username.trim().length > 0 && value.username.length <= 80
     ))
@@ -113,6 +122,8 @@ function cleanPlayer(player: PlayerState): PlayerState {
     ...(player.bestStreak != null
       ? { currentStreak: player.currentStreak, bestStreak: player.bestStreak } : {}),
     ...(player.runningScore != null ? { runningScore: player.runningScore } : {}),
+    ...(player.baseRunningScore != null ? { baseRunningScore: player.baseRunningScore } : {}),
+    ...(player.difficulty !== undefined ? { difficulty: player.difficulty } : {}),
     unassignedHits: player.unassignedHits ?? 0,
     unassignedMisses: player.unassignedMisses ?? 0,
     misses: player.misses ?? null,

@@ -70,6 +70,24 @@ describe('scoreboard state', () => {
     }
     expect(parseSnapshot(snapshot).players.P1.runningScore).toBeUndefined();
   });
+  it('retains the base score and registration difficulty without applying the multiplier again', () => {
+    const parsed = parseSnapshot({
+      ...snapshot, players: { P1: { ...player, runningScore: 13, baseRunningScore: 10, difficulty: 4 }, P2: player },
+    });
+    expect(parsed.players.P1).toMatchObject({ runningScore: 13, baseRunningScore: 10, difficulty: 4 });
+    expect(parseSnapshot(parsed)).toEqual(parsed);
+    expect(parsed.players.P2.difficulty).toBeUndefined();
+    expect(parsed.players.P2.baseRunningScore).toBeUndefined();
+  });
+  it.each([
+    { difficulty: 1 }, { difficulty: 2 }, { difficulty: '4' }, { difficulty: true },
+    { baseRunningScore: -1 }, { baseRunningScore: 1.5 }, { baseRunningScore: '5' },
+    { baseRunningScore: 10, runningScore: null },
+  ])('rejects invalid difficulty or base score %j', invalid => {
+    expect(() => parseSnapshot({
+      ...snapshot, players: { P1: { ...player, runningScore: 13, ...invalid }, P2: player },
+    })).toThrow('Invalid scoreboard data');
+  });
   it.each([-1, 1.5, '40', true, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
     'rejects invalid running score %s', runningScore => {
       expect(() => parseSnapshot({

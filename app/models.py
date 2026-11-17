@@ -27,7 +27,7 @@ class Region:
     are never pre-supplied by the app - only what the user captures from
     their own footage. ``game_end`` regions use ``reference_images["ended"]``
     for a shared, game-wide end indicator.
-    Judgment regions use "perfect", "great", "good", and "miss" references;
+    Judgment regions use "perfect", "great", "good", "bad", and "miss" references;
     optional "empty" samples represent no visible judgment and suppress background matches.
     legacy "idle" images are retained in layouts but ignored by recognition.
     old "hit" references retain ungraded success behavior until tier calibration starts.

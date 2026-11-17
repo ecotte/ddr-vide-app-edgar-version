@@ -174,23 +174,32 @@ This name enrichment does not send PINs to viewers or attach identities to
 gameplay event payloads. PIN redemption is not implemented; this is player
 registration, not authentication using a previously issued PIN.
 
-The kiosk's secondary Easy mode action calls `registerEasyPlayer`, which uses
-the same authenticated registration and station reservation path. Both registration
-functions claim an immutable `GameSessionMode` row whose primary key is the game
-UUID. The first claim chooses easy or normal; a concurrent duplicate-key loser
-reads and inherits the winner rather than saving a different player mode.
-The lock grants signed-in app users only read/create permissions, not update/delete.
-Special entries and retries inherit the same mode; only a new game UUID resets it.
-Existing registrations seed the lock, and mixed historical modes require a new
-session rather than retagging events. A failed player write retains its mode lock.
-The kiosk polls `getRegistrationMode` for display, but registration functions
-enforce the invariant independently of kiosk state.
+The kiosk offers independent per-player difficulty choices: Easy (0), Normal 3
+(3), and Normal 4 (4). `registerPlayerWithDifficulty` validates the numeric value,
+then saves it as `GamePlayerSession.difficulty` and derives
+`excludeFromLeaderboard` from whether difficulty is 0. Slot reservation remains
+atomic, but no game-wide mode lock is consulted or created. Concurrent P1/P2
+registrations and special entries retain their own choices. Retries preserve
+the saved difficulty and reject a different known choice for the same request.
 
-Each registration persists the locked mode as `excludeFromLeaderboard`; historical
-null/missing flags count as normal. The relay preserves this as
-`user.register.payload.exclude_from_leaderboard`. Future leaderboard consumers
-must join by game session and player and exclude flagged entries. Live scoreboard
-participation and gameplay event calculations are unaffected.
+The legacy `GameSessionMode` entity remains declared to avoid deleting existing
+rows, but is unused. Cached registration endpoints stay available without shared
+mode inheritance; legacy Normal entries have unknown numeric difficulty, while
+known legacy Easy entries map to 0. Old rows and events are not rewritten.
+The desktop relays `user.register.payload.difficulty` as a number (0, 3 or 4 for
+new choices) and `payload.exclude_from_leaderboard` as a boolean. Future
+leaderboard consumers must join by game session and player and exclude only
+flagged registrations. Live scoreboard participation and gameplay event
+calculations are unaffected. The kiosk records the requested difficulty; it
+does not change settings on the DDR machine.
+
+Normal 4 changes only the derived score: the SDK publisher applies 1.25 to the
+entire raw running total and rounds once to a whole point, with halves rounded
+up. It joins registration by current game ID and player on every heartbeat so
+late registration applies retroactively, without multiplying previous adjusted
+totals. The published snapshot retains `baseRunningScore`, `difficulty`, and the
+adjusted `runningScore`. Easy/Normal 3 and unregistered or legacy players use 1.
+Judgment events, OCR values, counts, streaks and pace are not multiplied.
 
 This adds a SQL registration path, not an Eventhouse query connector. Both
 **Share live scoreboard** and **Connect to Fabric** must be configured for
@@ -332,11 +341,11 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   settling interval (up to 1,000 ms). Payloads include `correlation_lookback_ms: 500`
   and `correlation_lookahead_ms: 0`; legacy `correlation_window_ms` is the maximum
   of these allowances, not a symmetric window.
-  Perfect, Great, and Good emit hit outcomes, retaining their tier in `payload.judgment`;
+  Perfect, Great, Good, and Bad emit hit outcomes, retaining their tier in `payload.judgment`;
   Miss retains the miss outcome. Legacy Success references remain ungraded until
   tier calibration starts. Legacy Blank references are ignored; no background
   snapshot is required. Sustained matching failures can look like disappearance.
-  Partial calibration recognizes taught outcomes without requiring all four
+  Partial calibration recognizes taught outcomes without requiring all five
   categories. Missing categories show actionable warnings;
   no outcome references is a blocking calibration error.
   Simultaneous distinct directions receive the same judgment, emitting only one
@@ -350,7 +359,7 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   Activity-only arrow events never add to these metrics, even when received first.
   Event IDs deduplicate retries. Legacy event types remain supported for old
   input; previous history and durable outbox messages are never rewritten.
-  The desktop also accumulates `runningScore` per player: Good 10, Great 20,
+  The desktop also accumulates `runningScore` per player: Bad 5, Good 10, Great 20,
   Perfect 40, Miss 0 points per matched arrow. Unknown-direction judgments score
   once; legacy ungraded hits score zero. Event-ID deduplication and game resets
   apply to points as well as counts. OCR score fields remain separate; the React
@@ -361,7 +370,7 @@ Events carry `event_id`, `session_id`, `sequence`, `event_type`, `player`,
   response timing exclude them. Desktop snapshots carry `unassignedHits` and
   `unassignedMisses` for the viewer. Calibration references serialize inside layouts.
   The desktop keeps calibration independent for each player: arrow activity,
-  Perfect/Great/Good/Miss images, and taught score/combo digit templates (including
+  Perfect/Great/Good/Bad/Miss images, and taught score/combo digit templates (including
   review/version metadata). Capturing, clearing, or teaching one region never modifies
   the other player's samples. Matching P2 boxes still adopt P1 width and
   height when drawn or loaded; resizing retains their centers where frame bounds
@@ -431,8 +440,9 @@ hits or missing lane data rather than inventing a winner. No minimum sample
 count is required. Legacy snapshots without lane misses can still earn titles.
 Best streak replaces the redundant Most-hit lane card. The publisher maintains
 `currentStreak` and `bestStreak` per player from validated `judgement` events:
-one increment per successful judgment, regardless of matched-arrow count,
-and a current-run reset on Miss. OCR combos and arrow activity are independent.
+one increment per non-BAD successful judgment, regardless of matched-arrow count,
+and a current-run reset on Miss. BAD remains a scored hit but leaves both streak
+values unchanged. OCR combos and arrow activity are independent.
 The session-local outcome timeline is ordered by video time and sequence;
 out-of-order arrivals recalculate the runs rather than bridging a delayed Miss.
 Session reset clears the timeline and counters. Missing streak fields in older

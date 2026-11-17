@@ -6,6 +6,7 @@ import type { AppFunctionsSchema } from '../../rayfin/functions/src/types';
 import { getRegistrationMode, registerPlayer } from '../../rayfin/functions/src/registration';
 import { ADJECTIVES, NOUNS, newIdentity } from '../../rayfin/functions/src/identity';
 import { registrationStation, saveRegistration } from '../registration';
+import { DIFFICULTIES } from '../../rayfin/functions/src/difficulty';
 
 const gameId = 'c7510905-589f-4d05-bd14-cd718e288a49';
 function setup() {
@@ -91,41 +92,42 @@ it('generates forty distinct words per list and capitalized names with four digi
 });
 it('invokes exactly one typed function and performs no browser data checks', async () => {
   const { client } = setup();
-  const request = { requestId: crypto.randomUUID(), player: 'P1', specialName: '' };
+  const request = { requestId: crypto.randomUUID(), player: 'P1', specialName: '', difficulty: 4 };
   const result = { id: request.requestId, player: 'P1' as const, username: 'SillyEventhouse1234',
-    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: false };
-  const invoke = vi.spyOn(client.functions.registerPlayer, 'invoke').mockResolvedValue(result);
+    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: false, difficulty: 4 as const };
+  const invoke = vi.spyOn(client.functions.registerPlayerWithDifficulty, 'invoke').mockResolvedValue(result);
   expect(await saveRegistration(client, request)).toEqual(result);
   expect(invoke).toHaveBeenCalledExactlyOnceWith(request, { timeoutMs: 120000 });
   expect(client.data.GameSession.select).not.toHaveBeenCalled();
 });
 
-it('uses the easy-mode server function without changing the normal function input contract', async () => {
+it('sends Easy as numeric zero through the same independent-difficulty function', async () => {
   const { client } = setup();
-  const request = { requestId: crypto.randomUUID(), player: 'P2', specialName: '', excludeFromLeaderboard: true };
+  const request = { requestId: crypto.randomUUID(), player: 'P2', specialName: '', difficulty: 0 };
   const result = { id: request.requestId, player: 'P2' as const, username: 'SillyEventhouse1234',
-    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: true };
-  const easy = vi.spyOn(client.functions.registerEasyPlayer, 'invoke').mockResolvedValue(result);
+    gameSessionId: gameId, pin: '123456', registrationType: 'player' as const, excludeFromLeaderboard: true, difficulty: 0 as const };
+  const easy = vi.spyOn(client.functions.registerPlayerWithDifficulty, 'invoke').mockResolvedValue(result);
   const normal = vi.spyOn(client.functions.registerPlayer, 'invoke');
   expect(await saveRegistration(client, request)).toEqual(result);
   expect(easy).toHaveBeenCalledExactlyOnceWith({
-    requestId: request.requestId, player: 'P2', specialName: '',
+    requestId: request.requestId, player: 'P2', specialName: '', difficulty: 0,
   }, { timeoutMs: 120000 });
   expect(normal).not.toHaveBeenCalled();
 });
 
-it.each([false, true])('persists leaderboard exclusion %s without altering station or credentials', async excluded => {
+it.each(DIFFICULTIES)('persists independent difficulty %s without altering station or credentials', async difficulty => {
   const { client, create, find, gameExecute } = setup();
   const id = crypto.randomUUID();
-  const pass = await registerPlayer(client.data, id, 'P1', '', excluded);
-  expect(pass.excludeFromLeaderboard).toBe(excluded);
+  const pass = await registerPlayer(client.data, id, 'P1', '', difficulty);
+  expect(pass.excludeFromLeaderboard).toBe(difficulty === 0);
+  expect(pass.difficulty).toBe(difficulty);
   expect(pass.pin).toMatch(/^[1-9][0-9]{5}$/);
   const draft = create.mock.calls[0][0];
-  expect(draft).toMatchObject({ slotKey: `${gameId}:P1`, excludeFromLeaderboard: excluded, eventQueued: false });
+  expect(draft).toMatchObject({ slotKey: `${gameId}:P1`, difficulty, excludeFromLeaderboard: difficulty === 0, eventQueued: false });
   find.mockResolvedValue({ ...draft, id });
   gameExecute.mockResolvedValue([]);
-  expect(await registerPlayer(client.data, id, 'P1', '', excluded)).toEqual(pass);
-  expect(await registerPlayer(client.data, id, 'P1', '', !excluded)).toEqual(pass);
+  expect(await registerPlayer(client.data, id, 'P1', '', difficulty)).toEqual(pass);
+  await expect(registerPlayer(client.data, id, 'P1', '', difficulty === 4 ? 3 : 4)).rejects.toThrow('different difficulty');
   expect(create).toHaveBeenCalledTimes(1);
 });
 it('rejects invalid parameters before accessing the database', async () => {
@@ -293,95 +295,108 @@ it('surfaces unrelated database errors without successful-looking fallbacks', as
   await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '')).rejects.toThrow('Permission denied');
 });
 
-it.each([false, true])('makes both players inherit the first session mode %s, including special entries', async firstMode => {
-  const { client, create, modes } = setup();
-  const first = await registerPlayer(client.data, crypto.randomUUID(), 'P1', '', firstMode);
-  const second = await registerPlayer(client.data, crypto.randomUUID(), 'P2', 'The Dancing Queen', !firstMode);
-  expect(first.excludeFromLeaderboard).toBe(firstMode);
-  expect(second.excludeFromLeaderboard).toBe(firstMode);
-  expect(create.mock.calls.map(([row]) => row.excludeFromLeaderboard)).toEqual([firstMode, firstMode]);
-  expect(modes.get(gameId)?.excludeFromLeaderboard).toBe(firstMode);
-  expect(second.pin).toBeNull();
-});
+it.each(DIFFICULTIES.flatMap(p1 => DIFFICULTIES.map(p2 => [p1, p2] as const)))(
+  'keeps P1 difficulty %s independent of P2 difficulty %s, even for simultaneous special registrations',
+  async (p1, p2) => {
+    const { client, create, createMode, modeExecute, modes } = setup();
+    modes.set(gameId, { id: gameId, excludeFromLeaderboard: true });
+    const passes = await Promise.all([
+      registerPlayer(client.data, crypto.randomUUID(), 'P1', '', p1),
+      registerPlayer(client.data, crypto.randomUUID(), 'P2', 'The Dancing Queen', p2),
+    ]);
+    expect(passes.map(pass => pass.difficulty)).toEqual([p1, p2]);
+    expect(passes.map(pass => pass.excludeFromLeaderboard)).toEqual([p1 === 0, p2 === 0]);
+    expect(Object.fromEntries(create.mock.calls.map(([row]) => [row.player, row.difficulty]))).toEqual({ P1: p1, P2: p2 });
+    expect(passes[1].pin).toBeNull();
+    expect(createMode).not.toHaveBeenCalled();
+    expect(modeExecute).not.toHaveBeenCalled();
+  },
+);
 
-it.each([false, true])('atomically picks one mode when opposing kiosks race (P1 requests %s)', async firstMode => {
-  const { client, create, modes, createMode } = setup();
-  const passes = await Promise.all([
-    registerPlayer(client.data, crypto.randomUUID(), 'P1', '', firstMode),
-    registerPlayer(client.data, crypto.randomUUID(), 'P2', '', !firstMode),
-  ]);
-  expect(createMode).toHaveBeenCalledTimes(2);
-  expect(modes.size).toBe(1);
-  const locked = modes.get(gameId)!.excludeFromLeaderboard;
-  expect(passes.map(pass => pass.excludeFromLeaderboard)).toEqual([locked, locked]);
-  expect(create.mock.calls.map(([row]) => row.excludeFromLeaderboard)).toEqual([locked, locked]);
-});
-
-it('keeps the mode after a lost lock response or failed player write and resets only for a new game', async () => {
-  const { client, game, gameExecute, create, modes, createMode } = setup();
-  createMode.mockImplementationOnce(async row => {
-    modes.set(gameId, { id: gameId, excludeFromLeaderboard: row.excludeFromLeaderboard });
-    throw new Error('Lost mode lock response');
-  });
+it('does not let a failed player write lock the other player to easy', async () => {
+  const { client, create, createMode } = setup();
   create.mockRejectedValueOnce(new Error('Player write unavailable'));
-  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
-    .rejects.toThrow('Player write unavailable');
-  const recovered = await registerPlayer(client.data, crypto.randomUUID(), 'P2', '', false);
-  expect(recovered.excludeFromLeaderboard).toBe(true);
-  const nextId = crypto.randomUUID();
-  gameExecute.mockResolvedValue([{ ...game, id: nextId }]);
-  expect((await registerPlayer(client.data, crypto.randomUUID(), 'P1', '', false)).excludeFromLeaderboard).toBe(false);
-  expect(modes.get(gameId)?.excludeFromLeaderboard).toBe(true);
-  expect(modes.get(nextId)?.excludeFromLeaderboard).toBe(false);
-});
-
-it('does not register anyone when the mode lock fails without an existing winner', async () => {
-  const { client, createMode, create } = setup();
-  createMode.mockRejectedValue(new Error('Mode database unavailable'));
-  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
-    .rejects.toThrow('Mode database unavailable');
-  expect(create).not.toHaveBeenCalled();
-});
-
-it('does not fall back to a requested mode when reading the database lock fails', async () => {
-  const { client, modeExecute, createMode, create } = setup();
-  modeExecute.mockRejectedValue(new Error('Mode lookup unavailable'));
-  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', true))
-    .rejects.toThrow('Mode lookup unavailable');
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', 0)).rejects.toThrow('Player write unavailable');
+  expect((await registerPlayer(client.data, crypto.randomUUID(), 'P2', '', 4)).difficulty).toBe(4);
   expect(createMode).not.toHaveBeenCalled();
+});
+
+it.each([-1, 1, 2, 5, 3.5, NaN, Infinity])('rejects unsupported numeric difficulty %s before database access', async difficulty => {
+  const { client, find, create } = setup();
+  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', difficulty)).rejects.toThrow('Invalid player registration');
+  expect(find).not.toHaveBeenCalled();
   expect(create).not.toHaveBeenCalled();
 });
 
-it.each([false, true])('uses an existing pre-lock player mode %s rather than the second player preference', async excluded => {
-  const { client, slotExecute, slotWhere } = setup();
-  const old = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1' as const,
-    username: 'SillyEventhouse1234', registrationType: 'player' as const,
-    slotKey: `${gameId}:P1`, usernameKey: 'player:test', pinKey: 'pin:123456',
-    createdAt: new Date(), eventQueued: true, excludeFromLeaderboard: excluded };
-  slotExecute.mockImplementation(async () => slotWhere.mock.lastCall?.[0].gameSessionId ? [old] : []);
-  expect((await registerPlayer(client.data, crypto.randomUUID(), 'P2', '', !excluded))
-    .excludeFromLeaderboard).toBe(excluded);
-});
-
-it('rejects mixed pre-lock registrations rather than retagging already-relayed players', async () => {
-  const { client, slotExecute, slotWhere, createMode, create } = setup();
-  const old = { id: crypto.randomUUID(), gameSessionId: gameId, player: 'P1' as const,
-    username: 'SillyEventhouse1234', registrationType: 'player' as const,
-    slotKey: `${gameId}:P1`, usernameKey: 'player:test', pinKey: 'pin:123456',
-    createdAt: new Date(), eventQueued: true };
-  slotExecute.mockImplementation(async () => slotWhere.mock.lastCall?.[0].gameSessionId
-    ? [{ ...old, excludeFromLeaderboard: true }, { ...old, excludeFromLeaderboard: false }] : []);
-  await expect(registerPlayer(client.data, crypto.randomUUID(), 'P2', '', false))
-    .rejects.toThrow('conflicting player modes');
-  expect(createMode).not.toHaveBeenCalled();
+it.each(['0', '3', '4', true, false, {}, []])('does not coerce invalid difficulty %s into a supported choice', async difficulty => {
+  const { client, create } = setup();
+  await expect(Reflect.apply(registerPlayer, undefined, [
+    client.data, crypto.randomUUID(), 'P1', '', difficulty,
+  ])).rejects.toThrow('Invalid player registration');
   expect(create).not.toHaveBeenCalled();
 });
 
-it('reports unset, locked and inactive session modes without returning player data', async () => {
+it('preserves legacy Normal as unknown rather than inventing a numeric difficulty', async () => {
+  const { client, create } = setup();
+  const pass = await registerPlayer(client.data, crypto.randomUUID(), 'P1', '');
+  expect(pass.difficulty).toBeNull();
+  expect(pass.excludeFromLeaderboard).toBe(false);
+  expect(create.mock.calls[0][0]).not.toHaveProperty('difficulty');
+});
+
+it('a same-station race with different difficulties still reserves exactly one slot', async () => {
+  const { client, create, find, slotExecute, slotWhere } = setup();
+  let winner: GamePlayerSession | undefined;
+  find.mockImplementation(async id => winner?.id === id ? winner : null);
+  slotExecute.mockImplementation(async () => {
+    const filter = slotWhere.mock.lastCall?.[0];
+    return winner && JSON.stringify(filter).includes(winner.slotKey) ? [winner] : [];
+  });
+  create.mockImplementation(async row => {
+    if (winner) throw new Error('SQL slotKey unique constraint');
+    winner = { ...row, id: row.id ?? crypto.randomUUID() };
+    return winner;
+  });
+  const results = await Promise.allSettled([
+    registerPlayer(client.data, crypto.randomUUID(), 'P1', '', 0),
+    registerPlayer(client.data, crypto.randomUUID(), 'P1', '', 4),
+  ]);
+  expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+  const saved = results.find(result => result.status === 'fulfilled');
+  if (saved?.status !== 'fulfilled') throw new Error('Expected one saved registration');
+  expect(saved.value.difficulty).toBe(winner?.difficulty);
+});
+
+it('retains the saved difficulty when recovering a lost response and rejects retrying a different choice', async () => {
+  const { client, create, find } = setup();
+  create.mockImplementation(async row => {
+    find.mockResolvedValue({ ...row, id: row.id ?? crypto.randomUUID() });
+    throw new Error('Lost response');
+  });
+  const id = crypto.randomUUID();
+  expect((await registerPlayer(client.data, id, 'P1', '', 4)).difficulty).toBe(4);
+  await expect(registerPlayer(client.data, id, 'P1', '', 3)).rejects.toThrow('different difficulty');
+  expect(create).toHaveBeenCalledTimes(1);
+});
+
+it.each([false, true])('recovers legacy registration mode %s without inventing a normal difficulty', async easy => {
+  const { client, find } = setup();
+  const id = crypto.randomUUID();
+  find.mockResolvedValue({
+    id, gameSessionId: gameId, player: 'P1', username: 'SillyEventhouse1234',
+    pin: '123456', registrationType: 'player', slotKey: `${gameId}:P1`, usernameKey: 'test',
+    pinKey: 'test', createdAt: new Date(), eventQueued: false, excludeFromLeaderboard: easy,
+  });
+  const pass = await registerPlayer(client.data, id, 'P1', '');
+  expect(pass.difficulty).toBe(easy ? 0 : null);
+});
+
+it('keeps the cached-kiosk lookup compatible but never advertises a shared mode', async () => {
   const { client, modes, gameExecute } = setup();
   expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: gameId, excludeFromLeaderboard: null });
   modes.set(gameId, { id: gameId, excludeFromLeaderboard: true });
-  expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: gameId, excludeFromLeaderboard: true });
+  expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: gameId, excludeFromLeaderboard: null });
   gameExecute.mockResolvedValue([]);
   expect(await getRegistrationMode(client.data)).toEqual({ gameSessionId: null, excludeFromLeaderboard: null });
 });

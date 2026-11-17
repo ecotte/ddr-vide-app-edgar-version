@@ -1,18 +1,35 @@
 import type { RayfinClient } from '@microsoft/rayfin-client';
 import type { AppSchema } from '../rayfin/data/schema.js';
-import type { BoardSnapshot } from '../src/state.js';
+import type { BoardSnapshot, PlayerState } from '../src/state.js';
+import { isDifficulty, scoreForDifficulty } from '../rayfin/functions/src/difficulty.js';
 
 export async function withPlayerNames(
   client: RayfinClient<AppSchema>, snapshot: BoardSnapshot,
 ): Promise<BoardSnapshot> {
+  const basePlayer = (player: PlayerState): PlayerState => {
+    const base = player.baseRunningScore ?? player.runningScore;
+    return {
+      ...player, username: null, difficulty: null,
+      ...(base != null ? { baseRunningScore: base, runningScore: base } : {}),
+    };
+  };
   const players: BoardSnapshot['players'] = {
-    P1: { ...snapshot.players.P1, username: null },
-    P2: { ...snapshot.players.P2, username: null },
+    P1: basePlayer(snapshot.players.P1),
+    P2: basePlayer(snapshot.players.P2),
   };
   if (snapshot.sessionId) {
-    const rows = await client.data.GamePlayerSession.select(['player', 'username'])
+    const rows = await client.data.GamePlayerSession.select(['player', 'username', 'difficulty'])
       .where({ gameSessionId: { eq: snapshot.sessionId } }).first(2).execute();
-    for (const row of rows) players[row.player].username = row.username;
+    for (const row of rows) {
+      const difficulty = row.difficulty ?? null;
+      if (difficulty !== null && !isDifficulty(difficulty)) throw new Error('Invalid registered player difficulty.');
+      const player = players[row.player];
+      player.username = row.username;
+      player.difficulty = difficulty;
+      if (player.baseRunningScore != null) {
+        player.runningScore = scoreForDifficulty(player.baseRunningScore, difficulty);
+      }
+    }
   }
   return { ...snapshot, players };
 }
@@ -54,7 +71,7 @@ export async function syncRegistrations(
     client.data.SpecialSession.select(['id', 'gameSessionId', 'player', 'username', 'createdAt'])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
     client.data.GamePlayerSession.select([
-      'id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt', 'registrationType', 'excludeFromLeaderboard',
+      'id', 'gameSessionId', 'player', 'username', 'pin', 'createdAt', 'registrationType', 'excludeFromLeaderboard', 'difficulty',
     ])
       .where({ eventQueued: { eq: false } }).orderBy({ createdAt: 'asc' }).first(25).execute(),
   ]);

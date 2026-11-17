@@ -216,3 +216,41 @@ def test_invalid_loaded_reference_is_reported_in_diagnostics():
     result = session.process_arrow_frame(make_frame(region), 1, 33).region_results[0]
     assert "No usable letter-shape references" in result.error
     assert "No saturated lettering" in result.validation_note
+
+
+def test_bad_only_calibration_is_a_graded_hit_and_survives_layout_reload(tmp_path):
+    bad = word("BAD", (0, 255, 255))
+    region = judgment()
+    region.reference_images = {"bad": [encode(bad)]}
+    path = str(tmp_path / "bad-layout.json")
+    layout_store.save_layout_to_path(LayoutProfile("bad", 800, 130, [region]), path)
+    loaded = layout_store.load_layout_from_path(path)
+    assert loaded.regions[0].reference_images["bad"] == region.reference_images["bad"]
+    bus = EventBus()
+    session = AnalysisSession(bus)
+    session.set_regions(loaded.regions)
+    session.start()
+    for index, timestamp in enumerate((0, 33, 500, 700)):
+        session.process_arrow_frame(make_frame(region, bad), index, timestamp)
+    event, = [row for row in bus.events if row.event_type == "judgement"]
+    assert event.payload["judgment"] == "bad"
+    assert event.payload["outcome"] == event.payload["state"] == "hit"
+    assert event.payload["step_directions"] == []
+
+
+def test_bad_reference_capture_clear_and_player_isolation():
+    p1, p2 = judgment(), judgment("P2", 400)
+    session = AnalysisSession(EventBus())
+    session.set_regions([p1, p2])
+    controller = SimpleNamespace(
+        regions=[p1, p2], analysis=session, _analysis_generation=0,
+        _last_frame_bgr=make_frame(p1, word("BAD", (0, 255, 255))),
+        video_tab=Mock(), _refresh_arrow_reference_thumbnails=Mock(),
+    )
+    App.capture_arrow_reference(controller, p1, "bad")
+    assert "bad" in session._judgment_shapes[p1.key()].references
+    assert "bad" not in session._judgment_shapes[p2.key()].references
+    assert p1.reference_images["bad"]
+    App.clear_arrow_reference(controller, p1, "bad")
+    assert "bad" not in session._judgment_shapes[p1.key()].references
+    assert p2.reference_images.get("bad") is None
