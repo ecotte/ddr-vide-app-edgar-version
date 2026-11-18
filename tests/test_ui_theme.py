@@ -97,6 +97,34 @@ def test_video_empty_state_and_primary_actions(root):
     assert tab.play_button.cget("text") == "Pause"
 
 
+def test_hdmi_recording_controls_are_adjacent_and_track_record_stop_save_states(root):
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    try:
+        assert tab.record_video_button.master is tab.connect_hdmi_button.master
+        assert tab.record_video_button.grid_info()["row"] == tab.connect_hdmi_button.grid_info()["row"]
+        assert tab.record_video_button.instate(["disabled"])
+        tab.set_hdmi_connected(True)
+        tab.record_video_button.invoke()
+        controller.toggle_video_recording.assert_called_once_with()
+        tab.set_recording_state("recording", "Recording locally")
+        assert tab.record_video_button.cget("text") == "Stop recording"
+        assert tab.recording_status_var.get() == "Recording locally"
+        tab.set_play_button_label(False)
+        assert tab.record_video_button.instate(["!disabled"])
+        tab.set_recording_state("stopping")
+        assert tab.record_video_button.instate(["disabled"])
+        tab.set_recording_state("unsaved")
+        assert tab.record_video_button.cget("text") == "Save recording..."
+        tab.set_recording_state("saving")
+        assert tab.record_video_button.instate(["disabled"])
+        tab.set_recording_state("idle")
+        tab.set_hdmi_connected(False)
+        assert tab.record_video_button.instate(["disabled"])
+    finally:
+        tab.destroy()
+
+
 def test_events_table_scrolling_and_publishing_states(root):
     root.deiconify()
     root.geometry("760x600")

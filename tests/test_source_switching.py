@@ -1,4 +1,5 @@
 """Source lifecycle/controller checks without hardware, Tk, or network access."""
+from concurrent.futures import Future
 from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
 
@@ -32,6 +33,8 @@ class FakeLiveSource(LiveVideoSource):
         self.video_time_ms_for_frame = Mock(return_value=123)
         self.seek_to_frame = Mock()
         self.skip_to_frame = Mock()
+        self.start_recording = Mock()
+        self.stop_recording = Mock()
 
 
 def _file_source():
@@ -57,6 +60,9 @@ def controller(monkeypatch):
         is_playing=False, _play_after_id=None, _analysis_generation=0,
         _confirmation_frame=None, _latest_numeric_frame=None, _final_numeric_frame=None,
         _last_frame_position=None, _last_frame_bgr=None,
+        _video_recording=None, _recording_poll_after_id=None, _recording_after_save=None,
+        _recording_save_requested=False, _recording_error_reported=False,
+        _recording_save_future=None, _recording_executor=Mock(),
         after=Mock(return_value="capture-poll"), after_cancel=Mock(),
         _schedule_play_tick=Mock(), _process_and_update=Mock(),
         _refresh_score_calibration_status=Mock(), _refresh_arrow_reference_thumbnails=Mock(),
@@ -65,6 +71,8 @@ def controller(monkeypatch):
         "select_source", "refresh_capture_devices", "toggle_hdmi", "_cancel_hdmi_connection",
         "_poll_live_connection", "_disconnect_source", "_activate_source", "_stop_playing",
         "_start_playing", "_play_live_tick",
+        "toggle_video_recording", "_stop_video_recording", "_prepare_recording_change",
+        "_poll_video_recording", "_save_video_recording", "_on_close", "load_video",
     ):
         setattr(app, name, MethodType(getattr(App, name), app))
     app.video_tab.capture_device_var.get.return_value = DEVICE.label
@@ -281,3 +289,120 @@ def test_live_gameplay_and_following_session_announcements_keep_live_source_mode
     assert all(event.source_mode == "live" for event in controller.event_bus.events)
     assert controller.event_bus.events[-1].payload["previous_session_id"] == original_id
     assert controller.event_bus.events[1].event_type == "combo"
+
+
+@pytest.fixture
+def recording_controller(controller, monkeypatch, tmp_path):
+    source = FakeLiveSource(DEVICE)
+    recording = Mock(finished=False, active=True, usable=True, error=None, path=tmp_path / "temporary.mp4")
+    source.start_recording.return_value = recording
+    controller.video_source = source
+    controller._recording_executor.submit.return_value = Future()
+    monkeypatch.setattr("app.ui.app_window.messagebox.showerror", Mock())
+    monkeypatch.setattr("app.ui.app_window.filedialog.asksaveasfilename", Mock(return_value=""))
+    return controller, recording
+
+
+def test_record_stop_save_encodes_without_affecting_preview_or_analysis(recording_controller, monkeypatch, tmp_path):
+    controller, recording = recording_controller
+    controller.is_playing = True
+    controller.analysis.start()
+    controller.toggle_video_recording()
+    assert controller._video_recording is recording
+    controller.video_source.start_recording.assert_called_once_with()
+    controller.toggle_video_recording()
+    recording.stop.assert_called_once_with()
+    assert controller.is_playing
+    assert controller.analysis.is_running
+    destination = str(tmp_path / "game.mp4")
+    dialog = Mock(return_value=destination)
+    monkeypatch.setattr("app.ui.app_window.filedialog.asksaveasfilename", dialog)
+    controller._poll_video_recording()
+    dialog.assert_not_called()
+    recording.finished = True
+    controller._poll_video_recording()
+    assert dialog.call_args.kwargs["defaultextension"] == ".mp4"
+    controller._recording_executor.submit.assert_called_once_with(recording.save, destination)
+    controller._recording_save_future.set_result(None)
+    controller._poll_video_recording()
+    assert controller._video_recording is None
+    controller.video_tab.set_recording_state.assert_called_with("idle", "MP4 recording saved.")
+
+
+def test_cancel_save_keeps_recording_and_allows_retry(recording_controller, monkeypatch):
+    controller, recording = recording_controller
+    controller.toggle_video_recording()
+    controller.toggle_video_recording()
+    recording.finished = True
+    controller._poll_video_recording()
+    assert controller._video_recording is recording
+    assert controller._recording_after_save is None
+    assert controller.video_tab.set_recording_state.call_args.args[0] == "unsaved"
+    controller._recording_executor.submit.assert_not_called()
+    dialog = Mock(return_value="retry.mp4")
+    monkeypatch.setattr("app.ui.app_window.filedialog.asksaveasfilename", dialog)
+    controller.toggle_video_recording()
+    controller._recording_executor.submit.assert_called_once_with(recording.save, "retry.mp4")
+
+
+def test_failed_save_keeps_recording_and_cancels_deferred_source_change(recording_controller, monkeypatch):
+    controller, recording = recording_controller
+    controller.toggle_video_recording()
+    recording.finished = True
+    monkeypatch.setattr("app.ui.app_window.filedialog.asksaveasfilename", Mock(return_value="game.mp4"))
+    action = Mock()
+    assert not controller._prepare_recording_change(action)
+    controller._recording_save_future.set_exception(OSError("destination is full"))
+    controller._poll_video_recording()
+    assert controller._video_recording is recording
+    assert controller._recording_after_save is None
+    action.assert_not_called()
+    from app.ui.app_window import messagebox
+    assert "destination is full" in messagebox.showerror.call_args.args[1]
+
+
+@pytest.mark.parametrize("action", ["disconnect", "switch", "close"])
+def test_source_change_and_close_wait_for_recording_save(recording_controller, monkeypatch, action):
+    controller, recording = recording_controller
+    controller.toggle_video_recording()
+    original_source = controller.video_source
+    if action == "disconnect":
+        controller.toggle_hdmi()
+    elif action == "switch":
+        controller.select_source("Video file")
+    else:
+        controller._on_close()
+    original_source.close.assert_not_called()
+    assert controller._recording_after_save is not None
+    recording.finished = True
+    controller._poll_video_recording()
+    assert controller._video_recording is recording
+    assert controller.video_source is original_source
+    assert controller._recording_after_save is None
+
+
+def test_successful_save_resumes_deferred_action(recording_controller, monkeypatch):
+    controller, recording = recording_controller
+    controller.toggle_video_recording()
+    action = Mock()
+    assert not controller._prepare_recording_change(action)
+    action.assert_not_called()
+    recording.finished = True
+    monkeypatch.setattr("app.ui.app_window.filedialog.asksaveasfilename", Mock(return_value="game.mp4"))
+    controller._poll_video_recording()
+    action.assert_not_called()
+    controller._recording_save_future.set_result(None)
+    controller._poll_video_recording()
+    action.assert_called_once_with()
+
+
+def test_signal_loss_offers_to_save_partial_recording(recording_controller):
+    controller, recording = recording_controller
+    controller.toggle_video_recording()
+    recording.finished = True
+    recording.error = "No HDMI recording frames received for 5 seconds."
+    controller._poll_video_recording()
+    from app.ui.app_window import filedialog, messagebox
+    messagebox.showerror.assert_called_once()
+    filedialog.asksaveasfilename.assert_called_once()
+    assert controller._video_recording is recording

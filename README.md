@@ -163,7 +163,7 @@ activity. General judgment-text OCR remains future work.
 **Does:**
 - Open a local `.mp4`/`.avi`/`.mov`/`.mkv` file, play/pause/step through it frame by frame, and seek with a slider.
 - Backward steps and seeks keep the preview responsive while background OCR is busy. Tracking resets without blocking the UI once recognition locks become available; only the newest requested frame is retained, and old-generation OCR results do not overwrite its recognition cards.
-- Select **HDMI input**, choose a named HDMI-to-USB capture device such as **Hagibis**, and analyze its live frames without recording a video file.
+- Select **HDMI input**, choose a named HDMI-to-USB capture device such as **Hagibis**, and analyze its live frames, with optional local MP4 recording.
 - Let you draw rectangles on the video frame and label each one with a player (P1/P2/Unknown) and a field kind: `score`, `combo`, or `arrow` (one box per direction - Up-Right/Up-Left/Down-Right/Down-Left/Center - per player), plus a shared `game_end` indicator.
 - The **Add region** dialog asks only for player, field kind, and arrow direction when applicable. Region names are generated automatically, for example `P1 Score`, `P2 Center`, or `Game end`; no free-text name is required. Existing saved region labels remain readable.
 - Save/load named layout profiles (JSON files under `layouts/`), tied to a specific source resolution, with an explicit warning (never a silent guess) if you load a layout onto a differently-sized video. If you continue, regions are fitted with one uniform scale and centered so different aspect ratios do not distort them. Arrow-lane reference snapshots (see below) travel with the layout and are resized by the same scale.
@@ -289,7 +289,24 @@ The first live frame starts the preview. Analysis remains off until you click
 teaching digits, or capturing arrow/game-end references; **Resume live** jumps
 to the current feed, not buffered footage. Previously submitted OCR may still
 complete while the preview is frozen. Live input has no frame stepping, rewind,
-or seek, and does not capture audio or save a video recording.
+or seek, and does not capture audio.
+
+To save HDMI footage, click **Record MP4** beside **Connect/Disconnect HDMI**.
+Click **Stop recording** to finish the MP4 and choose its filename and location.
+Canceling the save dialog keeps the temporary recording and changes the button to
+**Save recording...**, so you can save it later. Starting another recording,
+disconnecting, changing sources, or closing the app requires saving the pending
+recording first; canceling keeps the current source/app open.
+Recording captures the original full-resolution video without calibration
+overlays or audio, independently of analysis, gameplay event recording, and
+**Freeze preview**. Video stays local and is never sent to Fabric or Rayfin.
+Encoding and file copying run in background workers with bounded frame buffering.
+If encoding cannot keep up, the signal stalls, or the encoder fails, recording
+stops with a visible error; any playable partial MP4 is offered for saving.
+The MP4 uses the device's reported FPS (or measured capture cadence when absent),
+repeating frames across capture gaps to preserve elapsed recording time.
+Temporary footage uses the Windows temporary directory until saved; allow
+enough free space there as well as at the chosen destination.
 
 Live capture runs in a dedicated thread and retains only the latest frame,
 avoiding an unbounded queue or blocking Tk on camera reads. Dimensions come

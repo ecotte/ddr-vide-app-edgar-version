@@ -193,6 +193,8 @@ def test_stuck_capture_driver_shutdown_is_bounded_and_explicit():
     source = LiveVideoSource.__new__(LiveVideoSource)
     source.device = DEVICE
     source._stop = threading.Event()
+    source._recording_lock = threading.Lock()
+    source._recording = None
     source._thread = Mock()
     source._thread.is_alive.return_value = True
     with pytest.raises(OSError, match="still shutting down"):
@@ -283,3 +285,51 @@ def test_cam_link_reports_a_driver_that_ignores_requested_fps(monkeypatch):
     finally:
         source.close()
     assert driver.released.is_set()
+
+
+def test_recording_receives_raw_capture_frames_even_without_preview_reads(capture, monkeypatch):
+    source, driver, _ = capture
+    recording = Mock()
+    factory = Mock(return_value=recording)
+    monkeypatch.setattr("app.live_video_source.VideoRecording", factory)
+    driver.frames.put(np.zeros((24, 32, 3), dtype=np.uint8))
+    wait_for(lambda: source._latest is not None)
+    assert source.start_recording() is recording
+    factory.assert_called_once_with(32, 24, 30.0)
+    for value in (20, 40, 60):
+        driver.frames.put(np.full((24, 32, 3), value, dtype=np.uint8))
+    wait_for(lambda: recording.write.call_count == 3)
+    assert [call.args[0].mean() for call in recording.write.call_args_list] == [20, 40, 60]
+    source.stop_recording()
+    recording.stop.assert_called_once_with()
+    driver.frames.put(np.full((24, 32, 3), 80, dtype=np.uint8))
+    wait_for(lambda: source._latest[1] == 4)
+    assert recording.write.call_count == 3
+
+
+def test_recording_uses_measured_cadence_if_device_does_not_report_fps(capture, monkeypatch):
+    source, driver, _ = capture
+    driver.frames.put(np.zeros((24, 32, 3), dtype=np.uint8))
+    wait_for(lambda: source._latest is not None)
+    with source._lock:
+        source.fps = 0
+        source._capture_times.clear()
+        source._capture_times.extend([0, 40, 80])
+    factory = Mock()
+    monkeypatch.setattr("app.live_video_source.VideoRecording", factory)
+    source.start_recording()
+    factory.assert_called_once_with(32, 24, 25.0)
+
+
+def test_signal_loss_stops_recording_but_preserves_the_original_capture_error(capture, monkeypatch):
+    source, driver, _ = capture
+    recording = Mock()
+    monkeypatch.setattr("app.live_video_source.VideoRecording", Mock(return_value=recording))
+    driver.frames.put(np.zeros((24, 32, 3), dtype=np.uint8))
+    wait_for(lambda: source._latest is not None)
+    source.start_recording()
+    driver.frames.put(None)
+    wait_for(driver.released.is_set)
+    recording.stop.assert_called_once_with()
+    with pytest.raises(OSError, match="No video frames"):
+        source.read_next()

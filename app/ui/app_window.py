@@ -7,8 +7,9 @@ import threading
 import time
 import tkinter as tk
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from tkinter import ttk, filedialog, messagebox, simpledialog
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 from PIL import Image, ImageTk
@@ -31,6 +32,7 @@ from app.ui.score_calibration_dialog import ScoreCalibrationDialog
 from app.ui.theme import apply_dark_theme
 from app.ui.video_tab import ReferenceGalleryDialog, VideoTab, fit_display_size, next_playback_delay_ms
 from app.video_source import VideoSource
+from app.video_recording import VideoRecording
 
 
 class App(tk.Tk):
@@ -56,6 +58,13 @@ class App(tk.Tk):
         self._capture_poll_after_id: Optional[str] = None
         self._capture_started_at = 0.0
         self._capture_devices: list[CaptureDevice] = []
+        self._video_recording: Optional[VideoRecording] = None
+        self._recording_poll_after_id: Optional[str] = None
+        self._recording_after_save: Optional[Callable[[], None]] = None
+        self._recording_save_requested = False
+        self._recording_error_reported = False
+        self._recording_save_future: Optional[Future] = None
+        self._recording_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recording-save")
         self._calibration_resolution: Optional[tuple[int, int]] = None
         self.regions = []  # list[Region]
         self.is_playing = False
@@ -124,6 +133,11 @@ class App(tk.Tk):
     # ------------------------------------------------------------------
     # Source selection / playback
     def select_source(self, selection: str) -> None:
+        if not self._prepare_recording_change(lambda: self.select_source(selection)):
+            self.video_tab.set_source_selection(
+                "HDMI input" if isinstance(self.video_source, LiveVideoSource) else "Video file",
+            )
+            return
         if not self._cancel_hdmi_connection() or not self._disconnect_source():
             active = "HDMI input" if isinstance(self.video_source, LiveVideoSource) else "Video file"
             self.video_tab.set_source_selection(active)
@@ -154,6 +168,8 @@ class App(tk.Tk):
             self._cancel_hdmi_connection()
             return
         if isinstance(self.video_source, LiveVideoSource):
+            if not self._prepare_recording_change(self.toggle_hdmi):
+                return
             self._disconnect_source()
             return
         selected = self.video_tab.capture_device_var.get()
@@ -239,6 +255,8 @@ class App(tk.Tk):
         self.load_video(path)
 
     def load_video(self, path: str) -> None:
+        if not self._prepare_recording_change(lambda: self.load_video(path)):
+            return
         self._stop_playing()
         try:
             new_source = VideoSource(path)
@@ -451,6 +469,112 @@ class App(tk.Tk):
                 frame, index, source.video_time_ms_for_frame(index), is_seek=False,
             )
         self._schedule_play_tick(15)
+
+    # ------------------------------------------------------------------
+    # HDMI MP4 recording / deferred save
+    def toggle_video_recording(self) -> None:
+        if self._video_recording is not None:
+            if self._video_recording.finished:
+                self._save_video_recording()
+            else:
+                self._stop_video_recording()
+            return
+        source = self.video_source
+        if not isinstance(source, LiveVideoSource):
+            messagebox.showerror("HDMI recording", "Connect an HDMI input before recording.")
+            return
+        try:
+            self._video_recording = source.start_recording()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("HDMI recording", str(exc))
+            return
+        self._recording_save_requested = True
+        self._recording_error_reported = False
+        self.video_tab.set_recording_state(
+            "recording", "Recording HDMI video locally (no audio). Freezing the preview does not pause recording.",
+        )
+        self._recording_poll_after_id = self.after(100, self._poll_video_recording)
+
+    def _stop_video_recording(self) -> None:
+        recording = self._video_recording
+        if recording is None:
+            return
+        if isinstance(self.video_source, LiveVideoSource):
+            self.video_source.stop_recording()
+        recording.stop()
+        self._recording_save_requested = True
+        self.video_tab.set_recording_state("stopping", "Finishing the MP4 before saving...")
+
+    def _prepare_recording_change(self, after_save: Callable[[], None]) -> bool:
+        if self._video_recording is None:
+            return True
+        self._recording_after_save = after_save
+        if self._recording_save_future is None:
+            if self._video_recording.finished:
+                self._save_video_recording()
+            else:
+                self._stop_video_recording()
+        return False
+
+    def _poll_video_recording(self) -> None:
+        self._recording_poll_after_id = None
+        recording = self._video_recording
+        if recording is None:
+            return
+        if self._recording_save_future is not None:
+            if self._recording_save_future.done():
+                try:
+                    self._recording_save_future.result()
+                except OSError as exc:
+                    self._recording_after_save = None
+                    self.video_tab.set_recording_state("unsaved", "Save failed. Recording kept; retry Save recording.")
+                    messagebox.showerror("Could not save HDMI recording", str(exc))
+                else:
+                    self._video_recording = None
+                    self.video_tab.set_recording_state("idle", "MP4 recording saved.")
+                    after_save = self._recording_after_save
+                    self._recording_after_save = None
+                    self._recording_save_future = None
+                    if after_save is not None:
+                        after_save()
+                    return
+                self._recording_save_future = None
+        elif recording.finished:
+            if isinstance(self.video_source, LiveVideoSource):
+                self.video_source.stop_recording()
+            if recording.error and not self._recording_error_reported:
+                self._recording_error_reported = True
+                messagebox.showerror(
+                    "HDMI recording stopped",
+                    f"{recording.error}\n\nTemporary recording: {recording.path}",
+                )
+            if not recording.usable:
+                self._video_recording = None
+                self._recording_after_save = None
+                self.video_tab.set_recording_state("idle", "Recording failed; see the error for its temporary file.")
+                return
+            self.video_tab.set_recording_state("unsaved", "Recording stopped. Save the MP4 to keep it.")
+            if self._recording_save_requested:
+                self._save_video_recording()
+        if self._video_recording is not None:
+            self._recording_poll_after_id = self.after(100, self._poll_video_recording)
+
+    def _save_video_recording(self) -> None:
+        recording = self._video_recording
+        if recording is None or self._recording_save_future is not None:
+            return
+        self._recording_save_requested = False
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Save HDMI recording", defaultextension=".mp4",
+            initialfile=f"DDR-HDMI-{datetime.now():%Y%m%d-%H%M%S}.mp4",
+            filetypes=[("MP4 video", "*.mp4")],
+        )
+        if not path:
+            self._recording_after_save = None
+            self.video_tab.set_recording_state("unsaved", "Recording kept locally. Click Save recording to choose a file.")
+            return
+        self.video_tab.set_recording_state("saving", "Saving MP4...")
+        self._recording_save_future = self._recording_executor.submit(recording.save, path)
 
     # ------------------------------------------------------------------
     # Frame processing + display
@@ -1360,6 +1484,8 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------
     def _on_close(self) -> None:
+        if not self._prepare_recording_change(self._on_close):
+            return
         if not self._cancel_hdmi_connection() or not self._disconnect_source():
             return
         self._stop_playing()
@@ -1377,6 +1503,9 @@ class App(tk.Tk):
             self.after_cancel(self._seek_poll_after_id)
             self._seek_poll_after_id = None
         self._analysis_executor.shutdown(wait=False, cancel_futures=True)
+        if self._recording_poll_after_id is not None:
+            self.after_cancel(self._recording_poll_after_id)
+        self._recording_executor.shutdown(wait=False, cancel_futures=True)
         self.destroy()
 
 

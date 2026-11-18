@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 import threading
 import time
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import numpy as np
 from cv2_enumerate_cameras import enumerate_cameras
 
 from app import config
+from app.video_recording import VideoRecording
 
 CAPTURE_STALL_SECONDS = 5.0
 
@@ -52,6 +54,9 @@ class LiveVideoSource:
         self._delivered_time_ms = 0
         self._last_received_at: Optional[float] = None
         self._error: Optional[str] = None
+        self._capture_times: deque[int] = deque(maxlen=31)
+        self._recording_lock = threading.Lock()
+        self._recording: Optional[VideoRecording] = None
         self._thread = threading.Thread(target=self._capture, name="hdmi-capture", daemon=True)
         self._thread.start()
 
@@ -114,13 +119,44 @@ class LiveVideoSource:
                 with self._lock:
                     self._latest = (frame, index, timestamp)
                     self._last_received_at = captured_at
+                    self._capture_times.append(timestamp)
+                with self._recording_lock:
+                    if self._recording is not None:
+                        self._recording.write(frame, timestamp)
                 index += 1
         except (OSError, cv2.error) as exc:
             with self._lock:
                 self._error = str(exc)
         finally:
+            self.stop_recording()
             if capture is not None:
                 capture.release()
+
+    def start_recording(self) -> VideoRecording:
+        with self._recording_lock:
+            if self._recording is not None:
+                raise ValueError("Stop and save the current HDMI recording first.")
+            with self._lock:
+                if self._stop.is_set() or self._error is not None or not self.width:
+                    raise ValueError("Connect a working HDMI input before recording.")
+                if (
+                    self._last_received_at is None
+                    or time.monotonic() - self._last_received_at >= CAPTURE_STALL_SECONDS
+                ):
+                    raise ValueError("No current HDMI frames are available. Reconnect before recording.")
+                fps = self.fps
+                if not fps and len(self._capture_times) > 1:
+                    elapsed = self._capture_times[-1] - self._capture_times[0]
+                    fps = (len(self._capture_times) - 1) * 1000 / elapsed if elapsed > 0 else 0
+                recording = VideoRecording(self.width, self.height, fps)
+            self._recording = recording
+            return recording
+
+    def stop_recording(self) -> None:
+        with self._recording_lock:
+            if self._recording is not None:
+                self._recording.stop()
+                self._recording = None
 
     def read_next(self) -> tuple[Optional[np.ndarray], Optional[int], bool]:
         with self._lock:
@@ -161,6 +197,7 @@ class LiveVideoSource:
 
     def close(self) -> None:
         self._stop.set()
+        self.stop_recording()
         self._thread.join(timeout=2)
         if self._thread.is_alive():
             raise OSError(

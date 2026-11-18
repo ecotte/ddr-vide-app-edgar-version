@@ -176,6 +176,7 @@ class VideoTab(ttk.Frame):
         self._is_live = False
         self._capture_pending = False
         self._capture_connected = False
+        self._recording_state = "idle"
 
         self._build_layout()
 
@@ -232,10 +233,20 @@ class VideoTab(ttk.Frame):
             style="Accent.TButton", state="disabled",
         )
         self.connect_hdmi_button.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.record_video_button = ttk.Button(
+            self.hdmi_controls, text="Record MP4", command=self.controller.toggle_video_recording,
+            state="disabled",
+        )
+        self.record_video_button.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
         ttk.Label(
             self.hdmi_controls, text="Select your HDMI capture card, not the built-in camera.",
             style="Muted.TLabel", wraplength=420,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.recording_status_var = tk.StringVar()
+        ttk.Label(
+            self.hdmi_controls, textvariable=self.recording_status_var,
+            style="Muted.TLabel", wraplength=420,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.video_info_var = tk.StringVar(value="No video loaded.")
         self.video_info_label = ttk.Label(
             top, textvariable=self.video_info_var, style="Muted.TLabel", wraplength=520,
@@ -505,6 +516,11 @@ class VideoTab(ttk.Frame):
         self._capture_connected = connected
         self._update_capture_controls()
 
+    def set_recording_state(self, state: str, text: str = "") -> None:
+        self._recording_state = state
+        self.recording_status_var.set(text)
+        self._update_capture_controls()
+
     def _update_capture_controls(self) -> None:
         busy = self._capture_pending or self._capture_connected
         self.source_combo.configure(state="disabled" if self._capture_pending else "readonly")
@@ -517,6 +533,15 @@ class VideoTab(ttk.Frame):
         self.connect_hdmi_button.configure(
             text=text, state="normal" if busy or self.capture_device_var.get() else "disabled",
         )
+        recording_text = {
+            "idle": "Record MP4", "recording": "Stop recording",
+            "stopping": "Finishing MP4...", "unsaved": "Save recording...",
+            "saving": "Saving MP4...",
+        }[self._recording_state]
+        enabled = self._recording_state in ("recording", "unsaved") or (
+            self._recording_state == "idle" and self._capture_connected and not self._capture_pending
+        )
+        self.record_video_button.configure(text=recording_text, state="normal" if enabled else "disabled")
 
     def clear_source_frame(self) -> None:
         self.canvas.delete("all")
