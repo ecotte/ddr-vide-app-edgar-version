@@ -21,7 +21,7 @@ def registration_event(row: dict) -> Event:
         difficulty = row.get("difficulty")
         if difficulty is None:
             difficulty = 0 if excluded else None
-        elif type(difficulty) is not int or difficulty not in (0, 3, 4) or (difficulty == 0) != excluded:
+        elif type(difficulty) is not int or difficulty not in (0, 3, 4, 5) or (difficulty == 0) != excluded:
             raise ValueError
         player = row.get("player")
         if player not in (None, "P1", "P2"):

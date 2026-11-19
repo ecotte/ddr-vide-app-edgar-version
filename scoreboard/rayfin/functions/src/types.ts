@@ -19,19 +19,19 @@
 export type AppFunctionsSchema = {
   getKioskStatus: {
     input: { player: string };
-    output: { gameSessionId: null | string; registered: boolean; username?: undefined | string; difficulty?: undefined | null | 0 | 3 | 4 };
+    output: { gameSessionId: null | string; registered: boolean; username?: undefined | string; difficulty?: undefined | null | 0 | 3 | 4 | 5 };
   };
   registerPlayer: {
     input: { requestId: string; player: string; specialName: string };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 | 5 };
   };
   registerEasyPlayer: {
     input: { requestId: string; player: string; specialName: string };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 | 5 };
   };
   registerPlayerWithDifficulty: {
     input: { requestId: string; player: string; specialName: string; difficulty: number };
-    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 };
+    output: { id: string; gameSessionId: string; player: 'P1' | 'P2'; username: string; pin: null | string; registrationType: 'player' | 'special'; excludeFromLeaderboard: boolean; difficulty: null | 0 | 3 | 4 | 5 };
   };
   getRegistrationMode: {
     input: Record<string, never>;

@@ -201,19 +201,19 @@ Normal player names and PINs retain their unique constraints.
 
 ### Independent player difficulty
 
-Each player chooses **Easy**, **Normal 3**, or **Normal 4** before selecting
-**Register me**. Normal 3 is selected initially. The three choices are stored
-on that player's `GamePlayerSession.difficulty` as numeric `0`, `3`, or `4`.
+Each player chooses **Easy**, **Normal 3**, **Normal 4**, or **Hard** before selecting
+**Register me**. Normal 3 is selected initially. The choices are stored
+on that player's `GamePlayerSession.difficulty` as numeric `0`, `3`, `4`, or `5`.
 The other station's choice never changes it, even when both stations register
 at the same time. Special entries use the selected difficulty too.
 Each choice explains its rule underneath: **Not ranked**,
-**Standard score**, or **Score multiplied by 1.25**.
+**Standard score**, **Score multiplied by 1.25**, or **Score multiplied by 1.5**.
 
 The kiosk calls `registerPlayerWithDifficulty` once. The server validates the
 numeric choice and derives `excludeFromLeaderboard` as `difficulty === 0`;
 the browser cannot send a conflicting ranking flag. The saved pass displays
 the registered difficulty. Easy remains visible on the live scoreboard but
-is excluded from leaderboard rankings; both Normal choices are ranked.
+is excluded from leaderboard rankings; both Normal choices and Hard are ranked.
 This records the player's choice; the organizer still configures the DDR
 machine's actual difficulty separately.
 
@@ -243,7 +243,7 @@ The reusable Eventhouse function in
 numeric `difficulty` alongside the existing registration fields. Use
 `only_leaderboard_players=false` to include Easy registrations in analysis.
 
-Normal 4 multiplies the player's full base running score by **1.25**, rounding
+Normal 4 multiplies the player's full base running score by **1.25** and Hard by **1.5**, rounding
 the final total to a whole point (half points round up). It applies to the whole
 current game even if registration arrives after points were earned; it does not
 round each hit separately. Easy, Normal 3, and legacy/unregistered players use
@@ -251,8 +251,11 @@ multiplier 1. The desktop's raw judgment events and OCR score stay unchanged.
 The SDK publisher fetches the current game's registration at each heartbeat,
 publishes the adjusted `runningScore`, and retains `baseRunningScore` and
 `difficulty` in the snapshot. Repeated publishing cannot compound the multiplier.
-The scoreboard shows the Normal 4 base and multiplier beneath the adjusted total;
+The scoreboard shows the Normal 4 or Hard base and multiplier beneath the adjusted total;
 a new game clears player difficulty until its own registration is available.
+Rebuild the publisher and restart the desktop after updating supported difficulties.
+An older desktop that rejects difficulty 5 cannot publish either player's updated
+names or scores after a Hard registration; the saved registration itself remains intact.
 
 No-PIN entries use the same `GamePlayerSession` slots as normal players.
 The desktop relays current slots and both historical

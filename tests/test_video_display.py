@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import tkinter as tk
+from tkinter import ttk
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -382,6 +383,54 @@ def test_fit_display_size_uses_uniform_scale_for_wide_video():
 
     assert (width, height) == (700, 394)
     assert scale == pytest.approx(700 / 1920)
+
+
+def test_analysis_controls_scroll_horizontally_and_resize_without_clipping(tk_root):
+    root = tk.Toplevel(tk_root)
+    root.geometry("900x650")
+    controller = Mock()
+    tab = VideoTab(root, controller)
+    tab.pack(fill="both", expand=True)
+    try:
+        root.update()
+        scroll = tab._left_scroll
+        canvas = scroll.canvas
+        new_session = next(
+            widget for widget in tab.start_stop_button.master.winfo_children()
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "New Session"
+        )
+        assert canvas.xview()[1] < 1
+        assert scroll.hbar.winfo_ismapped()
+        scroll.canvas.yview_moveto(
+            tab.start_stop_button.master.winfo_y() / scroll.inner.winfo_height()
+        )
+        session_right = (
+            new_session.winfo_rootx() - scroll.inner.winfo_rootx()
+            + new_session.winfo_width()
+        )
+        canvas.xview_moveto(
+            (session_right - canvas.winfo_width() + 4) / scroll.inner.winfo_width()
+        )
+        root.update()
+        for button in (tab.start_stop_button, new_session):
+            assert button.winfo_rootx() >= canvas.winfo_rootx()
+            assert button.winfo_rootx() + button.winfo_width() <= (
+                canvas.winfo_rootx() + canvas.winfo_width()
+            )
+        tab.start_stop_button.invoke()
+        new_session.invoke()
+        controller.toggle_analysis.assert_called_once_with()
+        controller.new_session.assert_called_once_with()
+
+        root.geometry("2400x900")
+        root.update()
+        assert canvas.xview() == (0.0, 1.0)
+        assert scroll.inner.winfo_width() == canvas.winfo_width()
+        root.geometry("900x650")
+        root.update()
+        assert canvas.xview()[1] < 1
+    finally:
+        root.destroy()
 
 
 def test_playback_delay_subtracts_time_already_spent_processing():

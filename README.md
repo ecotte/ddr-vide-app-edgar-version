@@ -124,11 +124,11 @@ Station URLs require `?player=1#register` or `?player=2#register`. Each game has
 one registration slot per player, including special entries. In the desktop,
 **New Session** emits `session_end` for the announced old game before emitting
 `new_session` for a fresh GUID and two empty registration slots.
-Each station independently selects **Easy**, **Normal 3**, or **Normal 4** before
+Each station independently selects **Easy**, **Normal 3**, **Normal 4**, or **Hard** before
 registration. The sign-in event carries numeric `payload.difficulty` as `0`, `3`,
-or `4`, respectively. Only that player's Easy entry is excluded from leaderboard
+`4`, or `5`, respectively. Only that player's Easy entry is excluded from leaderboard
 rankings; the other player's selection is not inherited or changed.
-Normal 4 uses a score multiplier of 1.25, rounded once on the full current-game
+Normal 4 uses a score multiplier of 1.25 and Hard uses 1.5, rounded once on the full current-game
 total (nearest whole point, with halves rounded up). The publisher applies it
 from the stored registration on every heartbeat, including points earned before
 registration. Easy and Normal 3 use a multiplier of 1.
@@ -851,7 +851,7 @@ hit moment (frame 2515, shown with a "Marvelous!!!" judgment on screen):
 - **"OCR engine: FAILED to load"** - usually means setup didn't finish installing PyTorch/EasyOCR. Re-run `setup.ps1` and check the console for errors.
 - **App window opens but stays blank / "No video loaded."`** - you haven't clicked **Open Video...** yet, or the file picker was cancelled.
 - **"Could not open video"** - the file may be corrupted, in a codec OpenCV can't decode, or the path contains something unusual. Try a standard H.264 `.mp4` first.
-- **I can't see the "Layout profile" box, "Start Analysis" button, or some recognition rows** - the left and right panels of the Video & Regions tab scroll independently once their controls no longer fit the window (this grows as you add more regions, especially several arrow lanes). Hover over the panel and scroll with your mouse wheel, or drag the scrollbar at its right edge, to reach anything below the visible area. If controls seem to be missing entirely, this is almost always the cause - scroll down before assuming a button doesn't exist.
+- **I can't see the "Layout profile" box, "Start Analysis" button, or some recognition rows** - the left and right panels of the Video & Regions tab scroll independently once their controls no longer fit the window (this grows as you add more regions, especially several arrow lanes). Hover over the panel and scroll with your mouse wheel, or drag the scrollbar at its right edge, to reach anything below the visible area. The left panel also has a horizontal scrollbar along its bottom edge: drag it to reach **Start Analysis**, **New Session**, and other controls clipped by a narrow window. If controls seem to be missing entirely, scroll the panel before assuming a button doesn't exist.
 - **Region drawing does nothing** - make sure **Draw Region** shows **ON** before click-dragging on the canvas.
 - **The app seems frozen after drawing a rectangle** - the modal **Label region** dialog must be completed or canceled before interacting with the main window. It opens centered over the app on the same monitor, including displays with negative desktop coordinates.
 - **Loading a layout pops up a resolution-mismatch warning** - this is intentional. The layout was calibrated against a different video size than the one currently open. Choose to fit it with uniform scaling and centered padding, or cancel and recalibrate. Coordinates are never silently reused across a resolution change.

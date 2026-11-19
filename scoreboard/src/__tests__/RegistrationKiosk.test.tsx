@@ -57,6 +57,7 @@ it('describes the ranking and score rules underneath each accessible difficulty 
   await open();
   for (const [label, description] of [
     ['Easy', 'Not ranked'], ['Normal 3', 'Standard score'], ['Normal 4', 'Score multiplied by 1.25'],
+    ['Hard', 'Score multiplied by 1.5'],
   ]) {
     const radio = screen.getByRole('radio', { name: label });
     expect(radio).toHaveAccessibleDescription(description);
@@ -318,7 +319,7 @@ it('retains Easy on retry, and Start over clears only an uncommitted draft', asy
   expect(vi.mocked(saveRegistration).mock.calls[2][1].requestId).not.toBe(request.requestId);
 });
 
-it.each([[0, 'Easy'], [3, 'Normal 3'], [4, 'Normal 4']] as const)(
+it.each([[0, 'Easy'], [3, 'Normal 3'], [4, 'Normal 4'], [5, 'Hard']] as const)(
   'registers independent numeric difficulty %s and shows %s on the saved pass',
   async (difficulty, label) => {
     vi.mocked(saveRegistration).mockResolvedValue({ ...pass, difficulty, excludeFromLeaderboard: difficulty === 0 });

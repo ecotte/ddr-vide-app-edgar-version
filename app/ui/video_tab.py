@@ -41,7 +41,7 @@ def next_playback_delay_ms(fps: float, processing_seconds: float) -> int:
 
 
 class _ScrollableFrame(ttk.Frame):
-    """A vertically scrollable container.
+    """A vertically scrollable container with optional horizontal scrolling.
 
     Put widgets inside ``.inner`` rather than directly inside the frame
     this class returns. This exists because this tab's control panels grow
@@ -53,11 +53,16 @@ class _ScrollableFrame(ttk.Frame):
     reachable no matter the window size or how many regions are calibrated.
     """
 
-    def __init__(self, parent: tk.Widget):
+    def __init__(self, parent: tk.Widget, *, horizontal: bool = False):
         super().__init__(parent)
+        self._horizontal = horizontal
         self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         self.vbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vbar.set)
+        if horizontal:
+            self.hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+            self.hbar.grid(row=1, column=0, sticky="ew")
+            self.canvas.configure(xscrollcommand=self.hbar.set)
 
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.vbar.grid(row=0, column=1, sticky="ns")
@@ -67,18 +72,17 @@ class _ScrollableFrame(ttk.Frame):
         self.inner = ttk.Frame(self.canvas)
         self._window_id = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
 
-        self.inner.bind("<Configure>", self._on_inner_configure)
-        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.inner.bind("<Configure>", self._on_configure)
+        self.canvas.bind("<Configure>", self._on_configure)
         self.canvas.bind("<Enter>", self._bind_mousewheel)
         self.canvas.bind("<Leave>", self._unbind_mousewheel)
 
-    def _on_inner_configure(self, event) -> None:
+    def _on_configure(self, event) -> None:
+        width = self.canvas.winfo_width()
+        if self._horizontal:
+            width = max(width, self.inner.winfo_reqwidth())
+        self.canvas.itemconfigure(self._window_id, width=width)
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def _on_canvas_configure(self, event) -> None:
-        # Keep the inner frame's width tracking the visible canvas width so
-        # widgets packed/gridded with fill="x" still stretch as expected.
-        self.canvas.itemconfigure(self._window_id, width=event.width)
 
     def _bind_mousewheel(self, event) -> None:
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
@@ -182,7 +186,7 @@ class VideoTab(ttk.Frame):
 
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
-        left_scroll = _ScrollableFrame(self)
+        left_scroll = _ScrollableFrame(self, horizontal=True)
         left_scroll.grid(row=0, column=0, sticky="nsew")
         self._left_scroll = left_scroll
         left = left_scroll.inner

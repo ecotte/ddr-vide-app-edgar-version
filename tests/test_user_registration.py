@@ -147,7 +147,7 @@ def test_invalid_leaderboard_exclusion_is_not_published(excluded):
         registration_event({**ROW, "excludeFromLeaderboard": excluded})
 
 
-@pytest.mark.parametrize("difficulty", [0, 3, 4])
+@pytest.mark.parametrize("difficulty", [0, 3, 4, 5])
 @pytest.mark.parametrize("kind", ["player", "special"])
 def test_numeric_difficulty_is_preserved_in_the_signin_event_and_durable_outbox(tmp_path, difficulty, kind):
     row = {
@@ -170,13 +170,13 @@ def test_numeric_difficulty_is_preserved_in_the_signin_event_and_durable_outbox(
         outbox.close()
 
 
-@pytest.mark.parametrize("difficulty", [-1, 1, 2, 5, "3", "4", True, False, 3.0, [], {}])
+@pytest.mark.parametrize("difficulty", [-1, 1, 2, 6, "3", "4", "5", True, False, 3.0, 5.0, [], {}])
 def test_invalid_difficulty_is_rejected_without_publishing(difficulty):
     with pytest.raises(ValueError, match="Invalid user registration"):
         registration_event({**ROW, "difficulty": difficulty})
 
 
-@pytest.mark.parametrize("difficulty,excluded", [(0, False), (3, True), (4, True)])
+@pytest.mark.parametrize("difficulty,excluded", [(0, False), (3, True), (4, True), (5, True)])
 def test_conflicting_difficulty_and_ranking_flag_is_rejected(difficulty, excluded):
     with pytest.raises(ValueError, match="Invalid user registration"):
         registration_event({**ROW, "difficulty": difficulty, "excludeFromLeaderboard": excluded})

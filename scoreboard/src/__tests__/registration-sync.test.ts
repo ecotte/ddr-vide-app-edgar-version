@@ -118,6 +118,13 @@ it.each([
   expect(scoreForDifficulty(base, 4)).toBe(expected);
 });
 
+it.each([
+  [0, 0], [1, 2], [5, 8], [10, 15], [15, 23], [105, 158],
+  [6004799503160660, 9007199254740990],
+])('rounds the entire Hard base score %s to %s without intermediate rounding', (base, expected) => {
+  expect(scoreForDifficulty(base, 5)).toBe(expected);
+});
+
 it.each([0, 3, null] satisfies (Difficulty | null)[])('keeps difficulty %s scores unmultiplied', difficulty => {
   expect(scoreForDifficulty(105, difficulty)).toBe(105);
 });
@@ -128,9 +135,12 @@ it.each([-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])('rejects invalid 
 
 it('rejects an adjusted score beyond safe integer range rather than silently rounding inaccurately', () => {
   expect(() => scoreForDifficulty(7205759403792794, 4)).toThrow('exceeds');
+  expect(() => scoreForDifficulty(6004799503160661, 5)).toThrow('exceeds');
 });
 
-it('applies each current-game registration to its full base total, never compounds, and clears on a new game', async () => {
+it.each([[4, 131], [5, 158]] as const)(
+  'applies registered difficulty %s to the full base total, never compounds, and clears on a new game',
+  async (difficulty, adjusted) => {
   const client = new RayfinClient<AppSchema>({
     baseUrl: 'https://example.invalid/', publishableKey: 'pk-test', authStorage: false,
   });
@@ -139,7 +149,7 @@ it('applies each current-game registration to its full base total, never compoun
     id: crypto.randomUUID(), gameSessionId: id, player: 'P1' as const, username: 'HappyLakehouse5678',
     slotKey: `${id}:P1`, usernameKey: 'player:test', pinKey: 'pin:test', pin: '123456',
     registrationType: 'player' as const, createdAt: new Date(), eventQueued: true,
-    difficulty: 4, excludeFromLeaderboard: false,
+    difficulty, excludeFromLeaderboard: false,
   };
   const query = client.data.GamePlayerSession.select(['player', 'username', 'difficulty']);
   vi.spyOn(client.data.GamePlayerSession, 'select').mockReturnValue(query);
@@ -153,7 +163,9 @@ it('applies each current-game registration to its full base total, never compoun
     expect(before.players.P1.runningScore).toBe(105);
     execute.mockResolvedValue([row, { ...row, player: 'P2', difficulty: 3 }]);
     const registered = await withPlayerNames(client, input);
-    expect(registered.players.P1).toMatchObject({ runningScore: 131, baseRunningScore: 105, difficulty: 4, hits: 10, combo: 6, score: 9999 });
+    expect(registered.players.P1).toMatchObject({
+      username: row.username, runningScore: adjusted, baseRunningScore: 105, difficulty, hits: 10, combo: 6, score: 9999,
+    });
     expect(registered.players.P2).toMatchObject({ runningScore: 105, baseRunningScore: 105, difficulty: 3 });
     expect(input.players.P1.runningScore).toBe(105);
     expect(await withPlayerNames(client, registered)).toEqual(registered);

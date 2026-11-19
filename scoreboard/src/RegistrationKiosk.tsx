@@ -6,6 +6,7 @@ import {
 } from './registration';
 import BoothShell from './BoothShell';
 import { poll } from './state';
+import { difficultyMultiplier } from '../rayfin/functions/src/difficulty';
 
 type Registration = { kind: 'player' | 'special'; data: PlayerPass };
 type Corner = 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
@@ -14,6 +15,7 @@ const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   0: 'Not ranked',
   3: 'Standard score',
   4: 'Score multiplied by 1.25',
+  5: 'Score multiplied by 1.5',
 };
 
 export default function RegistrationKiosk({ client }: { client: Client }) {
@@ -223,8 +225,9 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
       </div>
       <p className="booth-game-session">Game session ID: <code>{saved.data.gameSessionId}</code></p>
       <p className="booth-card-note">Difficulty: {difficultyLabel(saved.data.difficulty)}</p>
-      {saved.data.difficulty === 4 && <p className="booth-card-note">
-        Your full game score receives a &#215;1.25 multiplier, rounded to the nearest whole point.
+      {difficultyMultiplier(saved.data.difficulty) > 1 && <p className="booth-card-note">
+        Your full game score receives a &times;{difficultyMultiplier(saved.data.difficulty)} multiplier,
+        rounded to the nearest whole point.
       </p>}
       {saved.data.excludeFromLeaderboard && <p className="booth-card-note">
         Easy mode: shown on the live scoreboard, excluded from leaderboard rankings.
@@ -277,7 +280,7 @@ export default function RegistrationKiosk({ client }: { client: Client }) {
           </label>)}
         </div>
       </fieldset>
-      <p className="booth-card-note">Each player chooses independently. Normal 4 rounds the full game total.</p>
+      <p className="booth-card-note">Each player chooses independently. Normal 4 and Hard round the full game total.</p>
       <button className="booth-primary" disabled={controlsDisabled} onClick={() => { void register(); }}>
         {saving ? 'Registering...' : draft.current ? 'Retry registration' : 'Register me'}
         <span aria-hidden="true">&#8594;</span>
