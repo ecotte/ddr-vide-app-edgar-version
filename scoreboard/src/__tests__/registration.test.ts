@@ -398,14 +398,14 @@ it('does not let a failed player write lock the other player to easy', async () 
   expect(createMode).not.toHaveBeenCalled();
 });
 
-it.each([-1, 1, 2, 5, 3.5, NaN, Infinity])('rejects unsupported numeric difficulty %s before database access', async difficulty => {
+it.each([-1, 1, 2, 6, 3.5, NaN, Infinity])('rejects unsupported numeric difficulty %s before database access', async difficulty => {
   const { client, find, create } = setup();
   await expect(registerPlayer(client.data, crypto.randomUUID(), 'P1', '', difficulty)).rejects.toThrow('Invalid player registration');
   expect(find).not.toHaveBeenCalled();
   expect(create).not.toHaveBeenCalled();
 });
 
-it.each(['0', '3', '4', true, false, {}, []])('does not coerce invalid difficulty %s into a supported choice', async difficulty => {
+it.each(['0', '3', '4', '5', true, false, {}, []])('does not coerce invalid difficulty %s into a supported choice', async difficulty => {
   const { client, create } = setup();
   await expect(Reflect.apply(registerPlayer, undefined, [
     client.data, crypto.randomUUID(), 'P1', '', difficulty,

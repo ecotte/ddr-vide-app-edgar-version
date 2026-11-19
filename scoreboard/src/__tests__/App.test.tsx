@@ -285,17 +285,19 @@ it('shows per-player response averages, sourced comparisons, cumulative percenta
   expect(screen.getByLabelText('Player 1 step title')).toHaveTextContent('Center-Step Superstar');
 });
 
-it('shows the published Normal 4 total and its base-score explanation without multiplying twice', async () => {
+it.each([[4, 13, 'Normal 4', 1.25], [5, 15, 'Hard', 1.5]] as const)(
+  'shows the published difficulty %s total and base-score explanation without multiplying twice',
+  async (difficulty, score, label, multiplier) => {
   const { client } = fakeClient({
     ...snapshot, players: {
-      P1: { ...player, runningScore: 13, baseRunningScore: 10, difficulty: 4 },
+      P1: { ...player, runningScore: score, baseRunningScore: 10, difficulty },
       P2: { ...player, runningScore: 10, baseRunningScore: 10, difficulty: 3 },
     },
   });
   await act(async () => { render(<App client={client} />); });
-  expect(screen.getByLabelText('Player 1 score')).toHaveTextContent('13');
+  expect(screen.getByLabelText('Player 1 score')).toHaveTextContent(String(score));
   expect(screen.getByLabelText('Player 2 score')).toHaveTextContent('10');
-  expect(screen.getByLabelText('Player 1 score adjustment')).toHaveTextContent('Normal 4: 10 base × 1.25 (rounded).');
+  expect(screen.getByLabelText('Player 1 score adjustment')).toHaveTextContent(`${label}: 10 base × ${multiplier} (rounded).`);
   expect(screen.queryByLabelText('Player 2 score adjustment')).not.toBeInTheDocument();
 });
 
